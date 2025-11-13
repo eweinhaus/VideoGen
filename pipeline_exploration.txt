@@ -16,15 +16,15 @@ AI video QA-> feedback and restart
 dspy
 
 
-Input: Audio file
+0. Webapp to input Audio file
 1. Audio parsing agent
 2. Scene summary
 3A. Script writing 
 3B. Reference photos
 4. Video generation prompts
 5. Call LLM to create video
-Output: Display Stitched clips on webapp
-Export stitched clips to mp4
+6. Display Stitched clips on webapp
+7. Export stitched clips to mp4
 
 
 
