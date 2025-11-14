@@ -154,7 +154,9 @@ You must support at least ONE of these categories with full end to end generatio
 - Track and report generation cost per video
 - Optimize API calls (avoid redundant generations)
 - Implement caching for repeated elements
-- **Target**: Under $2.00 per minute of final video
+- **Target**: 
+  - Production/Final Submission: $200 per video, $2000 per job hard limit
+  - Development/Testing: ~$2-5 per video (using cheaper models), $50 per job hard limit
 
 #### Reliability
 

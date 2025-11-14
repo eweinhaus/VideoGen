@@ -21,3 +21,4 @@ Stitch video clips with beat-aligned transitions, sync original audio, and produ
 - <3 clips available → Fail job (minimum not met)
 - FFmpeg errors → Retry composition once, then fail with detailed error message
 
+

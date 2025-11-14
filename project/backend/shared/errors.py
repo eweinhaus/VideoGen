@@ -66,6 +66,29 @@ class ValidationError(PipelineError):
     pass
 
 
+class RateLimitError(PipelineError):
+    """Rate limit exceeded errors."""
+    
+    def __init__(
+        self,
+        message: str,
+        retry_after: Optional[int] = None,
+        job_id: Optional[UUID] = None,
+        code: Optional[str] = None
+    ):
+        """
+        Initialize rate limit error.
+        
+        Args:
+            message: Error message
+            retry_after: Seconds until retry is allowed
+            job_id: Optional job ID associated with the error
+            code: Optional error code for categorization
+        """
+        self.retry_after = retry_after
+        super().__init__(message, job_id, code)
+
+
 __all__ = [
     "PipelineError",
     "ConfigError",
@@ -75,4 +98,5 @@ __all__ = [
     "BudgetExceededError",
     "RetryableError",
     "ValidationError",
+    "RateLimitError",
 ]

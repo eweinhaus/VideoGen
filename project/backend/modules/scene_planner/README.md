@@ -19,3 +19,4 @@ Generate comprehensive video plan using **music video director knowledge** to cr
 - Transition styles (strong beat → hard cut, soft → crossfade)
 - Lighting techniques (dark mood → low-key, bright → high-key)
 
+

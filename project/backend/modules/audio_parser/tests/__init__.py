@@ -1,0 +1,4 @@
+"""
+Audio Parser module tests.
+"""
+

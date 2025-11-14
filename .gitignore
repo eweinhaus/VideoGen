@@ -40,3 +40,7 @@ htmlcov/
 !README.md
 !planning/**/*.md
 
+tasks/
+
+logs/
+*.log

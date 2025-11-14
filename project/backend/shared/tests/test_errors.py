@@ -47,3 +47,4 @@ def test_exception_messages():
     assert "Budget exceeded" in str(error)
     assert error.code == "BUDGET_EXCEEDED"
 
+

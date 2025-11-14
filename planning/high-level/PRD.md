@@ -9,7 +9,9 @@
 An AI-powered pipeline that generates professional, beat-synchronized music videos with consistent visual style informed by music video director expertise. Users upload a song and creative prompt, then receive a complete music video with multiple clips, smooth transitions, and perfect audio sync.
 
 **Timeline:** 72 hours (3 days)  
-**Budget:** $2.00/minute maximum ($20 per job hard limit)  
+**Budget:** 
+- **Production/Final Submission:** $200 per video, $2000 per job hard limit
+- **Development/Testing:** ~$2-5 per video (using cheaper models), $50 per job hard limit
 **Quality:** 1080p, 30 FPS, beat-aligned transitions, minimum 3 clips  
 **Differentiator:** Integration of music video director knowledge for creative decisions
 
@@ -38,7 +40,9 @@ Final Video                        [4] Scene Planner → [5] Reference Generator
 8. Composer stitches clips with audio and transitions
 
 **Average Generation Time:** 5-10 minutes for 3-minute song  
-**Cost per Video:** $0.60-$1.20 ($0.20-$0.40/minute)
+**Cost per Video:** 
+- **Production:** ~$200 per job (regardless of video length)
+- **Development:** ~$2-5 per job (using cheaper models for testing)
 
 ---
 
@@ -94,8 +98,8 @@ REST API server and SSE handler that orchestrates pipeline execution via job que
 - **SSE Streaming**: Real-time progress events to frontend
 - **Job Queue**: BullMQ + Redis for background processing
 - **Pipeline Orchestrator**: Executes modules 3-8 sequentially
-- **Cost Tracking**: Aggregate costs per stage, enforce $20 budget limit
-- **Budget Enforcement**: Pre-flight cost estimate, real-time tracking, abort if exceeded
+- **Cost Tracking**: Aggregate costs per stage, enforce budget limits (production: $200/job, dev: $5/job)
+- **Budget Enforcement**: Pre-flight cost check, real-time tracking, abort if exceeded (production: $2000 hard limit, dev: $50 hard limit)
 - **Concurrency Control**: Max 6 concurrent jobs system-wide (3 per worker × 2 workers)
 - **Rate Limiting**: 5 jobs per user per hour (configurable)
 
@@ -141,8 +145,8 @@ Events:
 ✅ SSE delivers updates (<1s latency)  
 ✅ Background processing works  
 ✅ Errors handled gracefully  
-✅ Cost tracking accurate (±$0.10)  
-✅ Budget limit enforced (abort if >$20)  
+✅ Cost tracking accurate (±$10 production, ±$0.50 dev)  
+✅ Budget limit enforced (production: $200/job target, $2000/job hard limit; dev: $5/job target, $50/job hard limit)  
 ✅ Concurrency limits respected (max 6 jobs)  
 ✅ Rate limiting prevents abuse  
 
@@ -599,7 +603,9 @@ User Input
 
 ### Job Failure Modes
 - **Module Failure**: Individual module fails after all retries → Job marked as failed, user notified via SSE
-- **Budget Exceeded**: Cost tracking detects >$20 mid-execution → Abort immediately, mark as failed
+- **Budget Exceeded**: Cost tracking detects budget exceeded mid-execution → Abort immediately, mark as failed
+  - Production: >$2000 per job
+  - Development: >$50 per job
 - **Timeout**: Job exceeds 15-minute timeout → Mark as failed, cleanup resources
 - **Partial Success**: Video Generator produces <3 clips → Job fails (minimum not met)
 
@@ -637,8 +643,9 @@ User Input
 ✅ Progress updates <1s latency  
 
 ### Cost
-✅ <$2/minute ($0.60-$1.20 typical)  
-✅ Hard limit: $20/job  
+✅ Production: ~$200 per job (regardless of video length)  
+✅ Development: ~$2-5 per job (using cheaper models)  
+✅ Hard limits: $2000/job (production), $50/job (development)  
 
 ### Reliability
 ✅ 90%+ success rate  
