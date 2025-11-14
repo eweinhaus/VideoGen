@@ -27,17 +27,30 @@ export default function UploadPage() {
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
+      console.log("Not authenticated, redirecting to login")
       router.push("/login")
+    } else if (!authLoading && isAuthenticated) {
+      console.log("✅ Authenticated on upload page, user:", useAuth().user?.email)
+      console.log("✅ Token available:", !!useAuth().token)
     }
   }, [isAuthenticated, authLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    console.log("📤 Submit button clicked")
+    console.log("Auth state:", {
+      isAuthenticated,
+      hasToken: !!useAuth().token,
+      userEmail: useAuth().user?.email
+    })
 
     try {
       const jobId = await submit()
+      console.log("✅ Upload successful, jobId:", jobId)
       router.push(`/jobs/${jobId}`)
     } catch (error: any) {
+      console.error("❌ Upload failed:", error)
       // Error is handled by uploadStore
     }
   }

@@ -5,6 +5,7 @@ Handles audio file upload and job creation.
 """
 
 import uuid
+import re
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from mutagen import File as MutagenFile
@@ -47,8 +48,13 @@ async def upload_audio(
     job_id = str(uuid.uuid4())
     
     try:
-        # Validate file
-        validate_audio_file(audio_file.file, max_size_mb=10)
+        # Validate file (pass filename separately for MIME type detection)
+        # Create a wrapper to add filename attribute if needed
+        file_obj = audio_file.file
+        if audio_file.filename and not hasattr(file_obj, "name"):
+            # Add filename attribute for validation
+            file_obj.name = audio_file.filename
+        validate_audio_file(file_obj, max_size_mb=10)
         
         # Validate prompt
         validate_prompt(user_prompt, min_length=50, max_length=500)
@@ -82,11 +88,42 @@ async def upload_audio(
         await check_rate_limit(user_id)
         
         # Upload audio to Supabase Storage
-        storage_path = f"{user_id}/{job_id}/{audio_file.filename}"
+        # Read file content as bytes
+        audio_file.file.seek(0)
+        file_data = await audio_file.read()
+        audio_file.file.seek(0)  # Reset for potential reuse
+        
+        # Sanitize filename for Supabase Storage (replaces problematic characters)
+        # Supabase Storage doesn't allow spaces, brackets, and other special chars in paths
+        # Replace spaces and special chars with underscores, keep only alphanumeric, hyphens, dots, underscores
+        original_filename = audio_file.filename or "audio.mp3"
+        # Split filename and extension
+        if '.' in original_filename:
+            name_part, ext = original_filename.rsplit('.', 1)
+            # Sanitize name part: keep only word chars (alphanumeric + underscore), hyphens
+            # Replace everything else (spaces, brackets, etc.) with underscores
+            sanitized_name = re.sub(r'[^\w\-]', '_', name_part)  # Keep word chars and hyphens
+            sanitized_name = re.sub(r'_+', '_', sanitized_name)  # Replace multiple underscores with single
+            sanitized_name = sanitized_name.strip('_')  # Remove leading/trailing underscores
+            sanitized_filename = f"{sanitized_name}.{ext}" if sanitized_name else f"audio.{ext}"
+        else:
+            # No extension, sanitize entire filename
+            sanitized_filename = re.sub(r'[^\w\-]', '_', original_filename)
+            sanitized_filename = re.sub(r'_+', '_', sanitized_filename).strip('_') or "audio"
+        
+        storage_path = f"{user_id}/{job_id}/{sanitized_filename}"
+        logger.info(
+            "Sanitized filename for storage",
+            extra={
+                "original_filename": original_filename,
+                "sanitized_filename": sanitized_filename,
+                "storage_path": storage_path
+            }
+        )
         audio_url = await storage_client.upload_file(
             bucket="audio-uploads",
             path=storage_path,
-            file_obj=audio_file.file,
+            file_data=file_data,
             content_type=audio_file.content_type
         )
         

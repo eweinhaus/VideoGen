@@ -63,22 +63,27 @@ def validate_audio_file(
     
     is_valid_audio = any(header.startswith(sig) for sig in valid_signatures)
     
-    # Also check filename if available
-    if hasattr(file, "name") and file.name:
-        mime_type, _ = mimetypes.guess_type(file.name)
-        if mime_type:
-            valid_mime_types = [
-                "audio/mpeg",
-                "audio/mp3",
-                "audio/wav",
-                "audio/x-wav",
-                "audio/flac",
-                "audio/x-flac",
-                "audio/ogg",
-                "audio/vorbis"
-            ]
-            if mime_type in valid_mime_types:
-                is_valid_audio = True
+    # Also check filename if available (must be a string path)
+    if hasattr(file, "name") and file.name and isinstance(file.name, (str, bytes)):
+        try:
+            filename = file.name if isinstance(file.name, str) else str(file.name)
+            mime_type, _ = mimetypes.guess_type(filename)
+            if mime_type:
+                valid_mime_types = [
+                    "audio/mpeg",
+                    "audio/mp3",
+                    "audio/wav",
+                    "audio/x-wav",
+                    "audio/flac",
+                    "audio/x-flac",
+                    "audio/ogg",
+                    "audio/vorbis"
+                ]
+                if mime_type in valid_mime_types:
+                    is_valid_audio = True
+        except (TypeError, AttributeError):
+            # If filename is not a valid path, skip MIME type check
+            pass
     
     if not is_valid_audio:
         raise ValidationError(

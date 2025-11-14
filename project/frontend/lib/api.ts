@@ -14,6 +14,15 @@ async function request<T>(
 
   if (token) {
     headers["Authorization"] = `Bearer ${token}`
+    console.log("Sending request with token:", endpoint, "Token:", token.substring(0, 20) + "...")
+  } else {
+    // Debug: Log when token is missing
+    console.error("❌ No auth token found for request to:", endpoint)
+    console.error("Auth store state:", {
+      user: authStore.getState().user?.email,
+      hasToken: !!authStore.getState().token,
+      token: authStore.getState().token
+    })
   }
 
   // Don't set Content-Type for FormData (browser will set it with boundary)
@@ -32,6 +41,12 @@ async function request<T>(
       let retryable = false
 
       if (response.status === 401) {
+        // Log the error response for debugging
+        const errorData = await response.json().catch(() => ({}))
+        console.error("❌ 401 Unauthorized error:", errorData)
+        console.error("Request endpoint:", endpoint)
+        console.error("Token was:", token ? `${token.substring(0, 20)}...` : "missing")
+        
         // Clear auth state and redirect to login
         authStore.getState().logout()
         if (typeof window !== "undefined") {

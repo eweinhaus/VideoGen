@@ -119,11 +119,19 @@ export const uploadStore = create<UploadState>((set, get) => ({
       set({ isSubmitting: false })
       return response.job_id
     } catch (error: any) {
+      let errorMessage = error.message || "Upload failed"
+      
+      // Handle authentication errors specifically
+      if (error.statusCode === 401 || error.message?.includes("Unauthorized") || error.message?.includes("Not authenticated")) {
+        errorMessage = "Please log in to upload files"
+        // The API client will handle redirect, but we should still show a clear message
+      }
+      
       set({
         isSubmitting: false,
         errors: {
           ...get().errors,
-          audio: error.message || "Upload failed",
+          audio: errorMessage,
         },
       })
       throw error
