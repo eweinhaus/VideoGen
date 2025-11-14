@@ -7,7 +7,6 @@ Supabase PostgreSQL client with connection pooling and query utilities.
 import asyncio
 from typing import Optional, Any, Callable
 from supabase import create_client, Client
-from supabase.lib.client_options import ClientOptions
 from shared.config import settings
 from shared.errors import RetryableError, ConfigError
 
@@ -20,11 +19,7 @@ class DatabaseClient:
         try:
             self.client: Client = create_client(
                 settings.supabase_url,
-                settings.supabase_service_key,
-                options=ClientOptions(
-                    auto_refresh_token=True,
-                    persist_session=False
-                )
+                settings.supabase_service_key
             )
         except Exception as e:
             raise ConfigError(f"Failed to initialize database client: {str(e)}") from e
