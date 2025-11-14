@@ -9,14 +9,60 @@ supabase>=2.0.0
 # Redis
 redis>=5.0.0
 
+# Web Framework (API Gateway)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # For file uploads
+
+# HTTP Clients
+httpx>=0.25.0  # Async HTTP client for API calls
+aiohttp>=3.9.0  # Alternative async HTTP client
+
+# Audio Analysis (Module 3: Audio Parser)
+librosa>=0.10.1
+# aubio>=0.4.9  # Optional - has compilation issues on newer Python/Xcode. Using librosa beat detection instead.
+soundfile>=0.12.1  # Required by librosa for audio I/O
+numpy>=1.24.0  # NumPy 2.x is fine for librosa
+scipy>=1.11.0  # Required by librosa for signal processing
+
+# OpenAI API (Module 3: Lyrics, Module 4: Scene Planning, Module 6: Prompt Generation)
+openai>=1.3.0
+
+# Replicate API (Module 5: Reference Generator, Module 7: Video Generator)
+replicate>=0.20.0
+
+# Video Processing (Module 8: Composer)
+# Note: FFmpeg is a system dependency, install via:
+# macOS: brew install ffmpeg
+# Linux: apt-get install ffmpeg or yum install ffmpeg
+# The python-ffmpeg wrapper is optional but helpful
+ffmpeg-python>=0.2.0  # Python wrapper for FFmpeg (optional, can use subprocess)
+
+# Job Queue (Module 2: API Gateway)
+# Note: BullMQ is Node.js-based. For Python, we can use:
+# Option 1: RQ (Redis Queue) - simpler, Python-native
+# Option 2: Celery - more features, heavier
+# Option 3: Custom async queue using Redis + asyncio
+rq>=1.15.0  # Redis Queue for Python (simpler than Celery)
+# OR celery>=5.3.0  # Uncomment if using Celery instead
+
+# Server-Sent Events (Module 2: API Gateway)
+sse-starlette>=1.6.5  # SSE support for FastAPI
+
+# Additional utilities
+python-jose[cryptography]>=3.3.0  # JWT token handling
+passlib[bcrypt]>=1.7.4  # Password hashing (if needed for auth)
+python-dateutil>=2.8.2  # Date/time utilities
+
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.1.0
+pytest-mock>=3.12.0
 
 # Type checking
 mypy>=1.5.0
+types-redis>=4.6.0
 
 # Linting
 ruff>=0.1.0
-
