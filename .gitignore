@@ -25,7 +25,7 @@ htmlcov/
 *.env
 !.env.example
 
-#Add all .md except any readme.md or .md in the planning folder
+#Add all .md except any readme.md or .md in the planning folder and its subfolders
 *.md
 !README.md
-!planning/*.md
+!planning/**/*.md
