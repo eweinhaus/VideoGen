@@ -183,6 +183,15 @@ async def stream_progress(
         SSE stream response
     """
     # Get current user using token from query param or header
+    logger.debug(
+        "SSE stream request",
+        extra={
+            "job_id": job_id,
+            "has_token_param": token is not None,
+            "has_credentials": credentials is not None,
+            "token_preview": token[:20] + "..." if token else None
+        }
+    )
     current_user = await get_current_user(credentials=credentials, token=token)
     
     # Verify job ownership

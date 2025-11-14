@@ -183,36 +183,141 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         
         # Import and call Audio Parser
         # Note: Modules will be implemented later, so we'll use stubs for now
+        await publish_event(job_id, "message", {
+            "text": "Starting audio analysis...",
+            "stage": "audio_parser"
+        })
+        await update_progress(job_id, 2, "audio_parser")
+        
         try:
             from modules.audio_parser.process import process as parse_audio
+            await publish_event(job_id, "message", {
+                "text": "Analyzing audio structure and beats...",
+                "stage": "audio_parser"
+            })
+            await update_progress(job_id, 5, "audio_parser")
             audio_data = await parse_audio(job_id, audio_url)
         except ImportError:
             # Module not implemented yet - use stub
             logger.warning("Audio Parser module not found, using stub", extra={"job_id": job_id})
+            await publish_event(job_id, "message", {
+                "text": "Extracting audio features...",
+                "stage": "audio_parser"
+            })
+            await update_progress(job_id, 5, "audio_parser")
+            
+            # Simulate processing time with progress updates
+            import asyncio
+            await asyncio.sleep(0.5)  # Simulate processing
+            await update_progress(job_id, 7, "audio_parser")
+            await publish_event(job_id, "message", {
+                "text": "Detecting beats and structure...",
+                "stage": "audio_parser"
+            })
+            await asyncio.sleep(0.5)
+            await update_progress(job_id, 9, "audio_parser")
+            
             # Create stub audio_data
             from shared.models.audio import AudioAnalysis, SongStructure, Mood
+            # Get audio duration from file (stub: assume 120 seconds)
+            duration = 120.0  # TODO: Get actual duration from audio file
             audio_data = AudioAnalysis(
+                job_id=job_id,
                 bpm=120.0,
-                beat_timestamps=[0.0, 0.5, 1.0],  # Stub beats
-                structure=SongStructure(
-                    intro=0.0,
-                    verse=10.0,
-                    chorus=30.0,
-                    outro=120.0
+                duration=duration,
+                beat_timestamps=[float(i * 0.5) for i in range(int(duration * 2))],  # Stub beats every 0.5s
+                song_structure=[
+                    SongStructure(type="intro", start=0.0, end=10.0, energy="low"),
+                    SongStructure(type="verse", start=10.0, end=30.0, energy="medium"),
+                    SongStructure(type="chorus", start=30.0, end=50.0, energy="high"),
+                    SongStructure(type="verse", start=50.0, end=70.0, energy="medium"),
+                    SongStructure(type="chorus", start=70.0, end=90.0, energy="high"),
+                    SongStructure(type="outro", start=90.0, end=duration, energy="low"),
+                ],
+                mood=Mood(
+                    primary="energetic",
+                    energy_level="high",
+                    confidence=0.8
                 ),
-                mood=Mood.ENERGETIC,
                 lyrics=[],
                 clip_boundaries=[]
             )
         
-        await update_progress(job_id, 10, "audio_parser")
+        await update_progress(job_id, 100, "audio_parser")
+        await publish_event(job_id, "message", {
+            "text": "Audio analysis complete!",
+            "stage": "audio_parser"
+        })
         await publish_event(job_id, "stage_update", {
             "stage": "audio_parser",
             "status": "completed",
-            "duration": audio_data.beat_timestamps[-1] if audio_data.beat_timestamps else 0
+            "duration": audio_data.duration if hasattr(audio_data, 'duration') else (audio_data.beat_timestamps[-1] if audio_data.beat_timestamps else 0)
         })
         
-        # Stage 2: Scene Planner (20% progress)
+        # Log audio parser results
+        logger.info(
+            "Audio parser results",
+            extra={
+                "job_id": job_id,
+                "bpm": audio_data.bpm,
+                "duration": audio_data.duration,
+                "beat_count": len(audio_data.beat_timestamps),
+                "structure_segments": len(audio_data.song_structure),
+                "mood": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
+                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None
+            }
+        )
+        
+        # Publish audio parser results for frontend display
+        await publish_event(job_id, "audio_parser_results", {
+            "bpm": audio_data.bpm,
+            "duration": audio_data.duration,
+            "beat_timestamps": audio_data.beat_timestamps[:20],  # First 20 beats
+            "beat_count": len(audio_data.beat_timestamps),
+            "song_structure": [
+                {
+                    "type": seg.type,
+                    "start": seg.start,
+                    "end": seg.end,
+                    "energy": seg.energy
+                }
+                for seg in audio_data.song_structure
+            ],
+            "mood": {
+                "primary": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
+                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None,
+                "confidence": audio_data.mood.confidence if hasattr(audio_data.mood, 'confidence') else None
+            },
+            "lyrics_count": len(audio_data.lyrics),
+            "clip_boundaries_count": len(audio_data.clip_boundaries)
+        })
+        
+        # Mark job as completed (stopping here for now)
+        total_cost = Decimal("0.00")
+        await db_client.table("jobs").update({
+            "status": "completed",
+            "progress": 100,
+            "current_stage": "audio_parser",
+            "total_cost": str(total_cost),
+            "updated_at": "now()",
+            "completed_at": "now()"
+        }).eq("id", job_id).execute()
+        
+        # Invalidate cache
+        cache_key = f"job_status:{job_id}"
+        await redis_client.client.delete(cache_key)
+        
+        # Publish completed event
+        await publish_event(job_id, "completed", {
+            "video_url": None,  # No video yet, just audio analysis
+            "total_cost": float(total_cost),
+            "message": "Audio analysis completed successfully"
+        })
+        
+        logger.info("Pipeline completed successfully (audio parser only)", extra={"job_id": job_id, "total_cost": total_cost})
+        return  # Stop here - don't continue to scene planner
+        
+        # Stage 2: Scene Planner (20% progress) - DISABLED FOR NOW
         await publish_event(job_id, "stage_update", {
             "stage": "scene_planner",
             "status": "started"
@@ -229,11 +334,38 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             logger.warning("Scene Planner module not found, using stub", extra={"job_id": job_id})
             from shared.models.scene import ScenePlan, Character, Scene, Style, ClipScript, Transition
             plan = ScenePlan(
-                characters=[Character(name="Character1", description="Main character")],
-                scenes=[Scene(location="City", description="Urban setting")],
-                style=Style(art_style="realistic", color_palette="vibrant"),
-                clip_scripts=[ClipScript(clip_index=0, description="Opening scene")],
-                transitions=[Transition(type="cut", timestamp=0.0)]
+                job_id=job_id,
+                video_summary=f"Music video for: {user_prompt[:100]}",
+                characters=[
+                    Character(id="char1", description="Main character", role="main character")
+                ],
+                scenes=[
+                    Scene(id="scene1", description="Urban setting", time_of_day="day")
+                ],
+                style=Style(
+                    color_palette=["#FF5733", "#33FF57", "#3357FF"],
+                    visual_style="realistic",
+                    mood="energetic",
+                    lighting="bright",
+                    cinematography="dynamic"
+                ),
+                clip_scripts=[
+                    ClipScript(
+                        clip_index=0,
+                        start=0.0,
+                        end=5.0,
+                        visual_description="Opening scene",
+                        motion="slow pan",
+                        camera_angle="wide",
+                        characters=["char1"],
+                        scenes=["scene1"],
+                        lyrics_context=None,
+                        beat_intensity="medium"
+                    )
+                ],
+                transitions=[
+                    Transition(from_clip=0, to_clip=1, type="cut", duration=0.0, rationale="Natural transition")
+                ]
             )
         
         await update_progress(job_id, 20, "scene_planner")

@@ -86,6 +86,21 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
         logger.info("Analyzing song structure...")
         try:
             song_structure = analyze_structure(y, sr, beat_timestamps, duration)
+            # Check if fallback was used by examining segment boundaries
+            # Fallback produces uniform segments, clustering produces variable segments
+            segment_boundaries = [s.start for s in song_structure] + [song_structure[-1].end]
+            segment_lengths = [segment_boundaries[i+1] - segment_boundaries[i] for i in range(len(segment_boundaries)-1)]
+            if len(segment_lengths) > 1:
+                # Check if segments are uniform (fallback) vs variable (clustering)
+                length_variance = np.var(segment_lengths)
+                avg_length = np.mean(segment_lengths)
+                # If variance is very low relative to mean, likely uniform segmentation
+                if length_variance < (avg_length * 0.1) ** 2:  # Less than 10% variance
+                    logger.warning(
+                        f"⚠️ Structure analysis appears to use uniform segmentation (fallback). "
+                        f"Segment lengths are too uniform (variance={length_variance:.2f}). "
+                        f"This suggests clustering failed - check logs for details."
+                    )
             logger.info(f"Structure analysis complete: {len(song_structure)} segments")
         except Exception as e:
             logger.error(f"Structure analysis failed: {str(e)}")

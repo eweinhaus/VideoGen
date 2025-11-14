@@ -31,6 +31,26 @@ export interface ErrorEvent {
   retryable?: boolean
 }
 
+export interface AudioParserResultsEvent {
+  bpm: number
+  duration: number
+  beat_timestamps: number[]
+  beat_count: number
+  song_structure: Array<{
+    type: string
+    start: number
+    end: number
+    energy: string
+  }>
+  mood: {
+    primary: string
+    energy_level?: string
+    confidence?: number
+  }
+  lyrics_count: number
+  clip_boundaries_count: number
+}
+
 export interface SSEHandlers {
   onStageUpdate?: (data: StageUpdateEvent) => void
   onProgress?: (data: ProgressEvent) => void
@@ -38,5 +58,6 @@ export interface SSEHandlers {
   onCostUpdate?: (data: CostUpdateEvent) => void
   onCompleted?: (data: CompletedEvent) => void
   onError?: (data: ErrorEvent) => void
+  onAudioParserResults?: (data: AudioParserResultsEvent) => void
 }
 

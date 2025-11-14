@@ -2,12 +2,12 @@
 
 import { useState, useEffect } from "react"
 import { useSSE } from "@/hooks/useSSE"
+import { jobStore } from "@/stores/jobStore"
 import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { StageIndicator } from "@/components/StageIndicator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent } from "@/types/sse"
-import { jobStore } from "@/stores/jobStore"
+import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent } from "@/types/sse"
 import { formatDuration } from "@/lib/utils"
 
 interface ProgressTrackerProps {
@@ -27,18 +27,31 @@ export function ProgressTracker({
   onComplete,
   onError,
 }: ProgressTrackerProps) {
-  const [progress, setProgress] = useState(0)
-  const [currentStage, setCurrentStage] = useState<string | null>(null)
+  const { currentJob: storeJob } = jobStore()
+  const currentJob = storeJob?.id === jobId ? storeJob : null
+  const [progress, setProgress] = useState(currentJob?.progress || 0)
+  const [currentStage, setCurrentStage] = useState<string | null>(currentJob?.currentStage || null)
   const [messages, setMessages] = useState<StatusMessage[]>([])
   const [estimatedRemaining, setEstimatedRemaining] = useState<number | null>(
-    null
+    currentJob?.estimatedRemaining || null
   )
-  const [cost, setCost] = useState<number | null>(null)
+  const [cost, setCost] = useState<number | null>(currentJob?.totalCost || null)
   const [stages, setStages] = useState<
     Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
   >([])
+  const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
 
   const { updateJob } = jobStore()
+  
+  // Initialize progress from job state if available
+  useEffect(() => {
+    if (currentJob) {
+      if (currentJob.progress !== undefined) setProgress(currentJob.progress)
+      if (currentJob.currentStage) setCurrentStage(currentJob.currentStage)
+      if (currentJob.estimatedRemaining) setEstimatedRemaining(currentJob.estimatedRemaining)
+      if (currentJob.totalCost) setCost(currentJob.totalCost)
+    }
+  }, [currentJob])
 
   const { isConnected, error: sseError } = useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
@@ -89,6 +102,9 @@ export function ProgressTracker({
         errorMessage: data.error,
       })
       onError?.(data.error)
+    },
+    onAudioParserResults: (data: AudioParserResultsEvent) => {
+      setAudioResults(data)
     },
   })
 
@@ -148,6 +164,85 @@ export function ProgressTracker({
         <Alert>
           <AlertDescription>Connecting to server...</AlertDescription>
         </Alert>
+      )}
+
+      {audioResults && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle className="text-lg">Audio Analysis Results</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">BPM</p>
+                  <p className="text-2xl font-bold">{audioResults.bpm.toFixed(1)}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Duration</p>
+                  <p className="text-2xl font-bold">{formatDuration(audioResults.duration)}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Beats Detected</p>
+                  <p className="text-2xl font-bold">{audioResults.beat_count}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">Structure Segments</p>
+                  <p className="text-2xl font-bold">{audioResults.song_structure.length}</p>
+                </div>
+              </div>
+              
+              <div>
+                <p className="text-sm font-medium text-muted-foreground mb-2">Mood</p>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold capitalize">{audioResults.mood.primary}</span>
+                  {audioResults.mood.energy_level && (
+                    <span className="text-sm text-muted-foreground">
+                      ({audioResults.mood.energy_level} energy)
+                    </span>
+                  )}
+                  {audioResults.mood.confidence && (
+                    <span className="text-xs text-muted-foreground">
+                      {Math.round(audioResults.mood.confidence * 100)}% confidence
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground mb-2">Song Structure</p>
+                <div className="space-y-1">
+                  {audioResults.song_structure.map((seg, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-sm">
+                      <span className="capitalize font-medium">{seg.type}</span>
+                      <span className="text-muted-foreground">
+                        {seg.start.toFixed(1)}s - {seg.end.toFixed(1)}s
+                      </span>
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        seg.energy === "high" ? "bg-red-100 text-red-800" :
+                        seg.energy === "medium" ? "bg-yellow-100 text-yellow-800" :
+                        "bg-blue-100 text-blue-800"
+                      }`}>
+                        {seg.energy} energy
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {audioResults.beat_timestamps.length > 0 && (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground mb-2">
+                    First {Math.min(20, audioResults.beat_timestamps.length)} Beats (seconds)
+                  </p>
+                  <p className="text-xs font-mono text-muted-foreground">
+                    {audioResults.beat_timestamps.map(t => t.toFixed(2)).join(", ")}
+                  </p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   )

@@ -13,7 +13,7 @@ import { uploadStore } from "@/stores/uploadStore"
 
 export default function UploadPage() {
   const router = useRouter()
-  const { isAuthenticated, isLoading: authLoading } = useAuth()
+  const { isAuthenticated, isLoading: authLoading, user, token } = useAuth()
   const {
     audioFile,
     userPrompt,
@@ -30,10 +30,10 @@ export default function UploadPage() {
       console.log("Not authenticated, redirecting to login")
       router.push("/login")
     } else if (!authLoading && isAuthenticated) {
-      console.log("✅ Authenticated on upload page, user:", useAuth().user?.email)
-      console.log("✅ Token available:", !!useAuth().token)
+      console.log("✅ Authenticated on upload page, user:", user?.email)
+      console.log("✅ Token available:", !!token)
     }
-  }, [isAuthenticated, authLoading, router])
+  }, [isAuthenticated, authLoading, router, user, token])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -41,8 +41,8 @@ export default function UploadPage() {
     console.log("📤 Submit button clicked")
     console.log("Auth state:", {
       isAuthenticated,
-      hasToken: !!useAuth().token,
-      userEmail: useAuth().user?.email
+      hasToken: !!token,
+      userEmail: user?.email
     })
 
     try {
