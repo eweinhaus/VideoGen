@@ -1,0 +1,31 @@
+memory-bank/
+
+# Python
+venv/
+env/
+ENV/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Environment variables
+.env
+.env.local
+*.env
+!.env.example
+
+#Add all .md except any readme.md or .md in the planning folder
+*.md
+!README.md
+!planning/*.md

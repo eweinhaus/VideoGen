@@ -4,36 +4,44 @@ Data models for the video generation pipeline.
 This module exports all Pydantic models used across pipeline modules.
 """
 
-# Models will be imported here once implemented
-# from .job import Job, JobStage, JobCost
-# from .audio import AudioAnalysis, SongStructure, Lyric, Mood, ClipBoundary
-# from .scene import ScenePlan, Character, Scene, Style, ClipScript, Transition, ReferenceImages
-# from .video import ClipPrompts, ClipPrompt, Clips, Clip, VideoOutput
+from .job import Job, JobStage, JobCost
+from .audio import AudioAnalysis, SongStructure, Lyric, Mood, ClipBoundary
+from .scene import (
+    ScenePlan,
+    Character,
+    Scene,
+    Style,
+    ClipScript,
+    Transition,
+    ReferenceImages,
+    ReferenceImage
+)
+from .video import ClipPrompts, ClipPrompt, Clips, Clip, VideoOutput
 
 __all__ = [
     # Job models
-    # "Job",
-    # "JobStage",
-    # "JobCost",
+    "Job",
+    "JobStage",
+    "JobCost",
     # Audio models
-    # "AudioAnalysis",
-    # "SongStructure",
-    # "Lyric",
-    # "Mood",
-    # "ClipBoundary",
+    "AudioAnalysis",
+    "SongStructure",
+    "Lyric",
+    "Mood",
+    "ClipBoundary",
     # Scene models
-    # "ScenePlan",
-    # "Character",
-    # "Scene",
-    # "Style",
-    # "ClipScript",
-    # "Transition",
-    # "ReferenceImages",
+    "ScenePlan",
+    "Character",
+    "Scene",
+    "Style",
+    "ClipScript",
+    "Transition",
+    "ReferenceImages",
+    "ReferenceImage",
     # Video models
-    # "ClipPrompts",
-    # "ClipPrompt",
-    # "Clips",
-    # "Clip",
-    # "VideoOutput",
+    "ClipPrompts",
+    "ClipPrompt",
+    "Clips",
+    "Clip",
+    "VideoOutput",
 ]
-
