@@ -1,0 +1,111 @@
+graph TB
+    subgraph "Frontend Layer"
+        UI[Frontend UI<br/>React/Vue.js]
+        Upload[File Upload<br/>Audio + Prompt]
+        Player[Video Player<br/>Progressive Rendering]
+        Export[Export Handler<br/>MP4/MOV Download]
+    end
+
+    subgraph "API Gateway Layer"
+        API[FastAPI Server<br/>REST + WebSocket]
+        Queue[Celery Job Queue<br/>Redis Backend]
+        WS[WebSocket Handler<br/>Real-time Updates]
+    end
+
+    subgraph "Pipeline Modules"
+        AP[Audio Parser<br/>Librosa + Whisper<br/>via Replicate]
+        SP[Scene Planner<br/>GPT-4/Claude]
+        RG[Reference Generator<br/>Stable Diffusion XL<br/>Single Style Photo]
+        PG[Prompt Generator<br/>GPT-4/Claude]
+        VG[Video Generator<br/>Stable Video Diffusion<br/>Duration Trim/Loop]
+        CP[Composer<br/>FFmpeg + MoviePy<br/>Audio Sync + Transitions]
+    end
+
+    subgraph "External Services"
+        Replicate[Replicate API<br/>Video + Image Gen + Whisper]
+        S3[AWS S3<br/>File Storage]
+        LLM[LLM API<br/>GPT-4/Claude]
+    end
+
+    subgraph "Storage & Cache"
+        Redis[(Redis<br/>Job Queue + Cache)]
+        S3Storage[(S3 Bucket<br/>Files + References)]
+    end
+
+    %% Frontend Flow
+    UI --> Upload
+    Upload --> API
+    API --> Queue
+    Queue --> WS
+    WS --> UI
+    UI --> Player
+    UI --> Export
+
+    %% API to Modules
+    Queue --> AP
+    Queue --> SP
+    Queue --> RG
+    Queue --> PG
+    Queue --> VG
+    Queue --> CP
+
+    %% Module Dependencies
+    AP --> Replicate
+    AP --> S3
+    SP --> LLM
+    SP --> S3
+    RG --> Replicate
+    RG --> S3
+    RG --> Redis
+    PG --> LLM
+    PG --> S3
+    VG --> Replicate
+    VG --> S3
+    CP --> S3
+
+    %% Storage Connections
+    AP --> S3Storage
+    RG --> S3Storage
+    VG --> S3Storage
+    CP --> S3Storage
+    RG --> Redis
+    Queue --> Redis
+
+    %% Progress Updates
+    AP -.Progress.-> WS
+    SP -.Progress.-> WS
+    RG -.Progress.-> WS
+    PG -.Progress.-> WS
+    VG -.Progress.-> WS
+    CP -.Progress.-> WS
+
+    %% Data Flow
+    AP -->|Audio Analysis<br/>Lyrics + Beats + Tempo<br/>+ Features + Boundaries| SP
+    SP -->|Video Plan<br/>+ Clip Scripts<br/>+ Style + Transitions| RG
+    SP -->|Video Plan<br/>+ Clip Scripts<br/>+ Style + Transitions| PG
+    RG -->|Single Reference Photo<br/>(or null)| PG
+    PG -->|Optimized Prompts<br/>+ Duration| VG
+    VG -->|Video Clips<br/>Sequential| CP
+    CP -->|Final Video<br/>Trim/Loop| S3Storage
+    S3Storage -->|Video URL| Player
+    AP -->|Original Audio<br/>+ Beat Timestamps<br/>+ Boundaries| CP
+    SP -->|Transition Plans| CP
+    
+    %% Fallback Paths (dashed)
+    RG -.Fallback: null.-> PG
+    VG -.Partial Success: 2+ clips.-> CP
+    WS -.Fallback: Polling.-> API
+
+    style UI fill:#e1f5ff
+    style API fill:#fff4e1
+    style AP fill:#e8f5e9
+    style SP fill:#e8f5e9
+    style RG fill:#e8f5e9
+    style PG fill:#e8f5e9
+    style VG fill:#e8f5e9
+    style CP fill:#e8f5e9
+    style Replicate fill:#fce4ec
+    style S3 fill:#fce4ec
+    style Redis fill:#f3e5f5
+    style S3Storage fill:#f3e5f5
+
