@@ -35,12 +35,19 @@ class Settings(BaseSettings):
     
     # JWT configuration
     jwt_secret_key: str
+    supabase_jwt_secret: str  # Supabase JWT secret for token validation
+    
+    # Frontend configuration
+    frontend_url: str  # Frontend domain for CORS
     
     # Environment
     environment: Literal["development", "staging", "production"] = "development"
     
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    
+    # Rate limiting
+    rate_limit_fail_closed: bool = False  # Default: fail-open for MVP
     
     @field_validator("supabase_url")
     @classmethod
@@ -116,6 +123,26 @@ class Settings(BaseSettings):
             raise ConfigError("JWT_SECRET_KEY is required")
         if len(v) < 32:
             raise ConfigError("JWT_SECRET_KEY must be at least 32 characters")
+        return v
+    
+    @field_validator("supabase_jwt_secret")
+    @classmethod
+    def validate_supabase_jwt_secret(cls, v: str) -> str:
+        """Validate Supabase JWT secret format."""
+        if not v:
+            raise ConfigError("SUPABASE_JWT_SECRET is required")
+        if len(v) < 32:
+            raise ConfigError("SUPABASE_JWT_SECRET must be at least 32 characters")
+        return v
+    
+    @field_validator("frontend_url")
+    @classmethod
+    def validate_frontend_url(cls, v: str) -> str:
+        """Validate frontend URL format."""
+        if not v:
+            raise ConfigError("FRONTEND_URL is required")
+        if not v.startswith(("http://", "https://")):
+            raise ConfigError("FRONTEND_URL must be a valid HTTP/HTTPS URL")
         return v
 
 

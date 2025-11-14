@@ -6,7 +6,7 @@ Redis connection and caching utilities.
 
 import json
 from typing import Optional, Any
-import redis.asyncio as redis
+import redis.asyncio as aioredis
 from shared.config import settings
 from shared.errors import RetryableError, ConfigError
 
@@ -17,7 +17,7 @@ class RedisClient:
     def __init__(self):
         """Initialize Redis client."""
         try:
-            self.client: redis.Redis = redis.from_url(
+            self.client: aioredis.Redis = aioredis.from_url(
                 settings.redis_url,
                 encoding="utf-8",
                 decode_responses=False  # We'll handle encoding ourselves

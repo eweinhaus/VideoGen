@@ -139,7 +139,7 @@ class CostTracker:
         self,
         job_id: UUID,
         new_cost: Decimal,
-        limit: Decimal = Decimal("20.00")
+        limit: Decimal = Decimal("2000.00")
     ) -> bool:
         """
         Check if adding new_cost would exceed budget limit.
@@ -147,7 +147,7 @@ class CostTracker:
         Args:
             job_id: Job ID
             new_cost: Cost to add
-            limit: Budget limit (default: $20.00)
+            limit: Budget limit (default: $2000.00)
             
         Returns:
             True if within budget, False if would exceed
@@ -171,14 +171,14 @@ class CostTracker:
     async def enforce_budget_limit(
         self,
         job_id: UUID,
-        limit: Decimal = Decimal("20.00")
+        limit: Decimal = Decimal("2000.00")
     ) -> None:
         """
         Enforce budget limit, raising BudgetExceededError if exceeded.
         
         Args:
             job_id: Job ID
-            limit: Budget limit (default: $20.00)
+            limit: Budget limit (default: $2000.00)
             
         Raises:
             BudgetExceededError: If budget limit is exceeded

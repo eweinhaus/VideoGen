@@ -22,3 +22,4 @@ Generate video clips in **parallel** (5 concurrent) using text-to-video models w
 - Steps: 20-30
 - Timeout: 120s per clip
 
+

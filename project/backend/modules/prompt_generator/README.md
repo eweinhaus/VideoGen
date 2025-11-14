@@ -18,3 +18,4 @@ Optimize video generation prompts by combining clip scripts with style informati
 cinematic lighting, highly detailed, professional cinematography, 4K
 ```
 
+

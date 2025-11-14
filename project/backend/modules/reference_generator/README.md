@@ -18,3 +18,4 @@ Generate reference images for all scenes and characters using SDXL to establish 
 - Text-only mode → Video prompts include style keywords but no visual reference
 - Retry: 3 attempts with exponential backoff (2s, 4s, 8s) before fallback
 
+

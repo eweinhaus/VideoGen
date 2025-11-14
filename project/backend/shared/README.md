@@ -219,15 +219,15 @@ total = await cost_tracker.get_total_cost(job_id)
 # Check budget before expensive operation
 can_proceed = await cost_tracker.check_budget(
     job_id=job_id,
-    new_cost=Decimal("0.10"),
-    limit=Decimal("20.00")
+    new_cost=Decimal("10.00"),
+    limit=Decimal("2000.00")
 )
 
 if not can_proceed:
     raise BudgetExceededError("Would exceed budget")
 
 # Enforce budget limit (raises BudgetExceededError if exceeded)
-await cost_tracker.enforce_budget_limit(job_id, limit=Decimal("20.00"))
+await cost_tracker.enforce_budget_limit(job_id, limit=Decimal("2000.00"))
 ```
 
 ### Logging
