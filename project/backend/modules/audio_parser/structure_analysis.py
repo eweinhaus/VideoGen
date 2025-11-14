@@ -92,10 +92,38 @@ def analyze_structure(
         # Convert similarity to distance (1 - similarity)
         distance_matrix = 1 - similarity_matrix
         
+        # Validate distance matrix before clustering
+        n_frames = distance_matrix.shape[0]
+        logger.info(f"Distance matrix shape: {distance_matrix.shape}, frames: {n_frames}")
+        
+        # Check for invalid values
+        if np.any(np.isnan(distance_matrix)) or np.any(np.isinf(distance_matrix)):
+            logger.error(
+                f"Distance matrix contains NaN or Inf values. "
+                f"NaN count: {np.sum(np.isnan(distance_matrix))}, "
+                f"Inf count: {np.sum(np.isinf(distance_matrix))}"
+            )
+            raise ValueError("Invalid values in distance matrix")
+        
+        # Check matrix symmetry (required for precomputed metric)
+        if not np.allclose(distance_matrix, distance_matrix.T, rtol=1e-5):
+            logger.warning("Distance matrix is not symmetric, forcing symmetry")
+            distance_matrix = (distance_matrix + distance_matrix.T) / 2
+        
         # Use agglomerative clustering on distance matrix
         # Determine number of clusters based on duration (rough estimate)
         # Aim for 3-8 segments for typical songs
         n_segments = max(3, min(8, int(duration / 30)))  # ~30s per segment
+        
+        # Validate we have enough frames for clustering
+        if n_frames < n_segments:
+            logger.warning(
+                f"Insufficient frames for clustering: {n_frames} frames < {n_segments} clusters. "
+                f"Reducing clusters to {n_frames} or using fallback."
+            )
+            n_segments = max(2, n_frames - 1)  # Need at least 2 samples per cluster
+        
+        logger.info(f"Attempting clustering with {n_segments} clusters on {n_frames} frames")
         
         try:
             clustering = AgglomerativeClustering(
@@ -104,9 +132,34 @@ def analyze_structure(
                 linkage='average'
             )
             labels = clustering.fit_predict(distance_matrix)
-        except Exception as e:
-            logger.warning(f"Agglomerative clustering failed: {str(e)}, using simple segmentation")
+            logger.info(f"Clustering successful: {len(np.unique(labels))} unique segments detected")
+        except ValueError as e:
+            error_msg = str(e)
+            logger.error(
+                f"Agglomerative clustering failed (ValueError): {error_msg}. "
+                f"Diagnostics: n_frames={n_frames}, n_segments={n_segments}, "
+                f"matrix_shape={distance_matrix.shape}, "
+                f"matrix_min={np.min(distance_matrix):.4f}, "
+                f"matrix_max={np.max(distance_matrix):.4f}, "
+                f"matrix_mean={np.mean(distance_matrix):.4f}. "
+                f"Falling back to uniform segmentation."
+            )
             # Fallback: simple segmentation
+            use_fallback = True
+        except Exception as e:
+            error_type = type(e).__name__
+            logger.error(
+                f"Agglomerative clustering failed ({error_type}): {str(e)}. "
+                f"Diagnostics: n_frames={n_frames}, n_segments={n_segments}, "
+                f"matrix_shape={distance_matrix.shape}, duration={duration:.2f}s. "
+                f"Falling back to uniform segmentation."
+            )
+            # Fallback: simple segmentation
+            use_fallback = True
+        else:
+            use_fallback = False
+        
+        if use_fallback:
             # If audio is empty or too short, return single segment
             if len(y) == 0 or duration <= 0:
                 logger.warning("Empty audio detected, returning single-segment fallback")
@@ -185,7 +238,15 @@ def analyze_structure(
                     energy="medium"
                 )]
             
-            logger.info(f"Structure analysis complete: {len(song_structure)} segments (fallback)")
+            logger.warning(
+                f"⚠️ STRUCTURE ANALYSIS FALLBACK ACTIVATED ⚠️ "
+                f"Clustering failed - using uniform segmentation instead. "
+                f"Generated {len(song_structure)} evenly-divided segments: "
+                f"{[f'{s.start:.1f}-{s.end:.1f}s' for s in song_structure]}. "
+                f"Check error logs above for clustering failure details. "
+                f"This usually indicates: (1) Audio too short, (2) Insufficient chroma features, "
+                f"or (3) Matrix computation issues."
+            )
             return song_structure
         
         # Convert frame labels to time segments
@@ -250,11 +311,36 @@ def analyze_structure(
                 energy=energy_level
             ))
         
-        logger.info(f"Structure analysis complete: {len(song_structure)} segments")
+        logger.info(
+            f"Structure analysis complete: {len(song_structure)} segments detected via clustering. "
+            f"Segments: {[f'{s.type}({s.start:.1f}-{s.end:.1f}s, {s.energy})' for s in song_structure]}"
+        )
         return song_structure
         
+    except ValueError as e:
+        # This is a clustering validation error - log detailed diagnostics
+        logger.error(
+            f"Structure analysis failed due to clustering validation error: {str(e)}. "
+            f"Audio diagnostics: duration={duration:.2f}s, samples={len(y)}, "
+            f"sample_rate={sr}Hz. This usually means: "
+            f"(1) Audio too short for clustering, (2) Invalid chroma features, "
+            f"or (3) Matrix computation issues."
+        )
+        # Fallback: single segment covering entire duration
+        logger.warning("Using fallback single-segment structure")
+        return [SongStructure(
+            type="verse",
+            start=0.0,
+            end=duration,
+            energy="medium"
+        )]
     except Exception as e:
-        logger.error(f"Structure analysis failed: {str(e)}")
+        error_type = type(e).__name__
+        logger.error(
+            f"Structure analysis failed ({error_type}): {str(e)}. "
+            f"Audio diagnostics: duration={duration:.2f}s, samples={len(y)}, "
+            f"sample_rate={sr}Hz"
+        )
         # Fallback: single segment covering entire duration
         logger.warning("Using fallback single-segment structure")
         return [SongStructure(

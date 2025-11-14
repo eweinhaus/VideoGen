@@ -139,7 +139,8 @@ export function useSSE(
       try {
         const data = JSON.parse(e.data)
         handlers.onCompleted?.(data)
-        close()
+        // Don't close immediately - wait a bit to ensure all events are received
+        setTimeout(() => close(), 2000)
       } catch (err) {
         console.error("Failed to parse completed event:", err)
       }
@@ -155,18 +156,28 @@ export function useSSE(
       }
     })
 
+    eventSource.addEventListener("audio_parser_results", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onAudioParserResults?.(data)
+      } catch (err) {
+        console.error("Failed to parse audio_parser_results event:", err)
+      }
+    })
+
     eventSourceRef.current = eventSource
   }, [jobId, handlers, close])
 
   useEffect(() => {
-    if (jobId) {
+    if (jobId && !eventSourceRef.current) {
       connect()
     }
 
     return () => {
       close()
     }
-  }, [jobId, connect, close])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]) // Only depend on jobId, connect/close are stable callbacks
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0

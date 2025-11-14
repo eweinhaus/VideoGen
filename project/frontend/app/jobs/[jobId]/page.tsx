@@ -79,6 +79,8 @@ export default function JobProgressPage() {
 
   const isCompleted = job.status === "completed" && job.videoUrl
   const isFailed = job.status === "failed"
+  const isQueued = job.status === "queued"
+  const isProcessing = job.status === "processing"
 
   return (
     <div className="container mx-auto max-w-4xl px-4 py-8">
@@ -97,6 +99,26 @@ export default function JobProgressPage() {
             <CardDescription>Job ID: {jobId}</CardDescription>
           </CardHeader>
           <CardContent>
+            {isQueued && (
+              <Alert className="mb-4">
+                <AlertDescription>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                    <span>Job is queued and waiting to be processed...</span>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            )}
+            {isProcessing && job.progress === 0 && (
+              <Alert className="mb-4">
+                <AlertDescription>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-yellow-500 animate-pulse" />
+                    <span>Job is starting... Processing will begin shortly.</span>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            )}
             {isCompleted && job.videoUrl ? (
               <div className="space-y-6">
                 <Alert>
