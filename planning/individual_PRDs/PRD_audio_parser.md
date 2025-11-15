@@ -3,8 +3,8 @@
 **Version:** 2.0 | **Date:** November 15, 2025 | **Updated:** Split into 3 focused PRDs  
 **Priority:** CRITICAL - Foundation for all downstream creative decisions  
 **Budget:** 
-- **Production/Final Submission:** $200 per video, $2000 per job hard limit
-- **Development/Testing:** ~$2-5 per video (using cheaper models), $50 per job hard limit
+- **Production/Final Submission:** $200 per minute of video (e.g., 1 min = $200, 2 min = $400), $2000 per job hard limit (allows up to 10 minutes)
+- **Development/Testing:** ~$2-5 per video (using cheaper models, ~$1.50/minute with $2 minimum), $50 per job hard limit
 
 ---
 

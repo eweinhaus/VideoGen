@@ -76,7 +76,7 @@ Frontend → API Gateway (FastAPI)
 3. Prompt length: 50-500 characters
 4. Rate limit check: ≤5 jobs/hour for user
 5. Pre-flight cost check (mode-dependent):
-   - **Production mode:** Target ~$200 per job, hard limit $2000 per job
+   - **Production mode:** Target $200 per minute of video, hard limit $2000 per job (allows up to 10 minutes)
    - **Development mode:** Target ~$2-5 per job, hard limit $50 per job
    - For very long videos (>10 minutes), consider warning or rejection
 
@@ -84,7 +84,7 @@ Frontend → API Gateway (FastAPI)
 1. Extract audio duration using `mutagen` library (quick metadata read, no full decode)
    - Example: `from mutagen import File; f = File(audio_file); duration = f.info.length`
 2. Cost estimate (mode-dependent):
-   - **Production:** ~$200 per job (hard limit $2000)
+   - **Production:** $200 per minute of video (hard limit $2000, allows up to 10 minutes)
    - **Development:** ~$2-5 per job (hard limit $50)
    - Optional: Warn or reject if duration > 10 minutes
 3. Validate rate limit (see Rate Limiting section)
@@ -597,15 +597,15 @@ data: {"error": "Budget limit exceeded", "code": "BUDGET_EXCEEDED", "retryable":
 
 **Mode Configuration**:
 - **Production Mode:** `ENVIRONMENT=production` (or `ENVIRONMENT=staging`)
-  - Target cost: ~$200 per job (regardless of video length)
-  - Hard limit: $2000 per job (safety cap)
+  - Target cost: $200 per minute of video (e.g., 1 min = $200, 2 min = $400)
+  - Hard limit: $2000 per job (safety cap, allows up to 10 minutes)
 - **Development Mode:** `ENVIRONMENT=development`
-  - Target cost: ~$2-5 per job (using cheaper models)
+  - Target cost: ~$2-5 per job (using cheaper models, ~$1.50/minute with $2 minimum)
   - Hard limit: $50 per job (safety cap)
 
 **Pre-Flight Check**:
 - Check `ENVIRONMENT` variable to determine mode
-- Production: Target ~$200, hard limit $2000
+- Production: Target $200/minute, hard limit $2000 (10 minutes max)
 - Development: Target ~$2-5, hard limit $50
 - Optional: Warn or reject if duration > 10 minutes (very long songs)
 
@@ -622,8 +622,9 @@ data: {"error": "Budget limit exceeded", "code": "BUDGET_EXCEEDED", "retryable":
   ```
 
 **Budget Enforcement**:
-- Enforce before Video Generator (most expensive)
-- Enforce before Reference Generator
+- Enforce before Video Generator (most expensive, ~50% of budget)
+- Enforce before Reference Generator (~5% of budget)
+- Estimates are duration-based: `get_cost_estimate(duration_minutes, environment)`
 - Abort immediately if exceeded (mode-dependent):
   - Production: `cost_tracker.enforce_budget_limit(job_id, limit=2000.00)`
   - Development: `cost_tracker.enforce_budget_limit(job_id, limit=50.00)`

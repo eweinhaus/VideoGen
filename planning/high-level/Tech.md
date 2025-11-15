@@ -424,19 +424,29 @@ useEffect(() => {
 **Budget Guard**: 
 - Pre-flight cost estimate before job starts (based on audio duration)
 - Real-time cost tracking per API call
-- Abort immediately if total cost >$20/job mid-execution
+- Production: Abort if total cost exceeds $2000/job (hard limit, allows up to 10 minutes at $200/minute)
+- Development: Abort if total cost exceeds $50/job (hard limit)
 - Mark job as failed with BUDGET_EXCEEDED error code
 
 ---
 
 ## Cost Tracking
 
-**Implementation**: Track per-API-call, aggregate per stage/job, enforce $20 budget limit
+**Implementation**: Track per-API-call, aggregate per stage/job, enforce environment-specific budget limits
 
-**Estimated Costs**:
-- Audio: $0.02 (Whisper) | Scene: $0.05 (GPT-4o) | Reference: $0.02-0.04 (SDXL, 2-4 images)
-- Video: $0.60 (6 clips × $0.10) | Composer: $0
-- **Total**: ~$0.69-$0.71 per 3-min video = $0.23-$0.24/min ✅
+**Production Mode**:
+- Target: $200 per minute of video (e.g., 1 min = $200, 3 min = $600)
+- Hard limit: $2000 per job (safety cap, allows up to 10 minutes)
+- Cost estimates are duration-based using `get_cost_estimate(duration_minutes, "production")`
+
+**Development Mode**:
+- Target: ~$2-5 per job (using cheaper models, ~$1.50/minute with $2 minimum)
+- Hard limit: $50 per job (safety cap)
+
+**Estimated Costs** (Production, per 3-minute video):
+- Audio: $0.018 (Whisper, $0.006/min) | Scene: $0.05 (GPT-4o) | Reference: $0.02-0.04 (SDXL, 2-4 images)
+- Video: ~$300 (most expensive, ~50% of budget) | Composer: $0
+- **Total**: Target ~$600 for 3-minute video = $200/minute ✅
 
 ---
 

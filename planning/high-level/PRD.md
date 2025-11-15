@@ -10,8 +10,8 @@ An AI-powered pipeline that generates professional, beat-synchronized music vide
 
 **Timeline:** 72 hours (3 days)  
 **Budget:** 
-- **Production/Final Submission:** $200 per video, $2000 per job hard limit
-- **Development/Testing:** ~$2-5 per video (using cheaper models), $50 per job hard limit
+- **Production/Final Submission:** $200 per minute of video (e.g., 1 min = $200, 2 min = $400), $2000 per job hard limit (allows up to 10 minutes)
+- **Development/Testing:** ~$2-5 per video (using cheaper models, ~$1.50/minute with $2 minimum), $50 per job hard limit
 **Quality:** 1080p, 30 FPS, beat-aligned transitions, minimum 3 clips  
 **Differentiator:** Integration of music video director knowledge for creative decisions
 
@@ -41,8 +41,8 @@ Final Video                        [4] Scene Planner → [5] Reference Generator
 
 **Average Generation Time:** 5-10 minutes for 3-minute song  
 **Cost per Video:** 
-- **Production:** ~$200 per job (regardless of video length)
-- **Development:** ~$2-5 per job (using cheaper models for testing)
+- **Production:** $200 per minute of video (e.g., 1 min = $200, 3 min = $600)
+- **Development:** ~$2-5 per job (using cheaper models for testing, ~$1.50/minute with $2 minimum)
 
 ---
 
@@ -643,7 +643,7 @@ User Input
 ✅ Progress updates <1s latency  
 
 ### Cost
-✅ Production: ~$200 per job (regardless of video length)  
+✅ Production: $200 per minute of video (e.g., 1 min = $200, 3 min = $600)  
 ✅ Development: ~$2-5 per job (using cheaper models)  
 ✅ Hard limits: $2000/job (production), $50/job (development)  
 
