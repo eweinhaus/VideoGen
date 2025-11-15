@@ -1,0 +1,66 @@
+name: Sync Fork from Upstream
+
+on:
+  # Run on schedule (every hour)
+  schedule:
+    - cron: '0 * * * *'  # Every hour
+  # Run on manual trigger
+  workflow_dispatch:
+  # Run when upstream repo is updated (via webhook or manual trigger)
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repo (mlx93/video-gen-mlx)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/eweinhaus/VideoGen.git || true
+          git remote set-url upstream https://github.com/eweinhaus/VideoGen.git
+
+      - name: Fetch upstream changes
+        run: git fetch upstream
+
+      - name: Check if sync is needed
+        id: check
+        run: |
+          UPSTREAM_COMMIT=$(git rev-parse upstream/main)
+          CURRENT_COMMIT=$(git rev-parse origin/main)
+          if [ "$UPSTREAM_COMMIT" != "$CURRENT_COMMIT" ]; then
+            echo "needs_sync=true" >> $GITHUB_OUTPUT
+            echo "Upstream is ahead. Syncing..."
+          else
+            echo "needs_sync=false" >> $GITHUB_OUTPUT
+            echo "Already in sync."
+          fi
+
+      - name: Sync from upstream
+        if: steps.check.outputs.needs_sync == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge upstream/main --no-edit --allow-unrelated-histories || true
+          # If merge fails due to conflicts, use theirs strategy
+          if [ $? -ne 0 ]; then
+            git merge --abort 2>/dev/null || true
+            git merge upstream/main --no-edit --allow-unrelated-histories -X theirs
+          fi
+          git push origin main
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.check.outputs.needs_sync }}" == "true" ]; then
+            echo "✅ Successfully synced from upstream"
+          else
+            echo "ℹ️ Already in sync with upstream"
+          fi
+
