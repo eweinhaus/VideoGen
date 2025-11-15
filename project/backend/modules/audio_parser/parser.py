@@ -45,8 +45,13 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
             fallbacks_used.append("beat_detection")
         logger.info(f"Beat detection: BPM={bpm:.1f}, beats={len(beat_timestamps)}, confidence={beat_confidence:.2f}")
         
-        # 2. Structure Analysis
-        structure_result = analyze_structure(audio, sr, beat_timestamps, duration)
+        # 2. Clip Boundaries (generate first - these will be used for structure)
+        clip_boundaries = generate_boundaries(beat_timestamps, bpm, duration)
+        logger.info(f"Clip boundaries: {len(clip_boundaries)} clips")
+        
+        # 3. Structure Analysis (uses clip boundaries as base, then classifies each segment)
+        from modules.audio_parser.structure_analysis import analyze_structure_from_clips
+        structure_result = analyze_structure_from_clips(audio, sr, clip_boundaries, duration)
         if isinstance(structure_result, tuple):
             song_structure, structure_fallback = structure_result
         else:
@@ -56,17 +61,13 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
         
         if structure_fallback:
             fallbacks_used.append("structure_analysis")
-        logger.info(f"Structure analysis: {len(song_structure)} segments")
+        logger.info(f"Structure analysis: {len(song_structure)} segments (aligned with {len(clip_boundaries)} clips)")
         
-        # 3. Mood Classification (uses BPM, structure energy, spectral features)
+        # 4. Mood Classification (uses BPM, structure energy, spectral features)
         mood = classify_mood(audio, sr, bpm, song_structure)
         if mood.confidence < 0.3:
             fallbacks_used.append("mood_classification")
         logger.info(f"Mood classification: {mood.primary}, confidence={mood.confidence:.2f}")
-        
-        # 4. Clip Boundaries (uses beat timestamps, duration)
-        clip_boundaries = generate_boundaries(beat_timestamps, bpm, duration)
-        logger.info(f"Clip boundaries: {len(clip_boundaries)} clips")
         
         # 5. Lyrics Extraction (independent, can run in parallel but sequential for simplicity)
         lyrics = await extract_lyrics(audio_bytes, job_id, duration)

@@ -137,8 +137,13 @@ async def worker_loop():
     while True:
         try:
             # Pop job from queue (blocking with timeout)
-            logger.debug(f"Waiting for job from queue: {queue_key}")
-            job_json = await redis_client.client.brpop(queue_key, timeout=5)
+            logger.info(f"Waiting for job from queue: {queue_key} (timeout=5s)")
+            try:
+                job_json = await redis_client.client.brpop(queue_key, timeout=5)
+            except Exception as e:
+                logger.error(f"Error during brpop: {e}", exc_info=e)
+                await asyncio.sleep(5)
+                continue
             
             if job_json:
                 logger.info(f"Job popped from queue: {queue_key}")
