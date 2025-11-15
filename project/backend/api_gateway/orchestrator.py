@@ -15,7 +15,9 @@ from shared.config import settings
 from shared.errors import (
     PipelineError,
     BudgetExceededError,
-    RetryableError
+    RetryableError,
+    ValidationError,
+    GenerationError
 )
 from shared.logging import get_logger
 from api_gateway.services.event_publisher import publish_event
@@ -165,102 +167,257 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         user_prompt: User's creative prompt
     """
     try:
-        # Update job status to processing
-        await db_client.table("jobs").update({
-            "status": "processing",
-            "updated_at": "now()"
-        }).eq("id", job_id).execute()
-        
         # Stage 1: Audio Parser (10% progress)
+        # Publish stage update FIRST before status change to avoid flickering
         await publish_event(job_id, "stage_update", {
             "stage": "audio_parser",
             "status": "started"
         })
         
+        # Update job status to processing
+        await db_client.table("jobs").update({
+            "status": "processing",
+            "current_stage": "audio_parser",
+            "updated_at": "now()"
+        }).eq("id", job_id).execute()
+        
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
         
-        try:
-            from modules.audio_parser.main import process_audio_analysis
-            
-            # Convert job_id from str to UUID (audio parser expects UUID)
-            job_uuid = UUID(job_id)
-            audio_data = await process_audio_analysis(job_uuid, audio_url)
-            
-            # Store in database (jobs.audio_data JSONB column)
-            # Use model_dump(mode='json') to serialize UUIDs to strings for JSON compatibility
-            # Also ensure all UUIDs are converted to strings
-            audio_data_dict = audio_data.model_dump(mode='json')
-            # Double-check: convert job_id UUID to string if not already
-            if isinstance(audio_data_dict.get('job_id'), UUID):
-                audio_data_dict['job_id'] = str(audio_data_dict['job_id'])
-            
-            await db_client.table("jobs").update({
-                "audio_data": audio_data_dict,
-                "updated_at": "now()"
-            }).eq("id", job_id).execute()
-            
-            await update_progress(job_id, 10, "audio_parser")
-            await publish_event(job_id, "stage_update", {
-                "stage": "audio_parser",
-                "status": "completed"
-            })
-            
-            # Send audio parser results to frontend (ALWAYS send, even if pipeline fails later)
-            # This ensures frontend gets the data even if budget check fails
-            try:
-                logger.info(f"Publishing audio_parser_results event for job {job_id}", extra={"job_id": job_id})
-                await publish_event(job_id, "audio_parser_results", {
-                    "bpm": audio_data.bpm,
-                    "duration": audio_data.duration,
-                    "beat_timestamps": audio_data.beat_timestamps,
-                    "beat_count": len(audio_data.beat_timestamps),
-                    "song_structure": [
-                        {
-                            "type": seg.type.value if hasattr(seg.type, 'value') else str(seg.type),
-                            "start": seg.start,
-                            "end": seg.end,
-                            "energy": seg.energy.value if hasattr(seg.energy, 'value') else str(seg.energy)
-                        }
-                        for seg in audio_data.song_structure
-                    ],
-                    "mood": {
-                        "primary": audio_data.mood.primary,
-                        "secondary": audio_data.mood.secondary,
-                        "energy_level": audio_data.mood.energy_level.value if hasattr(audio_data.mood.energy_level, 'value') else str(audio_data.mood.energy_level),
-                        "confidence": audio_data.mood.confidence
-                    },
-                    "lyrics_count": len(audio_data.lyrics),
-                    "clip_boundaries_count": len(audio_data.clip_boundaries),
-                    "metadata": audio_data.metadata
-                })
-                logger.info(f"✅ Successfully published audio_parser_results event for job {job_id}", extra={"job_id": job_id})
-            except Exception as event_error:
-                # Don't fail the pipeline if event publishing fails
-                logger.error(f"Failed to publish audio_parser_results event: {str(event_error)}", exc_info=event_error, extra={"job_id": job_id})
-        except Exception as e:
-            await handle_pipeline_error(job_id, e)
-            raise
+        # Import and call Audio Parser
+        # Note: Modules will be implemented later, so we'll use stubs for now
+        await publish_event(job_id, "message", {
+            "text": "Starting audio analysis...",
+            "stage": "audio_parser"
+        })
+        # Set initial progress after stage is established
+        await update_progress(job_id, 1, "audio_parser")
         
-        # Stage 2: Scene Planner (20% progress) - DISABLED FOR NOW
+        try:
+            from modules.audio_parser.process import process as parse_audio
+            await publish_event(job_id, "message", {
+                "text": "Analyzing audio structure and beats...",
+                "stage": "audio_parser"
+            })
+            await update_progress(job_id, 5, "audio_parser")
+            audio_data = await parse_audio(job_id, audio_url)
+        except ImportError:
+            # Module not implemented yet - use stub
+            logger.warning("Audio Parser module not found, using stub", extra={"job_id": job_id})
+            await publish_event(job_id, "message", {
+                "text": "Extracting audio features...",
+                "stage": "audio_parser"
+            })
+            await update_progress(job_id, 5, "audio_parser")
+            
+            # Simulate processing time with progress updates
+            import asyncio
+            await asyncio.sleep(0.5)  # Simulate processing
+            await update_progress(job_id, 6, "audio_parser")
+            await publish_event(job_id, "message", {
+                "text": "Detecting beats and structure...",
+                "stage": "audio_parser"
+            })
+            await asyncio.sleep(0.5)
+            await update_progress(job_id, 8, "audio_parser")
+            
+            # Create stub audio_data
+            from shared.models.audio import AudioAnalysis, SongStructure, Mood, ClipBoundary
+            # Get audio duration from file (stub: assume 120 seconds)
+            duration = 120.0  # TODO: Get actual duration from audio file
+            beat_timestamps = [float(i * 0.5) for i in range(int(duration * 2))]  # Stub beats every 0.5s
+            
+            # Generate clip boundaries: 4-8 second clips, minimum 3 clips
+            # Align to beats, create boundaries every ~6 seconds
+            clip_boundaries = []
+            clip_duration = 6.0  # Target 6 seconds per clip
+            current_start = 0.0
+            clip_index = 0
+            
+            while current_start < duration:
+                clip_end = min(current_start + clip_duration, duration)
+                clip_boundaries.append(ClipBoundary(
+                    start=current_start,
+                    end=clip_end,
+                    duration=clip_end - current_start
+                ))
+                current_start = clip_end
+                clip_index += 1
+                # Ensure minimum 3 clips
+                if clip_index >= 3 and current_start >= duration:
+                    break
+            
+            # If we don't have enough clips, adjust
+            if len(clip_boundaries) < 3:
+                # Redistribute evenly
+                clip_boundaries = []
+                clips_needed = 3
+                clip_duration = duration / clips_needed
+                for i in range(clips_needed):
+                    start = i * clip_duration
+                    end = (i + 1) * clip_duration if i < clips_needed - 1 else duration
+                    clip_boundaries.append(ClipBoundary(
+                        start=start,
+                        end=end,
+                        duration=end - start
+                    ))
+            
+            audio_data = AudioAnalysis(
+                job_id=job_id,
+                bpm=120.0,
+                duration=duration,
+                beat_timestamps=beat_timestamps,
+                song_structure=[
+                    SongStructure(type="intro", start=0.0, end=10.0, energy="low"),
+                    SongStructure(type="verse", start=10.0, end=30.0, energy="medium"),
+                    SongStructure(type="chorus", start=30.0, end=50.0, energy="high"),
+                    SongStructure(type="verse", start=50.0, end=70.0, energy="medium"),
+                    SongStructure(type="chorus", start=70.0, end=90.0, energy="high"),
+                    SongStructure(type="outro", start=90.0, end=duration, energy="low"),
+                ],
+                mood=Mood(
+                    primary="energetic",
+                    energy_level="high",
+                    confidence=0.8
+                ),
+                lyrics=[],
+                clip_boundaries=clip_boundaries
+            )
+        
+        await update_progress(job_id, 10, "audio_parser")  # Audio parser is 10% of total job
+        await publish_event(job_id, "message", {
+            "text": "Audio analysis complete!",
+            "stage": "audio_parser"
+        })
+        await publish_event(job_id, "stage_update", {
+            "stage": "audio_parser",
+            "status": "completed",
+            "duration": audio_data.duration if hasattr(audio_data, 'duration') else (audio_data.beat_timestamps[-1] if audio_data.beat_timestamps else 0)
+        })
+        
+        # Log audio parser results
+        logger.info(
+            "Audio parser results",
+            extra={
+                "job_id": job_id,
+                "bpm": audio_data.bpm,
+                "duration": audio_data.duration,
+                "beat_count": len(audio_data.beat_timestamps),
+                "structure_segments": len(audio_data.song_structure),
+                "mood": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
+                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None
+            }
+        )
+        
+        # Publish audio parser results for frontend display
+        await publish_event(job_id, "audio_parser_results", {
+            "bpm": audio_data.bpm,
+            "duration": audio_data.duration,
+            "beat_timestamps": audio_data.beat_timestamps[:20],  # First 20 beats
+            "beat_count": len(audio_data.beat_timestamps),
+            "song_structure": [
+                {
+                    "type": seg.type,
+                    "start": seg.start,
+                    "end": seg.end,
+                    "energy": seg.energy
+                }
+                for seg in audio_data.song_structure
+            ],
+            "mood": {
+                "primary": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
+                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None,
+                "confidence": audio_data.mood.confidence if hasattr(audio_data.mood, 'confidence') else None
+            },
+            "lyrics_count": len(audio_data.lyrics),
+            "clip_boundaries_count": len(audio_data.clip_boundaries)
+        })
+        
+        # Stage 2: Scene Planner (20% progress)
         await publish_event(job_id, "stage_update", {
             "stage": "scene_planner",
             "status": "started"
         })
+        await publish_event(job_id, "message", {
+            "text": "Starting scene planning...",
+            "stage": "scene_planner"
+        })
+        await update_progress(job_id, 12, "scene_planner")
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
         
         try:
-            from modules.scene_planner.process import process as plan_scene
-            plan = await plan_scene(job_id, user_prompt, audio_data)
+            from modules.scene_planner.main import process_scene_planning
+            await publish_event(job_id, "message", {
+                "text": "Generating video plan with director knowledge...",
+                "stage": "scene_planner"
+            })
+            await update_progress(job_id, 15, "scene_planner")
+            
+            # Convert job_id to UUID with error handling
+            try:
+                job_uuid = UUID(job_id) if isinstance(job_id, str) else job_id
+            except (ValueError, TypeError) as e:
+                logger.error(f"Invalid job_id format: {job_id}", exc_info=e, extra={"job_id": job_id})
+                raise ValidationError(f"Invalid job_id format: {job_id}", job_id=job_id) from e
+            
+            plan = await process_scene_planning(
+                job_id=job_uuid,
+                user_prompt=user_prompt,
+                audio_data=audio_data
+            )
+            await publish_event(job_id, "message", {
+                "text": "Scene planning complete!",
+                "stage": "scene_planner"
+            })
+        except (ValidationError, GenerationError) as e:
+            # Scene Planner validation or generation error
+            logger.error("Scene Planner failed", exc_info=e, extra={"job_id": job_id})
+            await handle_pipeline_error(job_id, e)
+            raise
         except ImportError:
             logger.warning("Scene Planner module not found, using stub", extra={"job_id": job_id})
+            await publish_event(job_id, "message", {
+                "text": "Scene Planner module not found, using stub data...",
+                "stage": "scene_planner"
+            })
             from shared.models.scene import ScenePlan, Character, Scene, Style, ClipScript, Transition
+            import asyncio
+            await asyncio.sleep(1.0)  # Simulate processing time
+            
+            # Generate clip scripts based on clip boundaries from audio_data
+            clip_scripts = []
+            transitions = []
+            
+            for idx, boundary in enumerate(audio_data.clip_boundaries):
+                clip_scripts.append(ClipScript(
+                    clip_index=idx,
+                    start=boundary.start,
+                    end=boundary.end,
+                    visual_description=f"Scene {idx + 1}: {user_prompt[:50]}...",
+                    motion="tracking shot" if idx % 2 == 0 else "static",
+                    camera_angle="wide" if idx == 0 else "medium",
+                    characters=["char1"],
+                    scenes=["scene1"],
+                    lyrics_context=None,
+                    beat_intensity="high" if audio_data.mood.energy_level == "high" else "medium"
+                ))
+                
+                # Create transitions between clips
+                if idx < len(audio_data.clip_boundaries) - 1:
+                    transitions.append(Transition(
+                        from_clip=idx,
+                        to_clip=idx + 1,
+                        type="cut" if audio_data.mood.energy_level == "high" else "crossfade",
+                        duration=0.5 if audio_data.mood.energy_level != "high" else 0.0,
+                        rationale="Beat-aligned transition"
+                    ))
+            
             plan = ScenePlan(
-                job_id=job_id,
+                job_id=UUID(job_id),
                 video_summary=f"Music video for: {user_prompt[:100]}",
                 characters=[
                     Character(id="char1", description="Main character", role="main character")
@@ -271,27 +428,12 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
                 style=Style(
                     color_palette=["#FF5733", "#33FF57", "#3357FF"],
                     visual_style="realistic",
-                    mood="energetic",
-                    lighting="bright",
+                    mood=audio_data.mood.primary,
+                    lighting="bright" if audio_data.mood.energy_level == "high" else "soft",
                     cinematography="dynamic"
                 ),
-                clip_scripts=[
-                    ClipScript(
-                        clip_index=0,
-                        start=0.0,
-                        end=5.0,
-                        visual_description="Opening scene",
-                        motion="slow pan",
-                        camera_angle="wide",
-                        characters=["char1"],
-                        scenes=["scene1"],
-                        lyrics_context=None,
-                        beat_intensity="medium"
-                    )
-                ],
-                transitions=[
-                    Transition(from_clip=0, to_clip=1, type="cut", duration=0.0, rationale="Natural transition")
-                ]
+                clip_scripts=clip_scripts,
+                transitions=transitions
             )
         
         await update_progress(job_id, 20, "scene_planner")
@@ -300,7 +442,83 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             "status": "completed"
         })
         
-        # Stage 3: Reference Generator (30% progress) - with fallback
+        # Publish scene planner results for frontend display
+        try:
+            logger.info("Publishing scene planner results", extra={"job_id": job_id, "plan_has_clips": len(plan.clip_scripts) if plan else 0})
+            await publish_event(job_id, "scene_planner_results", {
+                "job_id": str(plan.job_id),
+                "video_summary": plan.video_summary,
+                "characters": [
+                    {
+                        "id": char.id,
+                        "description": char.description,
+                        "role": char.role
+                    }
+                    for char in plan.characters
+                ],
+                "scenes": [
+                    {
+                        "id": scene.id,
+                        "description": scene.description,
+                        "time_of_day": scene.time_of_day
+                    }
+                    for scene in plan.scenes
+                ],
+                "style": {
+                    "color_palette": plan.style.color_palette,
+                    "visual_style": plan.style.visual_style,
+                    "mood": plan.style.mood,
+                    "lighting": plan.style.lighting,
+                    "cinematography": plan.style.cinematography
+                },
+                "clip_scripts": [
+                    {
+                        "clip_index": clip.clip_index,
+                        "start": clip.start,
+                        "end": clip.end,
+                        "visual_description": clip.visual_description,
+                        "motion": clip.motion,
+                        "camera_angle": clip.camera_angle,
+                        "characters": clip.characters,
+                        "scenes": clip.scenes,
+                        "lyrics_context": clip.lyrics_context,
+                        "beat_intensity": clip.beat_intensity
+                    }
+                    for clip in plan.clip_scripts
+                ],
+                "transitions": [
+                    {
+                        "from_clip": trans.from_clip,
+                        "to_clip": trans.to_clip,
+                        "type": trans.type,
+                        "duration": trans.duration,
+                        "rationale": trans.rationale
+                    }
+                    for trans in plan.transitions
+                ]
+            })
+            logger.info("Scene planner results published successfully", extra={"job_id": job_id})
+        except Exception as e:
+            logger.error("Failed to publish scene planner results", exc_info=e, extra={"job_id": job_id})
+            # Don't fail the pipeline, but log the error
+        
+        # Keep job in processing status (hold here after Scene Planner)
+        # Don't mark as completed - pipeline will stop gracefully here
+        # Job remains in "processing" status so UI can display results
+        await db_client.table("jobs").update({
+            "current_stage": "scene_planner",
+            "progress": 20,
+            "updated_at": "now()"
+        }).eq("id", job_id).execute()
+        
+        # Invalidate cache
+        cache_key = f"job_status:{job_id}"
+        await redis_client.client.delete(cache_key)
+        
+        logger.info("Scene planner completed, holding pipeline (job remains in processing status)", extra={"job_id": job_id})
+        return  # Stop here gracefully - don't continue to reference generator
+        
+        # Stage 3: Reference Generator (30% progress) - DISABLED FOR NOW
         await publish_event(job_id, "stage_update", {
             "stage": "reference_generator",
             "status": "started"
@@ -311,30 +529,14 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             return
         
         # Check budget before expensive operation (environment-aware)
-        # Reference generation: 2-4 images at ~$0.005 each = $0.01-0.02
-        # Use $0.10 estimate to be safe (10x buffer for retries/failures)
         limit = get_budget_limit(settings.environment)
-        # Environment-aware estimate: lower in development
-        if settings.environment in ["production", "staging"]:
-            ref_gen_estimate = Decimal("0.10")  # $0.10 for production (safe buffer)
-        else:
-            ref_gen_estimate = Decimal("0.10")  # $0.10 for development (still safe, but realistic)
-        
-        # Get current cost to provide better error message
-        current_cost = await cost_tracker.get_total_cost(UUID(job_id))
-        projected_cost = current_cost + ref_gen_estimate
-        
         can_proceed = await cost_tracker.check_budget(
             job_id=UUID(job_id),
-            new_cost=ref_gen_estimate,
+            new_cost=Decimal("50.00"),  # Estimated cost for reference generation
             limit=limit
         )
         if not can_proceed:
-            raise BudgetExceededError(
-                f"Would exceed budget limit before reference generation: "
-                f"current cost=${current_cost:.2f}, estimated=${ref_gen_estimate:.2f}, "
-                f"projected=${projected_cost:.2f}, limit=${limit:.2f}"
-            )
+            raise BudgetExceededError("Would exceed budget limit before reference generation")
         
         references = None
         try:
@@ -393,29 +595,19 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         except ImportError:
             logger.warning("Prompt Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import ClipPrompts, ClipPrompt
-            
-            # Create stub prompts based on clip boundaries from audio analysis
-            # Use clip boundaries to create prompts with proper durations
+            # Create stub ClipPrompts from plan's clip_scripts with all required fields
             stub_prompts = []
-            for idx, boundary in enumerate(audio_data.clip_boundaries):
-                # Use duration from boundary (required field)
-                clip_duration = boundary.duration
+            for clip_script in plan.clip_scripts:
+                duration = clip_script.end - clip_script.start
                 stub_prompts.append(ClipPrompt(
-                    clip_index=idx,
-                    prompt=f"A scene matching the audio mood: {audio_data.mood.primary}",
-                    negative_prompt="blurry, low quality, distorted, watermark, text overlay",
-                    duration=clip_duration
+                    clip_index=clip_script.clip_index,
+                    prompt=clip_script.visual_description or "A scene",
+                    negative_prompt="blurry, low quality, distorted, watermark, text",
+                    duration=duration,
+                    scene_reference_url=None,
+                    character_reference_urls=[],
+                    metadata={}
                 ))
-            
-            # If no clip boundaries, create at least one prompt
-            if not stub_prompts:
-                stub_prompts.append(ClipPrompt(
-                    clip_index=0,
-                    prompt=f"A scene matching the audio mood: {audio_data.mood.primary}",
-                    negative_prompt="blurry, low quality, distorted, watermark, text overlay",
-                    duration=5.0  # Default 5 seconds
-                ))
-            
             clip_prompts = ClipPrompts(
                 job_id=UUID(job_id),
                 clip_prompts=stub_prompts,
@@ -440,21 +632,14 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             return
         
         # Check budget before expensive operation (environment-aware)
-        # Video generation: ~6 clips × $0.10 = $0.60 typical, use $1.00 estimate for safety
         limit = get_budget_limit(settings.environment)
-        # Environment-aware estimate: lower in development
-        if settings.environment in ["production", "staging"]:
-            video_gen_estimate = Decimal("1.00")  # $1.00 for production (safe buffer)
-        else:
-            video_gen_estimate = Decimal("1.00")  # $1.00 for development (realistic)
-        
         can_proceed = await cost_tracker.check_budget(
             job_id=UUID(job_id),
-            new_cost=video_gen_estimate,
+            new_cost=Decimal("100.00"),  # Estimated cost for video generation
             limit=limit
         )
         if not can_proceed:
-            raise BudgetExceededError(f"Would exceed budget limit before video generation (estimated cost: ${video_gen_estimate}, limit: ${limit})")
+            raise BudgetExceededError("Would exceed budget limit before video generation")
         
         try:
             from modules.video_generator.process import process as generate_videos
@@ -462,36 +647,30 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         except ImportError:
             logger.warning("Video Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import Clips, Clip
-            
-            # Create stub clips based on clip_prompts
-            stub_clips = []
-            for prompt in clip_prompts.clip_prompts:
-                target_duration = prompt.duration
-                # Stub: assume actual duration matches target (perfect generation)
-                actual_duration = target_duration
-                duration_diff = 0.0
-                
-                stub_clips.append(Clip(
-                    clip_index=prompt.clip_index,
-                    video_url=f"stub_video_url_{prompt.clip_index}.mp4",
-                    actual_duration=actual_duration,
-                    target_duration=target_duration,
-                    duration_diff=duration_diff,
+            from decimal import Decimal
+            # Create stub clips (minimum 3 required)
+            stub_clips = [
+                Clip(
+                    clip_index=i,
+                    video_url=f"stub_clip_{i}_url",
+                    actual_duration=5.0,
+                    target_duration=5.0,
+                    duration_diff=0.0,
                     status="success",
-                    cost=Decimal("0.10"),  # Stub cost per clip
+                    cost=Decimal("0.00"),
                     retry_count=0,
-                    generation_time=2.0  # Stub generation time
-                ))
-            
-            # Create Clips collection with all required fields
+                    generation_time=0.0
+                )
+                for i in range(3)
+            ]
             clips = Clips(
                 job_id=UUID(job_id),
                 clips=stub_clips,
-                total_clips=len(stub_clips),
-                successful_clips=len(stub_clips),
+                total_clips=3,
+                successful_clips=3,
                 failed_clips=0,
-                total_cost=Decimal(str(len(stub_clips) * 0.10)),  # Total cost for all clips
-                total_generation_time=len(stub_clips) * 2.0  # Total generation time
+                total_cost=Decimal("0.00"),
+                total_generation_time=0.0
             )
         
         # Validate minimum clips
@@ -519,7 +698,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         
         # Extract transitions and beats
         transitions = plan.transitions if hasattr(plan, "transitions") else []
-        beat_timestamps = []  # Audio parser removed - will be rebuilt
+        beat_timestamps = audio_data.beat_timestamps if hasattr(audio_data, "beat_timestamps") else []
         
         try:
             from modules.composer.process import process as compose_video
@@ -533,7 +712,22 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         except ImportError:
             logger.warning("Composer module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import VideoOutput
-            video_output = VideoOutput(video_url="stub_final_video_url", duration=120.0)
+            from decimal import Decimal
+            video_output = VideoOutput(
+                job_id=UUID(job_id),
+                video_url="stub_final_video_url",
+                duration=120.0,
+                audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else 120.0,
+                sync_drift=0.0,
+                clips_used=len(clips.clips) if hasattr(clips, 'clips') else 0,
+                clips_trimmed=0,
+                clips_looped=0,
+                transitions_applied=len(transitions) if transitions else 0,
+                file_size_mb=0.0,
+                composition_time=0.0,
+                cost=Decimal("0.00"),
+                status="success"
+            )
         
         # Get final cost
         job_result = await db_client.table("jobs").select("total_cost").eq("id", job_id).execute()
