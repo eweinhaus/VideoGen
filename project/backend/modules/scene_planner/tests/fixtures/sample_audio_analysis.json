@@ -1,0 +1,41 @@
+{
+  "job_id": "123e4567-e89b-12d3-a456-426614174000",
+  "bpm": 120.0,
+  "duration": 180.0,
+  "beat_timestamps": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+  "song_structure": [
+    {"type": "intro", "start": 0.0, "end": 15.0, "energy": "low"},
+    {"type": "verse", "start": 15.0, "end": 45.0, "energy": "medium"},
+    {"type": "chorus", "start": 45.0, "end": 75.0, "energy": "high"},
+    {"type": "verse", "start": 75.0, "end": 105.0, "energy": "medium"},
+    {"type": "chorus", "start": 105.0, "end": 135.0, "energy": "high"},
+    {"type": "bridge", "start": 135.0, "end": 150.0, "energy": "medium"},
+    {"type": "outro", "start": 150.0, "end": 180.0, "energy": "low"}
+  ],
+  "lyrics": [
+    {"text": "Hello", "timestamp": 15.0},
+    {"text": "world", "timestamp": 16.0},
+    {"text": "this", "timestamp": 17.0},
+    {"text": "is", "timestamp": 18.0},
+    {"text": "a", "timestamp": 19.0},
+    {"text": "test", "timestamp": 20.0}
+  ],
+  "mood": {
+    "primary": "energetic",
+    "secondary": "bright",
+    "energy_level": "high",
+    "confidence": 0.85
+  },
+  "clip_boundaries": [
+    {"start": 0.0, "end": 6.0, "duration": 6.0},
+    {"start": 6.0, "end": 12.0, "duration": 6.0},
+    {"start": 12.0, "end": 18.0, "duration": 6.0},
+    {"start": 18.0, "end": 24.0, "duration": 6.0},
+    {"start": 24.0, "end": 30.0, "duration": 6.0}
+  ],
+  "metadata": {
+    "processing_time": 5.0,
+    "cache_hit": false
+  }
+}
+
