@@ -83,14 +83,18 @@ jobs:
             git merge --abort 2>/dev/null || true
             git merge upstream/main --no-edit --allow-unrelated-histories -X theirs
           fi
+          # Force-add workflow files (they must be tracked, even if ignored)
+          # Use || true to prevent failure on ignored file warnings
+          git add -f .github/workflows/*.yml 2>&1 | grep -v "ignored by one of your .gitignore files" || true
           # Force-add migration files if they exist (they should be tracked in git)
-          git add -f project/infrastructure/migrations/*.sql supabase/migrations/*.sql 2>/dev/null || true
-          # If merge didn't auto-commit, commit any remaining changes
-          if [ -n "$(git status --porcelain)" ]; then
-            git add -A 2>/dev/null || true
-            if [ -n "$(git diff --cached)" ]; then
-              git commit -m "Sync from upstream: $(date -u +%Y-%m-%d)" || true
-            fi
+          git add -f project/infrastructure/migrations/*.sql supabase/migrations/*.sql 2>&1 | grep -v "ignored by one of your .gitignore files" || true
+          # Add all other changes (suppress ignored file warnings)
+          # Note: git add -A may warn about ignored files but will still add tracked files
+          git add -A 2>&1 | grep -v "ignored by one of your .gitignore files" || true
+          # Check if there are any staged changes to commit
+          STAGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+          if [ -n "$STAGED_FILES" ]; then
+            git commit -m "Sync from upstream: $(date -u +%Y-%m-%d)" || true
           fi
           # Safety check: Ensure we're pushing to fork, never to upstream
           ORIGIN_URL=$(git remote get-url origin)
