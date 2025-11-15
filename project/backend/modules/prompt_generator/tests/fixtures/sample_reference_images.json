@@ -1,0 +1,45 @@
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "scene_references": [
+    {
+      "scene_id": "city_alley",
+      "character_id": null,
+      "image_url": "https://cdn.example.com/scene_city_alley.png",
+      "prompt_used": "Rainy neon alley concept art",
+      "generation_time": 7.2,
+      "cost": "0.005"
+    },
+    {
+      "scene_id": "rooftop",
+      "character_id": null,
+      "image_url": "https://cdn.example.com/scene_rooftop.png",
+      "prompt_used": "Dawn skyline vista",
+      "generation_time": 6.8,
+      "cost": "0.005"
+    }
+  ],
+  "character_references": [
+    {
+      "scene_id": null,
+      "character_id": "protagonist",
+      "image_url": "https://cdn.example.com/character_protagonist.png",
+      "prompt_used": "Heroine portrait neon coat",
+      "generation_time": 6.0,
+      "cost": "0.005"
+    },
+    {
+      "scene_id": null,
+      "character_id": "ally",
+      "image_url": "https://cdn.example.com/character_ally.png",
+      "prompt_used": "Holographic guide concept",
+      "generation_time": 5.5,
+      "cost": "0.005"
+    }
+  ],
+  "total_references": 4,
+  "total_generation_time": 25.5,
+  "total_cost": "0.020",
+  "status": "success",
+  "metadata": {}
+}
+

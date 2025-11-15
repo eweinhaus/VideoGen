@@ -175,6 +175,15 @@ export function useSSE(
       }
     })
 
+    eventSource.addEventListener("prompt_generator_results", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onPromptGeneratorResults?.(data)
+      } catch (err) {
+        console.error("Failed to parse prompt_generator_results event:", err)
+      }
+    })
+
     eventSourceRef.current = eventSource
   }, [jobId, handlers, close])
 
