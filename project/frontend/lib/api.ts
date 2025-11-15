@@ -99,11 +99,15 @@ async function request<T>(
 
 export async function uploadAudio(
   audioFile: File,
-  userPrompt: string
+  userPrompt: string,
+  stopAtStage: string | null = null
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
   formData.append("user_prompt", userPrompt)
+  if (stopAtStage) {
+    formData.append("stop_at_stage", stopAtStage)
+  }
 
   return request<UploadResponse>("/api/v1/upload-audio", {
     method: "POST",

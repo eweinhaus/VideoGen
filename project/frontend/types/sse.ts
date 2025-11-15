@@ -50,6 +50,11 @@ export interface AudioParserResultsEvent {
   }
   lyrics_count: number
   clip_boundaries_count: number
+  clip_boundaries?: Array<{
+    start: number
+    end: number
+    duration: number
+  }>
   metadata?: {
     cache_hit?: boolean
     fallback_used?: string[]

@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AudioUploader } from "@/components/AudioUploader"
 import { PromptInput } from "@/components/PromptInput"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
+import { StepSelector, type PipelineStage } from "@/components/StepSelector"
 import { useAuth } from "@/hooks/useAuth"
 import { uploadStore } from "@/stores/uploadStore"
 
@@ -17,10 +18,12 @@ export default function UploadPage() {
   const {
     audioFile,
     userPrompt,
+    stopAtStage,
     isSubmitting,
     errors,
     setAudioFile,
     setUserPrompt,
+    setStopAtStage,
     submit,
     reset,
   } = uploadStore()
@@ -100,6 +103,12 @@ export default function UploadPage() {
                 disabled={isSubmitting}
               />
             </div>
+
+            <StepSelector
+              value={stopAtStage}
+              onChange={setStopAtStage}
+              disabled={isSubmitting}
+            />
 
             {errors.audio || errors.prompt ? (
               <Alert variant="destructive">

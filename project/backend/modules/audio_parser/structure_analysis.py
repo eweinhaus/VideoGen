@@ -171,9 +171,11 @@ def _labels_to_segments(
             frame_boundaries = sorted(set(frame_boundaries))
             logger.info(f"🔍 DETAILED: Using {len(frame_boundaries)} boundaries from contiguous regions")
         else:
-            # Last resort: Use uniform segmentation based on unique labels
-            logger.warning(f"🔍 DETAILED: ⚠️ Even contiguous regions failed, using uniform segmentation")
-            n_segments = min(len(unique_labels), max(3, int(duration / 30)))
+            # Clustering failed - use uniform segmentation based on song duration
+            # This is better than having one huge "bridge" segment
+            logger.warning(f"🔍 DETAILED: ⚠️ Clustering failed to find meaningful structure, using uniform segmentation")
+            # Aim for 4-8 segments based on duration (similar to clip boundaries)
+            n_segments = max(4, min(8, int(duration / 45)))  # ~45s per segment for structure
             segment_length = duration / n_segments
             frame_boundaries = [0]
             for i in range(1, n_segments):
@@ -181,6 +183,7 @@ def _labels_to_segments(
                 if boundary_frame - frame_boundaries[-1] >= min_frame_gap:
                     frame_boundaries.append(boundary_frame)
             frame_boundaries.append(n_frames)
+            logger.info(f"🔍 DETAILED: Created {len(frame_boundaries)} uniform segments (n_segments={n_segments}, segment_length={segment_length:.1f}s)")
     
     logger.info(f"🔍 DETAILED: frame_boundaries: {frame_boundaries[:15]}... (total: {len(frame_boundaries)})")
     
@@ -297,7 +300,33 @@ def analyze_structure(
             logger.warning("Distance matrix is not symmetric, forcing symmetry")
             distance_matrix = (distance_matrix + distance_matrix.T) / 2
         
-        # Use agglomerative clustering on distance matrix
+        # Add temporal penalty to distance matrix to encourage temporal contiguity
+        # Frames that are far apart in time should be less likely to cluster together
+        # This helps enforce that segments are contiguous
+        frame_indices = np.arange(n_frames)
+        temporal_dist_matrix = np.abs(frame_indices[:, None] - frame_indices[None, :]) / n_frames
+        # Scale penalty: 0.15 means 15% of max distance for frames at opposite ends
+        # This prevents distant frames from clustering together even if they're similar
+        temporal_penalty = temporal_dist_matrix * 0.15
+        
+        # Combine distance with temporal penalty
+        # This makes distant frames less likely to cluster together
+        constrained_distance = distance_matrix + temporal_penalty
+        
+        logger.info(
+            f"Distance matrix stats: min={np.min(distance_matrix):.4f}, "
+            f"max={np.max(distance_matrix):.4f}, "
+            f"mean={np.mean(distance_matrix):.4f}, "
+            f"std={np.std(distance_matrix):.4f}"
+        )
+        logger.info(
+            f"Constrained distance stats: min={np.min(constrained_distance):.4f}, "
+            f"max={np.max(constrained_distance):.4f}, "
+            f"mean={np.mean(constrained_distance):.4f}, "
+            f"std={np.std(constrained_distance):.4f}"
+        )
+        
+        # Use agglomerative clustering on temporally-constrained distance matrix
         # Determine number of clusters based on duration (rough estimate)
         # Aim for 3-8 segments for typical songs
         n_segments = max(3, min(8, int(duration / 30)))  # ~30s per segment
@@ -320,15 +349,15 @@ def analyze_structure(
             )
             n_segments = max(2, n_frames - 1)  # Need at least 2 samples per cluster
         
-        logger.info(f"Attempting agglomerative clustering: n_clusters={n_segments}, n_frames={n_frames}")
+        logger.info(f"Attempting temporally-constrained agglomerative clustering: n_clusters={n_segments}, n_frames={n_frames}")
         
         try:
             clustering = AgglomerativeClustering(
                 n_clusters=n_segments,
                 metric='precomputed',
-                linkage='average'
+                linkage='complete'
             )
-            labels = clustering.fit_predict(distance_matrix)
+            labels = clustering.fit_predict(constrained_distance)
             unique_labels, label_counts = np.unique(labels, return_counts=True)
             logger.info(f"🔍 DETAILED: Clustering successful: {len(unique_labels)} unique segments detected")
             logger.info(f"🔍 DETAILED: Label distribution: {dict(zip(unique_labels, label_counts))}")
@@ -495,16 +524,43 @@ def analyze_structure(
             
             # Classify type using heuristics
             segment_duration = end - start
-            if i == 0 and segment_duration < 15 and energy < 0.4:
-                seg_type = "intro"
-            elif i == len(segment_windows) - 1 and segment_duration < 15 and energy < 0.4:
-                seg_type = "outro"
-            elif energy > 0.7:
-                seg_type = "chorus"
-            elif energy < 0.4:
-                seg_type = "verse"
+            n_segments = len(segment_windows)
+            
+            # If we only have 2 segments, the clustering likely failed
+            # Use position-based classification instead of defaulting to "bridge"
+            if n_segments <= 2:
+                # For very few segments, use simple position-based classification
+                if i == 0:
+                    # First segment: could be intro or verse
+                    if segment_duration < 20 and energy < 0.4:
+                        seg_type = "intro"
+                    else:
+                        seg_type = "verse"  # Default first segment to verse, not bridge
+                elif i == n_segments - 1:
+                    # Last segment: outro if short and low energy, otherwise verse
+                    if segment_duration < 20 and energy < 0.4:
+                        seg_type = "outro"
+                    else:
+                        seg_type = "verse"
+                else:
+                    seg_type = "verse"
             else:
-                seg_type = "bridge"
+                # Normal classification for multiple segments
+                if i == 0 and segment_duration < 15 and energy < 0.4:
+                    seg_type = "intro"
+                elif i == n_segments - 1 and segment_duration < 15 and energy < 0.4:
+                    seg_type = "outro"
+                elif energy > 0.7:
+                    seg_type = "chorus"
+                elif energy < 0.4:
+                    seg_type = "verse"
+                else:
+                    # For medium energy, alternate between verse and chorus based on position
+                    # This prevents everything from being labeled "bridge"
+                    if i % 2 == 0:
+                        seg_type = "verse"
+                    else:
+                        seg_type = "chorus"
             
             # Map energy to level
             if energy < 0.4:

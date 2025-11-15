@@ -50,6 +50,48 @@ async def check_cancellation(job_id: str) -> bool:
         return False
 
 
+async def should_stop_after_stage(stage_name: str, stop_at_stage: str = None) -> bool:
+    """
+    Check if pipeline should stop after the current stage.
+    
+    Args:
+        stage_name: Current stage name
+        stop_at_stage: Stage to stop at (if set)
+        
+    Returns:
+        True if should stop, False otherwise
+    """
+    if not stop_at_stage:
+        return False
+    
+    return stage_name == stop_at_stage
+
+
+async def stop_pipeline_gracefully(job_id: str, stage_name: str, progress: int) -> None:
+    """
+    Stop pipeline gracefully after completing a stage.
+    
+    Args:
+        job_id: Job ID
+        stage_name: Stage that just completed
+        progress: Current progress percentage
+    """
+    await db_client.table("jobs").update({
+        "current_stage": stage_name,
+        "progress": progress,
+        "updated_at": "now()"
+    }).eq("id", job_id).execute()
+    
+    # Invalidate cache
+    cache_key = f"job_status:{job_id}"
+    await redis_client.client.delete(cache_key)
+    
+    logger.info(
+        f"Pipeline stopped gracefully after {stage_name} (progress: {progress}%)",
+        extra={"job_id": job_id, "stage": stage_name, "progress": progress}
+    )
+
+
 async def update_progress(job_id: str, progress: int, stage_name: str) -> None:
     """
     Update job progress in database and publish progress event.
@@ -157,7 +199,7 @@ async def handle_pipeline_error(job_id: str, error: Exception) -> None:
         logger.error("Failed to handle pipeline error", exc_info=e, extra={"job_id": job_id})
 
 
-async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> None:
+async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None) -> None:
     """
     Execute the video generation pipeline (modules 3-8).
     
@@ -165,6 +207,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         job_id: Job ID
         audio_url: URL of uploaded audio file
         user_prompt: User's creative prompt
+        stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
     """
     try:
         # Stage 1: Audio Parser (10% progress)
@@ -321,7 +364,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             }
         )
         
-        # Publish audio parser results for frontend display
+        # Publish audio parser results for frontend display (before checking stop)
         # Extract metadata if available
         metadata = audio_data.metadata if hasattr(audio_data, 'metadata') and audio_data.metadata else {}
         
@@ -346,6 +389,14 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             },
             "lyrics_count": len(audio_data.lyrics),
             "clip_boundaries_count": len(audio_data.clip_boundaries),
+            "clip_boundaries": [
+                {
+                    "start": boundary.start,
+                    "end": boundary.end,
+                    "duration": boundary.duration
+                }
+                for boundary in audio_data.clip_boundaries
+            ],
             "metadata": {
                 "cache_hit": metadata.get("cache_hit", False),
                 "fallback_used": metadata.get("fallbacks_used", []),
@@ -355,6 +406,11 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
                 "processing_time": metadata.get("processing_time")
             }
         })
+        
+        # Check if should stop after audio parser (after publishing results)
+        if await should_stop_after_stage("audio_parser", stop_at_stage):
+            await stop_pipeline_gracefully(job_id, "audio_parser", 10)
+            return
         
         # Stage 2: Scene Planner (20% progress)
         await publish_event(job_id, "stage_update", {
@@ -464,7 +520,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             "status": "completed"
         })
         
-        # Publish scene planner results for frontend display
+        # Publish scene planner results for frontend display (before checking stop)
         try:
             logger.info("Publishing scene planner results", extra={"job_id": job_id, "plan_has_clips": len(plan.clip_scripts) if plan else 0})
             await publish_event(job_id, "scene_planner_results", {
@@ -524,21 +580,12 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             logger.error("Failed to publish scene planner results", exc_info=e, extra={"job_id": job_id})
             # Don't fail the pipeline, but log the error
         
-        # Keep job in processing status (hold here after Scene Planner)
-        # Don't mark as completed - pipeline will stop gracefully here
-        # Job remains in "processing" status so UI can display results
-        await db_client.table("jobs").update({
-            "current_stage": "scene_planner",
-            "progress": 20,
-            "updated_at": "now()"
-        }).eq("id", job_id).execute()
+        # Check if should stop after scene planner (after publishing results)
+        if await should_stop_after_stage("scene_planner", stop_at_stage):
+            await stop_pipeline_gracefully(job_id, "scene_planner", 20)
+            return
         
-        # Invalidate cache
-        cache_key = f"job_status:{job_id}"
-        await redis_client.client.delete(cache_key)
-        
-        logger.info("Scene planner completed, holding pipeline (job remains in processing status)", extra={"job_id": job_id})
-        return  # Stop here gracefully - don't continue to reference generator
+        # Note: If stop_at_stage is not set or is beyond scene_planner, continue to next stage
         
         # Stage 3: Reference Generator (30% progress) - DISABLED FOR NOW
         await publish_event(job_id, "stage_update", {
@@ -585,6 +632,11 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             "stage": "reference_generator",
             "status": "completed"
         })
+        
+        # Check if should stop after reference generator
+        if await should_stop_after_stage("reference_generator", stop_at_stage):
+            await stop_pipeline_gracefully(job_id, "reference_generator", 30)
+            return
         
         # Enforce budget after reference generator (if costs were tracked)
         await enforce_budget(job_id)
@@ -642,6 +694,11 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             "stage": "prompt_generator",
             "status": "completed"
         })
+        
+        # Check if should stop after prompt generator
+        if await should_stop_after_stage("prompt_generator", stop_at_stage):
+            await stop_pipeline_gracefully(job_id, "prompt_generator", 40)
+            return
         
         # Stage 5: Video Generator (85% progress)
         await publish_event(job_id, "stage_update", {
@@ -704,6 +761,11 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             "stage": "video_generator",
             "status": "completed"
         })
+        
+        # Check if should stop after video generator
+        if await should_stop_after_stage("video_generator", stop_at_stage):
+            await stop_pipeline_gracefully(job_id, "video_generator", 85)
+            return
         
         # Enforce budget after video generator (costs were tracked)
         await enforce_budget(job_id)

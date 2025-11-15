@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useSSE } from "@/hooks/useSSE"
 import { jobStore } from "@/stores/jobStore"
 import { Progress } from "@/components/ui/progress"
@@ -29,30 +29,91 @@ export function ProgressTracker({
 }: ProgressTrackerProps) {
   const { currentJob: storeJob } = jobStore()
   const currentJob = storeJob?.id === jobId ? storeJob : null
-  const [progress, setProgress] = useState(currentJob?.progress || 0)
-  const [currentStage, setCurrentStage] = useState<string | null>(currentJob?.currentStage || null)
+  
+  // Memoize initial values to prevent flicker on first render
+  const initialValues = useMemo(() => {
+    if (!currentJob) {
+      return {
+        progress: 0,
+        currentStage: null,
+        estimatedRemaining: null,
+        cost: null,
+        stages: [] as Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>,
+      }
+    }
+    
+    const stages = currentJob.stages
+      ? Object.entries(currentJob.stages).map(([name, stageData]) => ({
+          name,
+          status: (stageData.status || "pending") as "pending" | "processing" | "completed" | "failed",
+        }))
+      : []
+    
+    return {
+      progress: currentJob.progress ?? 0,
+      currentStage: currentJob.currentStage ?? null,
+      estimatedRemaining: currentJob.estimatedRemaining ?? null,
+      cost: currentJob.totalCost ?? null,
+      stages,
+    }
+  }, [currentJob])
+  
+  // Use state for values that can be updated by SSE, but prefer memoized values for initial render
+  const [progress, setProgress] = useState(initialValues.progress)
+  const [currentStage, setCurrentStage] = useState<string | null>(initialValues.currentStage)
   const [messages, setMessages] = useState<StatusMessage[]>([])
-  const [estimatedRemaining, setEstimatedRemaining] = useState<number | null>(
-    currentJob?.estimatedRemaining || null
-  )
-  const [cost, setCost] = useState<number | null>(currentJob?.totalCost || null)
+  const [estimatedRemaining, setEstimatedRemaining] = useState<number | null>(initialValues.estimatedRemaining)
+  const [cost, setCost] = useState<number | null>(initialValues.cost)
   const [stages, setStages] = useState<
     Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
-  >([])
+  >(initialValues.stages)
+  
+  // Use memoized values directly in render to prevent flicker, but allow state updates from SSE
+  // This ensures we show correct values immediately when job data is available
+  const displayProgress = currentJob?.progress !== undefined ? currentJob.progress : progress
+  const displayStage = currentJob?.currentStage !== undefined ? currentJob.currentStage : currentStage
+  const displayEstimatedRemaining = currentJob?.estimatedRemaining !== undefined ? currentJob.estimatedRemaining : estimatedRemaining
+  const displayCost = currentJob?.totalCost !== undefined ? currentJob.totalCost : cost
+  const displayStages = currentJob?.stages 
+    ? Object.entries(currentJob.stages).map(([name, stageData]) => ({
+        name,
+        status: (stageData.status || "pending") as "pending" | "processing" | "completed" | "failed",
+      }))
+    : stages
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
 
   const { updateJob } = jobStore()
   
-  // Initialize progress from job state if available
+  // Sync state when job data updates (for SSE updates to work correctly)
   useEffect(() => {
     if (currentJob) {
-      if (currentJob.progress !== undefined) setProgress(currentJob.progress)
-      if (currentJob.currentStage) setCurrentStage(currentJob.currentStage)
-      if (currentJob.estimatedRemaining) setEstimatedRemaining(currentJob.estimatedRemaining)
-      if (currentJob.totalCost) setCost(currentJob.totalCost)
+      // Update state to match job data (SSE will override these)
+      if (currentJob.progress !== undefined) {
+        setProgress((prev) => currentJob.progress !== prev ? currentJob.progress : prev)
+      }
+      if (currentJob.currentStage !== undefined) {
+        setCurrentStage((prev) => currentJob.currentStage !== prev ? currentJob.currentStage : prev)
+      }
+      if (currentJob.estimatedRemaining !== undefined) {
+        setEstimatedRemaining((prev) => currentJob.estimatedRemaining !== prev ? (currentJob.estimatedRemaining ?? null) : prev)
+      }
+      if (currentJob.totalCost !== undefined) {
+        setCost((prev) => currentJob.totalCost !== prev ? (currentJob.totalCost ?? null) : prev)
+      }
+      
+      if (currentJob.stages) {
+        const jobStages = Object.entries(currentJob.stages).map(([name, stageData]) => ({
+          name,
+          status: (stageData.status || "pending") as "pending" | "processing" | "completed" | "failed",
+        }))
+        setStages((prev) => {
+          const stagesChanged = JSON.stringify(jobStages) !== JSON.stringify(prev)
+          return stagesChanged ? jobStages : prev
+        })
+      }
     }
-  }, [currentJob])
+  }, [currentJob]) // Only depend on currentJob to avoid infinite loops
 
   const { isConnected, error: sseError } = useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
@@ -117,26 +178,26 @@ export function ProgressTracker({
       <div className="space-y-3 p-4 bg-muted/30 rounded-lg border min-h-[120px] flex flex-col justify-center">
         <div className="flex items-center justify-between mb-2">
           <span className="text-base font-semibold">Progress</span>
-          <span className="text-base font-semibold text-muted-foreground">{progress}%</span>
+          <span className="text-base font-semibold text-muted-foreground">{displayProgress}%</span>
         </div>
-        <Progress value={progress} className="h-3" />
+        <Progress value={displayProgress} className="h-3" />
       </div>
 
-      {estimatedRemaining !== null && (
+      {displayEstimatedRemaining !== null && (
         <p className="text-sm text-muted-foreground">
-          Estimated time remaining: {formatDuration(estimatedRemaining)}
+          Estimated time remaining: {formatDuration(displayEstimatedRemaining)}
         </p>
       )}
 
-      {cost !== null && (
+      {displayCost !== null && (
         <p className="text-sm text-muted-foreground">
-          Total cost: ${cost.toFixed(2)}
+          Total cost: ${displayCost.toFixed(2)}
         </p>
       )}
 
       <StageIndicator 
-        stages={stages} 
-        currentStage={currentStage}
+        stages={displayStages} 
+        currentStage={displayStage}
       />
 
       {messages.length > 0 && (
@@ -245,6 +306,27 @@ export function ProgressTracker({
                   <p className="text-xs font-mono text-muted-foreground">
                     {audioResults.beat_timestamps.map(t => t.toFixed(2)).join(", ")}
                   </p>
+                </div>
+              )}
+
+              {audioResults.clip_boundaries && audioResults.clip_boundaries.length > 0 && (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground mb-2">
+                    Clip Boundaries ({audioResults.clip_boundaries.length} clips)
+                  </p>
+                  <div className="space-y-1 max-h-60 overflow-y-auto">
+                    {audioResults.clip_boundaries.map((boundary, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-sm p-2 bg-muted/30 rounded">
+                        <span className="font-medium">Clip {idx + 1}</span>
+                        <span className="text-muted-foreground">
+                          {boundary.start.toFixed(1)}s - {boundary.end.toFixed(1)}s
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          ({boundary.duration.toFixed(1)}s)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
