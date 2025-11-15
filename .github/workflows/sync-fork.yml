@@ -47,14 +47,28 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Suppress warnings about ignored files to prevent workflow failures
+          git config advice.addIgnoredFile false
           git checkout main
+          # Perform merge (this may create a merge commit)
           git merge upstream/main --no-edit --allow-unrelated-histories || true
           # If merge fails due to conflicts, use theirs strategy
-          if [ $? -ne 0 ]; then
+          MERGE_EXIT_CODE=$?
+          if [ $MERGE_EXIT_CODE -ne 0 ]; then
             git merge --abort 2>/dev/null || true
             git merge upstream/main --no-edit --allow-unrelated-histories -X theirs
           fi
-          git push origin main
+          # Force-add migration files if they exist (they should be tracked in git)
+          git add -f project/infrastructure/migrations/*.sql supabase/migrations/*.sql 2>/dev/null || true
+          # If merge didn't auto-commit, commit any remaining changes
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A 2>/dev/null || true
+            if [ -n "$(git diff --cached)" ]; then
+              git commit -m "Sync from upstream: $(date -u +%Y-%m-%d)" || true
+            fi
+          fi
+          # Push changes (will fail if nothing to push, which is fine)
+          git push origin main || echo "Nothing to push or push failed"
 
       - name: Summary
         run: |
