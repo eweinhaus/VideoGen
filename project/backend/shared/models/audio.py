@@ -52,7 +52,7 @@ class ClipBoundary(BaseModel):
     """Clip boundary model for video segmentation."""
     start: float = Field(..., ge=0, description="Clip start time in seconds")
     end: float = Field(..., gt=0, description="Clip end time in seconds")
-    duration: float = Field(..., ge=4, le=8, description="Clip duration in seconds (4-8s)")
+    duration: float = Field(..., ge=4, le=25, description="Clip duration in seconds (4-25s, flexible)")
 
 
 class AudioAnalysis(BaseModel):
