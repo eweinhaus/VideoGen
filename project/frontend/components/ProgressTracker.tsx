@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { StageIndicator } from "@/components/StageIndicator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent } from "@/types/sse"
+import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent, ScenePlannerResultsEvent } from "@/types/sse"
 import { formatDuration } from "@/lib/utils"
 
 interface ProgressTrackerProps {
@@ -40,6 +40,7 @@ export function ProgressTracker({
     Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
   >([])
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
+  const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
 
   const { updateJob } = jobStore()
   
@@ -106,16 +107,19 @@ export function ProgressTracker({
     onAudioParserResults: (data: AudioParserResultsEvent) => {
       setAudioResults(data)
     },
+    onScenePlannerResults: (data: ScenePlannerResultsEvent) => {
+      setScenePlanResults(data)
+    },
   })
 
   return (
     <div className="w-full space-y-4">
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium">Progress</span>
-          <span className="text-sm text-muted-foreground">{progress}%</span>
+      <div className="space-y-3 p-4 bg-muted/30 rounded-lg border min-h-[120px] flex flex-col justify-center">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-base font-semibold">Progress</span>
+          <span className="text-base font-semibold text-muted-foreground">{progress}%</span>
         </div>
-        <Progress value={progress} />
+        <Progress value={progress} className="h-3" />
       </div>
 
       {estimatedRemaining !== null && (
@@ -130,7 +134,10 @@ export function ProgressTracker({
         </p>
       )}
 
-      <StageIndicator stages={stages} currentStage={currentStage} />
+      <StageIndicator 
+        stages={stages} 
+        currentStage={currentStage}
+      />
 
       {messages.length > 0 && (
         <Card>
@@ -240,6 +247,99 @@ export function ProgressTracker({
                   </p>
                 </div>
               )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {scenePlanResults && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle className="text-lg">Scene Plan</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="prose prose-sm max-w-none dark:prose-invert">
+                <h3 className="text-lg font-semibold">Video Summary</h3>
+                <p className="text-muted-foreground">{scenePlanResults.video_summary}</p>
+                
+                <h3 className="text-lg font-semibold mt-4">Characters</h3>
+                <ul className="list-disc list-inside space-y-1">
+                  {scenePlanResults.characters.map((char) => (
+                    <li key={char.id}>
+                      <strong>{char.id}</strong> ({char.role}): {char.description}
+                    </li>
+                  ))}
+                </ul>
+                
+                <h3 className="text-lg font-semibold mt-4">Scenes</h3>
+                <ul className="list-disc list-inside space-y-1">
+                  {scenePlanResults.scenes.map((scene) => (
+                    <li key={scene.id}>
+                      <strong>{scene.id}</strong> ({scene.time_of_day}): {scene.description}
+                    </li>
+                  ))}
+                </ul>
+                
+                <h3 className="text-lg font-semibold mt-4">Style</h3>
+                <div className="space-y-2">
+                  <p><strong>Visual Style:</strong> {scenePlanResults.style.visual_style}</p>
+                  <p><strong>Mood:</strong> {scenePlanResults.style.mood}</p>
+                  <p><strong>Lighting:</strong> {scenePlanResults.style.lighting}</p>
+                  <p><strong>Cinematography:</strong> {scenePlanResults.style.cinematography}</p>
+                  <div>
+                    <strong>Color Palette:</strong>
+                    <div className="flex gap-2 mt-1">
+                      {scenePlanResults.style.color_palette.map((color, idx) => (
+                        <div
+                          key={idx}
+                          className="w-8 h-8 rounded border border-gray-300"
+                          style={{ backgroundColor: color }}
+                          title={color}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                
+                <h3 className="text-lg font-semibold mt-4">Clip Scripts</h3>
+                <div className="space-y-3">
+                  {scenePlanResults.clip_scripts.map((clip) => (
+                    <div key={clip.clip_index} className="border-l-4 border-primary pl-4 py-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <strong>Clip {clip.clip_index}</strong>
+                        <span className="text-sm text-muted-foreground">
+                          {clip.start.toFixed(1)}s - {clip.end.toFixed(1)}s
+                        </span>
+                      </div>
+                      <p className="text-sm">{clip.visual_description}</p>
+                      <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                        <p><strong>Motion:</strong> {clip.motion}</p>
+                        <p><strong>Camera:</strong> {clip.camera_angle}</p>
+                        <p><strong>Beat Intensity:</strong> {clip.beat_intensity}</p>
+                        {clip.lyrics_context && (
+                          <p><strong>Lyrics:</strong> {clip.lyrics_context}</p>
+                        )}
+                        <p><strong>Characters:</strong> {clip.characters.join(", ")}</p>
+                        <p><strong>Scenes:</strong> {clip.scenes.join(", ")}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                
+                <h3 className="text-lg font-semibold mt-4">Transitions</h3>
+                <div className="space-y-2">
+                  {scenePlanResults.transitions.map((trans, idx) => (
+                    <div key={idx} className="text-sm">
+                      <strong>Clip {trans.from_clip} → Clip {trans.to_clip}:</strong> {trans.type}
+                      {trans.duration > 0 && ` (${trans.duration.toFixed(2)}s)`}
+                      {trans.rationale && (
+                        <span className="text-muted-foreground"> - {trans.rationale}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>
