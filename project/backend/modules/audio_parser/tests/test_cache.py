@@ -1,121 +1,113 @@
 """
-Unit tests for caching.
+Tests for caching component.
 """
 
 import pytest
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
-from datetime import datetime, timedelta
-
 from modules.audio_parser.cache import get_cached_analysis, store_cached_analysis
-from modules.audio_parser.utils import calculate_file_hash
-from shared.models.audio import AudioAnalysis, Mood, SongStructure, Lyric, ClipBoundary
+from shared.models.audio import AudioAnalysis, Mood, EnergyLevel, SongStructure, SongStructureType, ClipBoundary
 
 
 @pytest.fixture
-def sample_analysis():
-    """Create sample AudioAnalysis for testing."""
-    job_id = uuid4()
+def sample_audio_analysis(sample_job_id):
+    """Sample AudioAnalysis object for testing."""
     return AudioAnalysis(
-        job_id=job_id,
+        job_id=sample_job_id,
         bpm=120.0,
         duration=180.0,
-        beat_timestamps=[i * 0.5 for i in range(360)],
+        beat_timestamps=[0.5, 1.0, 1.5, 2.0],
         song_structure=[
-            SongStructure(type="intro", start=0.0, end=15.0, energy="low"),
-            SongStructure(type="verse", start=15.0, end=45.0, energy="medium"),
-            SongStructure(type="chorus", start=45.0, end=75.0, energy="high"),
+            SongStructure(
+                type=SongStructureType.INTRO,
+                start=0.0,
+                end=8.0,
+                energy=EnergyLevel.LOW
+            )
         ],
-        lyrics=[
-            Lyric(text="Hello", timestamp=0.0),
-            Lyric(text="World", timestamp=1.0),
-        ],
-        mood=Mood(primary="energetic", secondary="bright", energy_level="high", confidence=0.8),
+        lyrics=[],
+        mood=Mood(
+            primary="energetic",
+            secondary=None,
+            energy_level=EnergyLevel.HIGH,
+            confidence=0.8
+        ),
         clip_boundaries=[
-            ClipBoundary(start=0.0, end=6.0, duration=6.0),
-            ClipBoundary(start=6.0, end=12.0, duration=6.0),
-        ],
-        metadata={"processing_time": 5.0, "cache_hit": False}
+            ClipBoundary(start=0.0, end=5.0, duration=5.0),
+            ClipBoundary(start=5.0, end=10.0, duration=5.0),
+            ClipBoundary(start=10.0, end=15.0, duration=5.0)
+        ]
     )
 
 
-class TestCalculateFileHash:
-    """Test file hash calculation."""
+@pytest.mark.asyncio
+async def test_get_cached_analysis_cache_hit(sample_audio_analysis):
+    """Test getting cached analysis when cache hit."""
+    file_hash = "test_hash_12345678901234567890123456789012"
     
-    def test_hash_consistency(self):
-        """Test that same file produces same hash."""
-        audio_bytes = b"test audio data"
-        hash1 = calculate_file_hash(audio_bytes)
-        hash2 = calculate_file_hash(audio_bytes)
+    # Mock Redis to return cached data
+    with patch('modules.audio_parser.cache.redis_client') as mock_redis:
+        cached_json = sample_audio_analysis.model_dump_json()
+        mock_redis.get = AsyncMock(return_value=cached_json)
         
-        assert hash1 == hash2
-        assert len(hash1) == 32  # MD5 hex is 32 chars
-    
-    def test_hash_different_files(self):
-        """Test that different files produce different hashes."""
-        audio_bytes1 = b"test audio data 1"
-        audio_bytes2 = b"test audio data 2"
+        result = await get_cached_analysis(file_hash)
         
-        hash1 = calculate_file_hash(audio_bytes1)
-        hash2 = calculate_file_hash(audio_bytes2)
-        
-        assert hash1 != hash2
+        assert result is not None
+        assert result.bpm == sample_audio_analysis.bpm
+        assert result.job_id == sample_audio_analysis.job_id
+        mock_redis.get.assert_called_once()
 
 
-class TestCacheOperations:
-    """Test cache operations."""
+@pytest.mark.asyncio
+async def test_get_cached_analysis_cache_miss():
+    """Test getting cached analysis when cache miss."""
+    file_hash = "test_hash_12345678901234567890123456789012"
     
-    @pytest.mark.asyncio
-    async def test_store_and_get_cache(self, sample_analysis):
-        """Test storing and retrieving from cache."""
-        file_hash = "test_hash_12345"
+    with patch('modules.audio_parser.cache.redis_client') as mock_redis:
+        mock_redis.get = AsyncMock(return_value=None)
         
-        # Store in cache
-        await store_cached_analysis(file_hash, sample_analysis, ttl=3600)
+        result = await get_cached_analysis(file_hash)
         
-        # Retrieve from cache
-        cached = await get_cached_analysis(file_hash)
-        
-        # Should retrieve the analysis
-        assert cached is not None
-        assert cached.bpm == sample_analysis.bpm
-        assert cached.duration == sample_analysis.duration
-        assert len(cached.beat_timestamps) == len(sample_analysis.beat_timestamps)
-    
-    @pytest.mark.asyncio
-    async def test_cache_miss(self):
-        """Test cache miss returns None."""
-        file_hash = "nonexistent_hash"
-        
-        cached = await get_cached_analysis(file_hash)
-        
-        assert cached is None
-    
-    @pytest.mark.asyncio
-    async def test_cache_serialization(self, sample_analysis):
-        """Test that cache serializes/deserializes correctly."""
-        file_hash = "test_serialization"
-        
-        await store_cached_analysis(file_hash, sample_analysis, ttl=3600)
-        cached = await get_cached_analysis(file_hash)
-        
-        assert cached is not None
-        assert isinstance(cached, AudioAnalysis)
-        assert cached.job_id == sample_analysis.job_id
-        assert cached.bpm == sample_analysis.bpm
-        assert cached.mood.primary == sample_analysis.mood.primary
-    
-    @pytest.mark.asyncio
-    async def test_cache_ttl(self, sample_analysis):
-        """Test that cache respects TTL."""
-        file_hash = "test_ttl"
-        
-        # Store with short TTL
-        await store_cached_analysis(file_hash, sample_analysis, ttl=1)
-        
-        # Should be available immediately
-        cached = await get_cached_analysis(file_hash)
-        assert cached is not None
-        
-        # Note: Actual TTL expiration testing requires waiting, which is slow
-        # In practice, Redis handles TTL automatically
+        assert result is None
+        mock_redis.get.assert_called_once()
 
+
+@pytest.mark.asyncio
+async def test_get_cached_analysis_cache_error():
+    """Test that cache errors don't fail the request."""
+    file_hash = "test_hash_12345678901234567890123456789012"
+    
+    with patch('modules.audio_parser.cache.redis_client') as mock_redis:
+        mock_redis.get = AsyncMock(side_effect=Exception("Redis error"))
+        
+        # Should return None, not raise exception
+        result = await get_cached_analysis(file_hash)
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_store_cached_analysis(sample_audio_analysis):
+    """Test storing analysis in cache."""
+    file_hash = "test_hash_12345678901234567890123456789012"
+    
+    with patch('modules.audio_parser.cache.redis_client') as mock_redis:
+        mock_redis.set = AsyncMock(return_value=True)
+        
+        await store_cached_analysis(file_hash, sample_audio_analysis, ttl=86400)
+        
+        mock_redis.set.assert_called_once()
+        call_args = mock_redis.set.call_args
+        assert "videogen:cache:audio_cache:" in call_args[0][0]
+        assert call_args[1]['ttl'] == 86400
+
+
+@pytest.mark.asyncio
+async def test_store_cached_analysis_error_handling(sample_audio_analysis):
+    """Test that cache write errors don't fail the request."""
+    file_hash = "test_hash_12345678901234567890123456789012"
+    
+    with patch('modules.audio_parser.cache.redis_client') as mock_redis:
+        mock_redis.set = AsyncMock(side_effect=Exception("Redis error"))
+        
+        # Should not raise exception
+        await store_cached_analysis(file_hash, sample_audio_analysis, ttl=86400)

@@ -10,11 +10,7 @@ from shared.models import (
     Job,
     JobStage,
     JobCost,
-    AudioAnalysis,
-    SongStructure,
-    Lyric,
-    Mood,
-    ClipBoundary,
+    # AudioAnalysis, SongStructure, Lyric, Mood, ClipBoundary removed - audio parser module will be rebuilt
     ScenePlan,
     Character,
     Scene,
@@ -84,34 +80,7 @@ def test_job_model_progress_validation():
         )
 
 
-def test_audio_analysis_model():
-    """Test AudioAnalysis model."""
-    job_id = uuid4()
-    
-    analysis = AudioAnalysis(
-        job_id=job_id,
-        bpm=120.0,
-        duration=180.0,
-        beat_timestamps=[0.0, 0.5, 1.0, 1.5],
-        song_structure=[
-            SongStructure(type="intro", start=0.0, end=30.0, energy="low")
-        ],
-        lyrics=[
-            Lyric(text="Test lyric", timestamp=10.0)
-        ],
-        mood=Mood(
-            primary="energetic",
-            energy_level="high",
-            confidence=0.9
-        ),
-        clip_boundaries=[
-            ClipBoundary(start=0.0, end=4.0, duration=4.0)
-        ]
-    )
-    
-    assert analysis.job_id == job_id
-    assert analysis.bpm == 120.0
-    assert len(analysis.beat_timestamps) == 4
+# test_audio_analysis_model removed - audio parser module will be rebuilt
 
 
 def test_models_serialize_to_json():

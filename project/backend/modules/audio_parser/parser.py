@@ -1,186 +1,82 @@
 """
-Core audio parsing orchestration.
+Core audio parser orchestration.
 
-Coordinate all analysis steps and assemble final result.
+Coordinates all audio analysis components.
 """
 
-import io
-import time
-from typing import Dict, Any
-from uuid import UUID
-
 import librosa
-import numpy as np
-
+import io
+from uuid import UUID
 from shared.models.audio import AudioAnalysis
-from shared.errors import AudioAnalysisError
-from shared.logging import get_logger, set_job_id
+from shared.logging import get_logger
 
 from modules.audio_parser.beat_detection import detect_beats
 from modules.audio_parser.structure_analysis import analyze_structure
 from modules.audio_parser.mood_classifier import classify_mood
-from modules.audio_parser.whisper_client import extract_lyrics
 from modules.audio_parser.boundaries import generate_boundaries
+from modules.audio_parser.lyrics_extraction import extract_lyrics
 
 logger = get_logger("audio_parser")
 
 
 async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
     """
-    Coordinate all analysis steps and assemble final result.
+    Parse audio file and extract all analysis data.
     
     Args:
         audio_bytes: Audio file bytes
-        job_id: Job ID
+        job_id: Job ID for tracking
         
     Returns:
-        AudioAnalysis model
-        
-    Raises:
-        AudioAnalysisError: If processing fails
+        AudioAnalysis object with all analysis results
     """
-    # Set job_id in context for logging
-    set_job_id(job_id)
-    
-    start_time = time.time()
-    metadata: Dict[str, Any] = {
-        "cache_hit": False,
-        "fallback_used": {},
-        "confidence_scores": {}
-    }
+    fallbacks_used = []
     
     try:
-        # 1. Load audio file into librosa
-        logger.info(f"Loading audio file for job {job_id}")
-        audio_file = io.BytesIO(audio_bytes)
-        y, sr = librosa.load(audio_file, sr=None)
+        # Load audio
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=22050)
+        duration = len(audio) / sr
         
-        if len(y) == 0 or sr is None:
-            raise AudioAnalysisError("Failed to load audio file: empty or invalid", job_id=job_id)
+        logger.info(f"Loaded audio: duration={duration:.2f}s, sample_rate={sr}Hz, samples={len(audio)}")
         
-        # 2. Calculate duration
-        duration = len(y) / sr
-        logger.info(f"Audio loaded: duration={duration:.2f}s, sample_rate={sr} Hz")
+        # 1. Beat Detection
+        bpm, beat_timestamps, beat_confidence = detect_beats(audio, sr)
+        if beat_confidence < 0.6:
+            fallbacks_used.append("beat_detection")
+        logger.info(f"Beat detection: BPM={bpm:.1f}, beats={len(beat_timestamps)}, confidence={beat_confidence:.2f}")
         
-        # 3. Extract BPM and beats
-        logger.info("Detecting beats...")
-        try:
-            bpm, beat_timestamps, beat_confidence = detect_beats(y, sr)
-            metadata["confidence_scores"]["beat_detection"] = beat_confidence
-            logger.info(f"Beat detection complete: BPM={bpm:.2f}, beats={len(beat_timestamps)}, confidence={beat_confidence:.2f}")
-        except Exception as e:
-            logger.error(f"Beat detection failed: {str(e)}")
-            metadata["fallback_used"]["beat_detection"] = True
-            # Fallback: use tempo-based boundaries
-            bpm = 120.0
-            beat_interval = 60.0 / bpm
-            beat_timestamps = []
-            current_time = 0.0
-            while current_time < duration:
-                beat_timestamps.append(current_time)
-                current_time += beat_interval
-            beat_confidence = 0.5
-            metadata["confidence_scores"]["beat_detection"] = beat_confidence
+        # 2. Structure Analysis
+        structure_result = analyze_structure(audio, sr, beat_timestamps, duration)
+        if isinstance(structure_result, tuple):
+            song_structure, structure_fallback = structure_result
+        else:
+            # Handle case where it returns just the list (backward compatibility)
+            song_structure = structure_result
+            structure_fallback = False
         
-        # 4. Classify song structure
-        logger.info("Analyzing song structure...")
-        try:
-            song_structure = analyze_structure(y, sr, beat_timestamps, duration)
-            # Check if fallback was used by examining segment boundaries
-            # Fallback produces uniform segments, clustering produces variable segments
-            segment_boundaries = [s.start for s in song_structure] + [song_structure[-1].end]
-            segment_lengths = [segment_boundaries[i+1] - segment_boundaries[i] for i in range(len(segment_boundaries)-1)]
-            if len(segment_lengths) > 1:
-                # Check if segments are uniform (fallback) vs variable (clustering)
-                length_variance = np.var(segment_lengths)
-                avg_length = np.mean(segment_lengths)
-                # If variance is very low relative to mean, likely uniform segmentation
-                if length_variance < (avg_length * 0.1) ** 2:  # Less than 10% variance
-                    logger.warning(
-                        f"⚠️ Structure analysis appears to use uniform segmentation (fallback). "
-                        f"Segment lengths are too uniform (variance={length_variance:.2f}). "
-                        f"This suggests clustering failed - check logs for details."
-                    )
-            logger.info(f"Structure analysis complete: {len(song_structure)} segments")
-        except Exception as e:
-            logger.error(f"Structure analysis failed: {str(e)}")
-            metadata["fallback_used"]["structure_analysis"] = True
-            # Fallback: single segment
-            from shared.models.audio import SongStructure
-            song_structure = [SongStructure(
-                type="verse",
-                start=0.0,
-                end=duration,
-                energy="medium"
-            )]
-            logger.warning("Using fallback single-segment structure")
+        if structure_fallback:
+            fallbacks_used.append("structure_analysis")
+        logger.info(f"Structure analysis: {len(song_structure)} segments")
         
-        # 5. Extract lyrics (async, with retry)
-        logger.info("Extracting lyrics...")
-        lyrics = []
-        try:
-            lyrics = await extract_lyrics(audio_bytes, job_id, duration)
-            logger.info(f"Lyrics extraction complete: {len(lyrics)} words")
-        except Exception as e:
-            logger.error(f"Lyrics extraction failed: {str(e)}")
-            metadata["fallback_used"]["lyrics"] = True
-            # Fallback: empty lyrics array
-            lyrics = []
-            logger.warning("Using fallback empty lyrics (instrumental track)")
+        # 3. Mood Classification (uses BPM, structure energy, spectral features)
+        mood = classify_mood(audio, sr, bpm, song_structure)
+        if mood.confidence < 0.3:
+            fallbacks_used.append("mood_classification")
+        logger.info(f"Mood classification: {mood.primary}, confidence={mood.confidence:.2f}")
         
-        # 6. Classify mood
-        logger.info("Classifying mood...")
-        try:
-            mood = classify_mood(y, sr, bpm, song_structure)
-            metadata["confidence_scores"]["mood"] = mood.confidence
-            logger.info(f"Mood classification complete: {mood.primary}, confidence={mood.confidence:.2f}")
-        except Exception as e:
-            logger.error(f"Mood classification failed: {str(e)}")
-            metadata["fallback_used"]["mood"] = True
-            # Fallback: default mood
-            from shared.models.audio import Mood
-            mood = Mood(
-                primary="energetic" if bpm > 100 else "calm",
-                secondary=None,
-                energy_level="medium",
-                confidence=0.5
-            )
-            logger.warning("Using fallback default mood")
+        # 4. Clip Boundaries (uses beat timestamps, duration)
+        clip_boundaries = generate_boundaries(beat_timestamps, bpm, duration)
+        logger.info(f"Clip boundaries: {len(clip_boundaries)} clips")
         
-        # 7. Generate clip boundaries
-        logger.info("Generating clip boundaries...")
-        try:
-            clip_boundaries = generate_boundaries(
-                beat_timestamps=beat_timestamps,
-                duration=duration,
-                bpm=bpm,
-                min_clips=3,
-                min_duration=4.0,
-                max_duration=8.0
-            )
-            logger.info(f"Boundary generation complete: {len(clip_boundaries)} boundaries")
-        except Exception as e:
-            logger.error(f"Boundary generation failed: {str(e)}")
-            metadata["fallback_used"]["boundaries"] = True
-            # Fallback: uniform boundaries
-            from shared.models.audio import ClipBoundary
-            n_clips = max(3, int(duration / 6.0))
-            clip_duration = duration / n_clips
-            clip_boundaries = []
-            for i in range(n_clips):
-                start = i * clip_duration
-                end = (i + 1) * clip_duration if i < n_clips - 1 else duration
-                clip_boundaries.append(ClipBoundary(
-                    start=start,
-                    end=end,
-                    duration=end - start
-                ))
-            logger.warning("Using fallback uniform boundaries")
+        # 5. Lyrics Extraction (independent, can run in parallel but sequential for simplicity)
+        lyrics = await extract_lyrics(audio_bytes, job_id, duration)
+        if len(lyrics) == 0:
+            # Check if this was a fallback (instrumental) or actual failure
+            # For now, empty lyrics is valid (instrumental tracks)
+            pass
+        logger.info(f"Lyrics extraction: {len(lyrics)} words")
         
-        # 8. Assemble AudioAnalysis model
-        processing_time = time.time() - start_time
-        metadata["processing_time"] = processing_time
-        
+        # Create AudioAnalysis object
         analysis = AudioAnalysis(
             job_id=job_id,
             bpm=bpm,
@@ -190,19 +86,24 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
             lyrics=lyrics,
             mood=mood,
             clip_boundaries=clip_boundaries,
-            metadata=metadata
+            metadata={
+                "beat_detection_confidence": beat_confidence,
+                "structure_confidence": 0.8 if not structure_fallback else 0.5,
+                "mood_confidence": mood.confidence,
+                "lyrics_count": len(lyrics),
+                "fallbacks_used": fallbacks_used
+            }
         )
         
         logger.info(
             f"Audio analysis complete for job {job_id}: "
-            f"duration={duration:.2f}s, processing_time={processing_time:.2f}s, "
+            f"BPM={bpm:.1f}, duration={duration:.2f}s, "
             f"beats={len(beat_timestamps)}, segments={len(song_structure)}, "
-            f"lyrics={len(lyrics)}, boundaries={len(clip_boundaries)}"
+            f"clips={len(clip_boundaries)}, lyrics={len(lyrics)}"
         )
         
         return analysis
         
     except Exception as e:
-        logger.error(f"Audio parsing failed for job {job_id}: {str(e)}")
-        raise AudioAnalysisError(f"Failed to parse audio: {str(e)}", job_id=job_id) from e
-
+        logger.error(f"Failed to parse audio for job {job_id}: {str(e)}")
+        raise

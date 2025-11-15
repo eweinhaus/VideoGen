@@ -28,6 +28,7 @@ function jobResponseToJob(response: JobResponse): Job {
     estimatedRemaining: response.estimated_remaining,
     totalCost: response.total_cost,
     stages: response.stages,
+    audioData: response.audio_data,
   }
 }
 

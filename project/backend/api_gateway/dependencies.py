@@ -73,6 +73,18 @@ async def get_current_user(
     
     # Validate JWT token
     try:
+        # Log token info for debugging (first 50 chars only)
+        token_preview = token[:50] + "..." if len(token) > 50 else token
+        logger.debug(
+            "Attempting JWT validation",
+            extra={
+                "token_length": len(token),
+                "token_preview": token_preview,
+                "jwt_secret_configured": bool(settings.supabase_jwt_secret),
+                "jwt_secret_length": len(settings.supabase_jwt_secret) if settings.supabase_jwt_secret else 0
+            }
+        )
+        
         payload = jwt.decode(
             token,
             settings.supabase_jwt_secret,
@@ -103,10 +115,22 @@ async def get_current_user(
         return user_data
         
     except JWTError as e:
-        logger.warning("JWT validation failed", exc_info=e)
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logger.error(
+            "JWT validation failed",
+            extra={
+                "error_type": error_type,
+                "error_message": error_msg,
+                "token_length": len(token) if token else 0,
+                "jwt_secret_configured": bool(settings.supabase_jwt_secret),
+                "hint": "Check that SUPABASE_JWT_SECRET matches your Supabase project's JWT secret (found in Settings > API > JWT Secret)"
+            },
+            exc_info=e
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            detail=f"Invalid or expired token: {error_msg}. Please check your authentication credentials.",
             headers={"WWW-Authenticate": "Bearer"}
         )
 

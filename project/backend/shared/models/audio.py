@@ -1,65 +1,69 @@
 """
 Audio analysis data models.
 
-Defines AudioAnalysis and related models for audio processing results.
+Defines models for audio analysis results including beats, structure, lyrics, mood, and clip boundaries.
 """
 
-from decimal import Decimal
-from typing import Literal, List, Optional, Dict, Any
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, field_serializer
+from enum import Enum
+
+
+class SongStructureType(str, Enum):
+    """Song structure section types."""
+    INTRO = "intro"
+    VERSE = "verse"
+    CHORUS = "chorus"
+    BRIDGE = "bridge"
+    OUTRO = "outro"
+
+
+class EnergyLevel(str, Enum):
+    """Energy level classifications."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class SongStructure(BaseModel):
-    """Song structure segment (intro, verse, chorus, etc.)."""
-    
-    type: Literal["intro", "verse", "chorus", "bridge", "outro"]
-    start: float = Field(description="Start time in seconds")
-    end: float = Field(description="End time in seconds")
-    energy: Literal["low", "medium", "high"]
+    """Song structure section model."""
+    type: SongStructureType
+    start: float = Field(..., ge=0, description="Start time in seconds")
+    end: float = Field(..., gt=0, description="End time in seconds")
+    energy: EnergyLevel
 
 
 class Lyric(BaseModel):
-    """Lyric with timestamp."""
-    
+    """Lyric word model with timestamp."""
     text: str
-    timestamp: float = Field(description="Timestamp in seconds")
+    timestamp: float = Field(..., ge=0, description="Word start time in seconds")
 
 
 class Mood(BaseModel):
-    """Mood classification for the audio."""
-    
-    primary: str = Field(description="Primary mood: 'energetic', 'calm', 'dark', 'bright', etc.")
-    secondary: Optional[str] = None
-    energy_level: Literal["low", "medium", "high"]
-    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
+    """Mood classification model."""
+    primary: str = Field(..., description="Primary mood (energetic, calm, dark, bright)")
+    secondary: Optional[str] = Field(None, description="Secondary mood if confidence >0.3")
+    energy_level: EnergyLevel
+    confidence: float = Field(..., ge=0, le=1, description="Confidence score 0-1")
 
 
 class ClipBoundary(BaseModel):
-    """Clip boundary definition."""
-    
-    start: float = Field(description="Start time in seconds")
-    end: float = Field(description="End time in seconds")
-    duration: float = Field(description="Duration in seconds")
+    """Clip boundary model for video segmentation."""
+    start: float = Field(..., ge=0, description="Clip start time in seconds")
+    end: float = Field(..., gt=0, description="Clip end time in seconds")
+    duration: float = Field(..., ge=4, le=8, description="Clip duration in seconds (4-8s)")
 
 
 class AudioAnalysis(BaseModel):
-    """Complete audio analysis result."""
-    
+    """Complete audio analysis result model."""
     job_id: UUID
-    bpm: float = Field(description="Beats per minute")
-    duration: float = Field(description="Total duration in seconds")
-    beat_timestamps: List[float] = Field(description="List of beat timestamps in seconds")
-    song_structure: List[SongStructure]
-    lyrics: List[Lyric]
+    bpm: float = Field(..., ge=60, le=200, description="Beats per minute")
+    duration: float = Field(..., gt=0, description="Audio duration in seconds")
+    beat_timestamps: List[float] = Field(..., description="Beat timestamps in seconds")
+    song_structure: List[SongStructure] = Field(..., min_length=1, description="Song sections")
+    lyrics: List[Lyric] = Field(default_factory=list, description="Lyrics with timestamps")
     mood: Mood
-    clip_boundaries: List[ClipBoundary]
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Processing metadata: processing_time, cache_hit, confidence, etc."
-    )
-    
-    @field_serializer("job_id")
-    def serialize_uuid(self, value: UUID) -> str:
-        """Serialize UUID to string."""
-        return str(value)
+    clip_boundaries: List[ClipBoundary] = Field(..., min_length=1, description="Clip boundaries (min 1, typically 3+)")
+    metadata: dict = Field(default_factory=dict, description="Processing metadata")
+

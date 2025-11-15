@@ -181,141 +181,67 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
         
-        # Import and call Audio Parser
-        # Note: Modules will be implemented later, so we'll use stubs for now
-        await publish_event(job_id, "message", {
-            "text": "Starting audio analysis...",
-            "stage": "audio_parser"
-        })
-        await update_progress(job_id, 2, "audio_parser")
-        
         try:
-            from modules.audio_parser.process import process as parse_audio
-            await publish_event(job_id, "message", {
-                "text": "Analyzing audio structure and beats...",
-                "stage": "audio_parser"
-            })
-            await update_progress(job_id, 5, "audio_parser")
-            audio_data = await parse_audio(job_id, audio_url)
-        except ImportError:
-            # Module not implemented yet - use stub
-            logger.warning("Audio Parser module not found, using stub", extra={"job_id": job_id})
-            await publish_event(job_id, "message", {
-                "text": "Extracting audio features...",
-                "stage": "audio_parser"
-            })
-            await update_progress(job_id, 5, "audio_parser")
+            from modules.audio_parser.main import process_audio_analysis
             
-            # Simulate processing time with progress updates
-            import asyncio
-            await asyncio.sleep(0.5)  # Simulate processing
-            await update_progress(job_id, 7, "audio_parser")
-            await publish_event(job_id, "message", {
-                "text": "Detecting beats and structure...",
-                "stage": "audio_parser"
-            })
-            await asyncio.sleep(0.5)
-            await update_progress(job_id, 9, "audio_parser")
+            # Convert job_id from str to UUID (audio parser expects UUID)
+            job_uuid = UUID(job_id)
+            audio_data = await process_audio_analysis(job_uuid, audio_url)
             
-            # Create stub audio_data
-            from shared.models.audio import AudioAnalysis, SongStructure, Mood
-            # Get audio duration from file (stub: assume 120 seconds)
-            duration = 120.0  # TODO: Get actual duration from audio file
-            audio_data = AudioAnalysis(
-                job_id=job_id,
-                bpm=120.0,
-                duration=duration,
-                beat_timestamps=[float(i * 0.5) for i in range(int(duration * 2))],  # Stub beats every 0.5s
-                song_structure=[
-                    SongStructure(type="intro", start=0.0, end=10.0, energy="low"),
-                    SongStructure(type="verse", start=10.0, end=30.0, energy="medium"),
-                    SongStructure(type="chorus", start=30.0, end=50.0, energy="high"),
-                    SongStructure(type="verse", start=50.0, end=70.0, energy="medium"),
-                    SongStructure(type="chorus", start=70.0, end=90.0, energy="high"),
-                    SongStructure(type="outro", start=90.0, end=duration, energy="low"),
-                ],
-                mood=Mood(
-                    primary="energetic",
-                    energy_level="high",
-                    confidence=0.8
-                ),
-                lyrics=[],
-                clip_boundaries=[]
-            )
-        
-        await update_progress(job_id, 100, "audio_parser")
-        await publish_event(job_id, "message", {
-            "text": "Audio analysis complete!",
-            "stage": "audio_parser"
-        })
-        await publish_event(job_id, "stage_update", {
-            "stage": "audio_parser",
-            "status": "completed",
-            "duration": audio_data.duration if hasattr(audio_data, 'duration') else (audio_data.beat_timestamps[-1] if audio_data.beat_timestamps else 0)
-        })
-        
-        # Log audio parser results
-        logger.info(
-            "Audio parser results",
-            extra={
-                "job_id": job_id,
-                "bpm": audio_data.bpm,
-                "duration": audio_data.duration,
-                "beat_count": len(audio_data.beat_timestamps),
-                "structure_segments": len(audio_data.song_structure),
-                "mood": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
-                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None
-            }
-        )
-        
-        # Publish audio parser results for frontend display
-        await publish_event(job_id, "audio_parser_results", {
-            "bpm": audio_data.bpm,
-            "duration": audio_data.duration,
-            "beat_timestamps": audio_data.beat_timestamps[:20],  # First 20 beats
-            "beat_count": len(audio_data.beat_timestamps),
-            "song_structure": [
-                {
-                    "type": seg.type,
-                    "start": seg.start,
-                    "end": seg.end,
-                    "energy": seg.energy
-                }
-                for seg in audio_data.song_structure
-            ],
-            "mood": {
-                "primary": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
-                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None,
-                "confidence": audio_data.mood.confidence if hasattr(audio_data.mood, 'confidence') else None
-            },
-            "lyrics_count": len(audio_data.lyrics),
-            "clip_boundaries_count": len(audio_data.clip_boundaries)
-        })
-        
-        # Mark job as completed (stopping here for now)
-        total_cost = Decimal("0.00")
-        await db_client.table("jobs").update({
-            "status": "completed",
-            "progress": 100,
-            "current_stage": "audio_parser",
-            "total_cost": str(total_cost),
-            "updated_at": "now()",
-            "completed_at": "now()"
-        }).eq("id", job_id).execute()
-        
-        # Invalidate cache
-        cache_key = f"job_status:{job_id}"
-        await redis_client.client.delete(cache_key)
-        
-        # Publish completed event
-        await publish_event(job_id, "completed", {
-            "video_url": None,  # No video yet, just audio analysis
-            "total_cost": float(total_cost),
-            "message": "Audio analysis completed successfully"
-        })
-        
-        logger.info("Pipeline completed successfully (audio parser only)", extra={"job_id": job_id, "total_cost": total_cost})
-        return  # Stop here - don't continue to scene planner
+            # Store in database (jobs.audio_data JSONB column)
+            # Use model_dump(mode='json') to serialize UUIDs to strings for JSON compatibility
+            # Also ensure all UUIDs are converted to strings
+            audio_data_dict = audio_data.model_dump(mode='json')
+            # Double-check: convert job_id UUID to string if not already
+            if isinstance(audio_data_dict.get('job_id'), UUID):
+                audio_data_dict['job_id'] = str(audio_data_dict['job_id'])
+            
+            await db_client.table("jobs").update({
+                "audio_data": audio_data_dict,
+                "updated_at": "now()"
+            }).eq("id", job_id).execute()
+            
+            await update_progress(job_id, 10, "audio_parser")
+            await publish_event(job_id, "stage_update", {
+                "stage": "audio_parser",
+                "status": "completed"
+            })
+            
+            # Send audio parser results to frontend (ALWAYS send, even if pipeline fails later)
+            # This ensures frontend gets the data even if budget check fails
+            try:
+                logger.info(f"Publishing audio_parser_results event for job {job_id}", extra={"job_id": job_id})
+                await publish_event(job_id, "audio_parser_results", {
+                    "bpm": audio_data.bpm,
+                    "duration": audio_data.duration,
+                    "beat_timestamps": audio_data.beat_timestamps,
+                    "beat_count": len(audio_data.beat_timestamps),
+                    "song_structure": [
+                        {
+                            "type": seg.type.value if hasattr(seg.type, 'value') else str(seg.type),
+                            "start": seg.start,
+                            "end": seg.end,
+                            "energy": seg.energy.value if hasattr(seg.energy, 'value') else str(seg.energy)
+                        }
+                        for seg in audio_data.song_structure
+                    ],
+                    "mood": {
+                        "primary": audio_data.mood.primary,
+                        "secondary": audio_data.mood.secondary,
+                        "energy_level": audio_data.mood.energy_level.value if hasattr(audio_data.mood.energy_level, 'value') else str(audio_data.mood.energy_level),
+                        "confidence": audio_data.mood.confidence
+                    },
+                    "lyrics_count": len(audio_data.lyrics),
+                    "clip_boundaries_count": len(audio_data.clip_boundaries),
+                    "metadata": audio_data.metadata
+                })
+                logger.info(f"✅ Successfully published audio_parser_results event for job {job_id}", extra={"job_id": job_id})
+            except Exception as event_error:
+                # Don't fail the pipeline if event publishing fails
+                logger.error(f"Failed to publish audio_parser_results event: {str(event_error)}", exc_info=event_error, extra={"job_id": job_id})
+        except Exception as e:
+            await handle_pipeline_error(job_id, e)
+            raise
         
         # Stage 2: Scene Planner (20% progress) - DISABLED FOR NOW
         await publish_event(job_id, "stage_update", {
@@ -385,14 +311,30 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             return
         
         # Check budget before expensive operation (environment-aware)
+        # Reference generation: 2-4 images at ~$0.005 each = $0.01-0.02
+        # Use $0.10 estimate to be safe (10x buffer for retries/failures)
         limit = get_budget_limit(settings.environment)
+        # Environment-aware estimate: lower in development
+        if settings.environment in ["production", "staging"]:
+            ref_gen_estimate = Decimal("0.10")  # $0.10 for production (safe buffer)
+        else:
+            ref_gen_estimate = Decimal("0.10")  # $0.10 for development (still safe, but realistic)
+        
+        # Get current cost to provide better error message
+        current_cost = await cost_tracker.get_total_cost(UUID(job_id))
+        projected_cost = current_cost + ref_gen_estimate
+        
         can_proceed = await cost_tracker.check_budget(
             job_id=UUID(job_id),
-            new_cost=Decimal("50.00"),  # Estimated cost for reference generation
+            new_cost=ref_gen_estimate,
             limit=limit
         )
         if not can_proceed:
-            raise BudgetExceededError("Would exceed budget limit before reference generation")
+            raise BudgetExceededError(
+                f"Would exceed budget limit before reference generation: "
+                f"current cost=${current_cost:.2f}, estimated=${ref_gen_estimate:.2f}, "
+                f"projected=${projected_cost:.2f}, limit=${limit:.2f}"
+            )
         
         references = None
         try:
@@ -451,7 +393,35 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         except ImportError:
             logger.warning("Prompt Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import ClipPrompts, ClipPrompt
-            clip_prompts = ClipPrompts(prompts=[ClipPrompt(clip_index=0, prompt="A scene")])
+            
+            # Create stub prompts based on clip boundaries from audio analysis
+            # Use clip boundaries to create prompts with proper durations
+            stub_prompts = []
+            for idx, boundary in enumerate(audio_data.clip_boundaries):
+                # Use duration from boundary (required field)
+                clip_duration = boundary.duration
+                stub_prompts.append(ClipPrompt(
+                    clip_index=idx,
+                    prompt=f"A scene matching the audio mood: {audio_data.mood.primary}",
+                    negative_prompt="blurry, low quality, distorted, watermark, text overlay",
+                    duration=clip_duration
+                ))
+            
+            # If no clip boundaries, create at least one prompt
+            if not stub_prompts:
+                stub_prompts.append(ClipPrompt(
+                    clip_index=0,
+                    prompt=f"A scene matching the audio mood: {audio_data.mood.primary}",
+                    negative_prompt="blurry, low quality, distorted, watermark, text overlay",
+                    duration=5.0  # Default 5 seconds
+                ))
+            
+            clip_prompts = ClipPrompts(
+                job_id=UUID(job_id),
+                clip_prompts=stub_prompts,
+                total_clips=len(stub_prompts),
+                generation_time=0.0
+            )
         
         await update_progress(job_id, 40, "prompt_generator")
         await publish_event(job_id, "stage_update", {
@@ -470,14 +440,21 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             return
         
         # Check budget before expensive operation (environment-aware)
+        # Video generation: ~6 clips × $0.10 = $0.60 typical, use $1.00 estimate for safety
         limit = get_budget_limit(settings.environment)
+        # Environment-aware estimate: lower in development
+        if settings.environment in ["production", "staging"]:
+            video_gen_estimate = Decimal("1.00")  # $1.00 for production (safe buffer)
+        else:
+            video_gen_estimate = Decimal("1.00")  # $1.00 for development (realistic)
+        
         can_proceed = await cost_tracker.check_budget(
             job_id=UUID(job_id),
-            new_cost=Decimal("100.00"),  # Estimated cost for video generation
+            new_cost=video_gen_estimate,
             limit=limit
         )
         if not can_proceed:
-            raise BudgetExceededError("Would exceed budget limit before video generation")
+            raise BudgetExceededError(f"Would exceed budget limit before video generation (estimated cost: ${video_gen_estimate}, limit: ${limit})")
         
         try:
             from modules.video_generator.process import process as generate_videos
@@ -485,7 +462,37 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         except ImportError:
             logger.warning("Video Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import Clips, Clip
-            clips = Clips(clips=[Clip(clip_index=0, video_url="stub_url", duration=5.0)])
+            
+            # Create stub clips based on clip_prompts
+            stub_clips = []
+            for prompt in clip_prompts.clip_prompts:
+                target_duration = prompt.duration
+                # Stub: assume actual duration matches target (perfect generation)
+                actual_duration = target_duration
+                duration_diff = 0.0
+                
+                stub_clips.append(Clip(
+                    clip_index=prompt.clip_index,
+                    video_url=f"stub_video_url_{prompt.clip_index}.mp4",
+                    actual_duration=actual_duration,
+                    target_duration=target_duration,
+                    duration_diff=duration_diff,
+                    status="success",
+                    cost=Decimal("0.10"),  # Stub cost per clip
+                    retry_count=0,
+                    generation_time=2.0  # Stub generation time
+                ))
+            
+            # Create Clips collection with all required fields
+            clips = Clips(
+                job_id=UUID(job_id),
+                clips=stub_clips,
+                total_clips=len(stub_clips),
+                successful_clips=len(stub_clips),
+                failed_clips=0,
+                total_cost=Decimal(str(len(stub_clips) * 0.10)),  # Total cost for all clips
+                total_generation_time=len(stub_clips) * 2.0  # Total generation time
+            )
         
         # Validate minimum clips
         if len(clips.clips) < 3:
@@ -512,7 +519,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         
         # Extract transitions and beats
         transitions = plan.transitions if hasattr(plan, "transitions") else []
-        beat_timestamps = audio_data.beat_timestamps if hasattr(audio_data, "beat_timestamps") else []
+        beat_timestamps = []  # Audio parser removed - will be rebuilt
         
         try:
             from modules.composer.process import process as compose_video

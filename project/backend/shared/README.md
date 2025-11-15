@@ -61,7 +61,7 @@ log_level = settings.log_level
 from shared.errors import (
     PipelineError,
     ConfigError,
-    AudioAnalysisError,
+    # AudioAnalysisError removed - audio parser module will be rebuilt
     GenerationError,
     BudgetExceededError,
     RetryableError,
@@ -118,7 +118,7 @@ is_healthy = await redis.health_check()
 ### Data Models
 
 ```python
-from shared.models import Job, AudioAnalysis, ScenePlan, VideoOutput
+from shared.models import Job, ScenePlan, VideoOutput  # AudioAnalysis removed - audio parser module will be rebuilt
 from uuid import uuid4
 from datetime import datetime
 

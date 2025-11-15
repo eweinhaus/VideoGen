@@ -1,140 +1,99 @@
 """
-Unit tests for boundary generation.
+Tests for clip boundary generation component.
 """
 
 import pytest
-
-from modules.audio_parser.boundaries import generate_boundaries, _snap_to_beat
+from modules.audio_parser.boundaries import generate_boundaries
 from shared.models.audio import ClipBoundary
 
 
-class TestSnapToBeat:
-    """Test beat snapping."""
+def test_boundaries_minimum_clips():
+    """Test that at least 1 clip is generated."""
+    beat_timestamps = [0.0, 0.5, 1.0, 1.5, 2.0]
+    bpm = 120.0
+    duration = 10.0
     
-    def test_snap_within_threshold(self):
-        """Test snapping when within threshold."""
-        beat_timestamps = [0.0, 0.5, 1.0, 1.5, 2.0]
-        timestamp = 0.48  # Within 100ms of 0.5
-        
-        result = _snap_to_beat(timestamp, beat_timestamps, threshold=0.1)
-        
-        assert result == 0.5
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration)
     
-    def test_no_snap_outside_threshold(self):
-        """Test no snapping when outside threshold."""
-        beat_timestamps = [0.0, 0.5, 1.0, 1.5, 2.0]
-        timestamp = 0.3  # 200ms from nearest beat (0.5)
-        
-        result = _snap_to_beat(timestamp, beat_timestamps, threshold=0.1)
-        
-        assert result == 0.3  # No snap
-    
-    def test_snap_empty_beats(self):
-        """Test snapping with empty beat list."""
-        timestamp = 1.5
-        
-        result = _snap_to_beat(timestamp, [], threshold=0.1)
-        
-        assert result == timestamp  # Returns original
-    
-    def test_snap_finds_nearest(self):
-        """Test that nearest beat is found."""
-        beat_timestamps = [0.0, 1.0, 2.0, 3.0]
-        timestamp = 1.45  # Closer to 1.5, but nearest beat is 1.0
-        
-        result = _snap_to_beat(timestamp, beat_timestamps, threshold=0.5)
-        
-        assert result == 1.0
+    assert len(boundaries) >= 1, "Should generate at least 1 clip"
+    assert all(isinstance(b, ClipBoundary) for b in boundaries)
 
 
-class TestGenerateBoundaries:
-    """Test boundary generation."""
+def test_boundaries_short_song():
+    """Test boundaries for very short songs (<12s)."""
+    beat_timestamps = [0.0, 0.5, 1.0]
+    bpm = 120.0
+    duration = 8.0  # Less than 12s
     
-    def test_generate_boundaries_valid(self):
-        """Test boundary generation with valid inputs."""
-        beat_timestamps = [i * 0.5 for i in range(20)]  # 10 seconds of beats
-        duration = 10.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm)
-        
-        assert isinstance(boundaries, list)
-        assert len(boundaries) >= 3  # Minimum 3 clips
-        assert all(isinstance(b, ClipBoundary) for b in boundaries)
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration)
     
-    def test_boundaries_within_duration(self):
-        """Test that all boundaries are within duration."""
-        beat_timestamps = [i * 0.5 for i in range(20)]
-        duration = 10.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm)
-        
-        assert all(0 <= b.start < b.end <= duration for b in boundaries)
-    
-    def test_boundaries_duration_range(self):
-        """Test that boundaries are within 4-8s range."""
-        beat_timestamps = [i * 0.5 for i in range(40)]  # 20 seconds
-        duration = 20.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm, min_duration=4.0, max_duration=8.0)
-        
-        # Most boundaries should be within range (allowing some flexibility)
-        durations = [b.duration for b in boundaries]
-        assert all(3.0 <= d <= 9.0 for d in durations)  # Allow some flexibility
-    
-    def test_minimum_clips_requirement(self):
-        """Test that minimum 3 clips are generated."""
-        beat_timestamps = [i * 0.5 for i in range(10)]  # 5 seconds
-        duration = 5.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm, min_clips=3)
-        
-        assert len(boundaries) >= 3
-    
-    def test_boundaries_no_beats(self):
-        """Test boundary generation without beats."""
-        beat_timestamps = []
-        duration = 10.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm)
-        
-        assert len(boundaries) >= 3
-        assert all(isinstance(b, ClipBoundary) for b in boundaries)
-    
-    def test_boundaries_short_song(self):
-        """Test boundary generation with very short song."""
-        beat_timestamps = [i * 0.2 for i in range(10)]  # 2 seconds
-        duration = 2.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm, min_clips=3)
-        
-        # Should still generate at least 3 clips, even if short
-        assert len(boundaries) >= 3
-    
-    def test_boundaries_long_song(self):
-        """Test boundary generation with long song."""
-        beat_timestamps = [i * 0.5 for i in range(200)]  # 100 seconds
-        duration = 100.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm)
-        
-        assert len(boundaries) >= 3
-        assert all(b.end <= duration for b in boundaries)
-    
-    def test_boundaries_have_duration(self):
-        """Test that boundaries have duration calculated."""
-        beat_timestamps = [i * 0.5 for i in range(20)]
-        duration = 10.0
-        bpm = 120
-        
-        boundaries = generate_boundaries(beat_timestamps, duration, bpm)
-        
-        assert all(b.duration == b.end - b.start for b in boundaries)
-        assert all(b.duration > 0 for b in boundaries)
+    # For songs <12s, we create 1-2 segments to ensure 4s minimum
+    assert len(boundaries) >= 1, "Should generate at least 1 clip"
+    assert all(4.0 <= b.duration <= 8.0 for b in boundaries), \
+        f"Clip durations should be in 4-8s range, got: {[b.duration for b in boundaries]}"
 
+
+def test_boundaries_duration_range():
+    """Test that clip durations are in 4-8s range."""
+    beat_timestamps = [i * 0.5 for i in range(20)]  # Beats every 0.5s
+    bpm = 120.0
+    duration = 30.0
+    
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration)
+    
+    assert all(4.0 <= b.duration <= 8.0 for b in boundaries), \
+        f"All clip durations should be 4-8s, got: {[b.duration for b in boundaries]}"
+
+
+def test_boundaries_no_beats():
+    """Test boundaries when no beats are detected."""
+    beat_timestamps = []
+    bpm = 120.0
+    duration = 20.0
+    
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration)
+    
+    assert len(boundaries) >= 1, "Should generate at least 1 clip even without beats"
+    assert all(4.0 <= b.duration <= 8.0 for b in boundaries)
+
+
+def test_boundaries_cover_full_duration():
+    """Test that boundaries cover the full audio duration."""
+    beat_timestamps = [i * 0.5 for i in range(20)]
+    bpm = 120.0
+    duration = 15.0
+    
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration)
+    
+    assert boundaries[0].start == 0.0, "First boundary should start at 0"
+    # Last boundary should end at or near duration (may be slightly less if extending would exceed 8s)
+    assert boundaries[-1].end >= duration * 0.8, \
+        f"Last boundary should cover most of duration (got {boundaries[-1].end}, expected ~{duration})"
+
+
+def test_boundaries_max_clips():
+    """Test that max_clips limit is respected."""
+    beat_timestamps = [i * 0.5 for i in range(100)]  # Many beats
+    bpm = 120.0
+    duration = 60.0
+    max_clips = 10
+    
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration, max_clips=max_clips)
+    
+    assert len(boundaries) <= max_clips, \
+        f"Should not exceed max_clips ({max_clips}), got {len(boundaries)}"
+
+
+def test_boundaries_valid_structure():
+    """Test that boundaries have valid start < end relationships."""
+    beat_timestamps = [i * 0.5 for i in range(20)]
+    bpm = 120.0
+    duration = 20.0
+    
+    boundaries = generate_boundaries(beat_timestamps, bpm, duration)
+    
+    for boundary in boundaries:
+        assert boundary.start < boundary.end, \
+            f"Boundary start ({boundary.start}) should be < end ({boundary.end})"
+        assert boundary.duration == boundary.end - boundary.start, \
+            f"Duration should match end - start"

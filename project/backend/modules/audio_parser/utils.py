@@ -1,19 +1,89 @@
 """
-Audio file utilities.
+Utility functions for audio parser.
 
-Download, hash, and validate audio files.
+Download, validation, and hash calculation utilities.
 """
 
 import hashlib
 import io
+import re
 from typing import Optional
-
-import librosa
-from shared.errors import ValidationError, RetryableError
-from shared.logging import get_logger
+import httpx
 from shared.storage import storage
+from shared.validation import validate_audio_file, ValidationError
+from shared.errors import AudioAnalysisError
+from shared.logging import get_logger
 
 logger = get_logger("audio_parser")
+
+
+async def download_audio_file(audio_url: str) -> bytes:
+    """
+    Download audio file from Supabase Storage URL.
+    
+    Args:
+        audio_url: Supabase Storage URL (public or signed)
+        
+    Returns:
+        Audio file bytes
+        
+    Raises:
+        AudioAnalysisError: If download fails
+    """
+    try:
+        # Try to extract bucket and path from URL
+        # Supabase Storage URLs format:
+        # https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
+        # or
+        # https://<project>.supabase.co/storage/v1/object/sign/<bucket>/<path>?token=...
+        
+        bucket_path_match = re.search(
+            r'/storage/v1/object/(?:public|sign)/([^/]+)/(.+)',
+            audio_url
+        )
+        
+        if bucket_path_match:
+            # Extract bucket and path from URL
+            bucket = bucket_path_match.group(1)
+            path = bucket_path_match.group(2)
+            
+            # Remove query parameters from path if present
+            if '?' in path:
+                path = path.split('?')[0]
+            
+            logger.info(f"Downloading from bucket: {bucket}, path: {path}")
+            return await storage.download_file(bucket, path)
+        else:
+            # Fallback: Download directly from URL using HTTP
+            logger.info(f"Downloading directly from URL: {audio_url}")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(audio_url)
+                response.raise_for_status()
+                return response.content
+                
+    except Exception as e:
+        logger.error(f"Failed to download audio file: {str(e)}")
+        raise AudioAnalysisError(f"Failed to download audio file: {str(e)}") from e
+
+
+def validate_audio_file_bytes(audio_bytes: bytes, max_size_mb: int = 10) -> None:
+    """
+    Validate audio file bytes.
+    
+    Args:
+        audio_bytes: Audio file bytes
+        max_size_mb: Maximum file size in MB (default: 10)
+        
+    Raises:
+        ValidationError: If file is invalid
+    """
+    # Convert bytes to BytesIO for validation
+    file_obj = io.BytesIO(audio_bytes)
+    file_obj.name = "audio_file"  # Set name for MIME type detection
+    
+    # Use shared validation function
+    from shared.validation import validate_audio_file as validate_audio_file_shared
+    validate_audio_file_shared(file_obj, max_size_mb=max_size_mb)
 
 
 def calculate_file_hash(audio_bytes: bytes) -> str:
@@ -29,87 +99,33 @@ def calculate_file_hash(audio_bytes: bytes) -> str:
     return hashlib.md5(audio_bytes).hexdigest()
 
 
-async def download_audio_file(audio_url: str) -> bytes:
+def extract_hash_from_url(audio_url: str) -> Optional[str]:
     """
-    Download audio file from Supabase Storage.
+    Try to extract MD5 hash from Supabase Storage URL.
+    
+    Note: Supabase Storage URLs typically don't include file hashes in the URL.
+    This function attempts to extract hash if present in URL parameters or path,
+    but will return None if hash is not available (which is the common case).
     
     Args:
-        audio_url: URL or path to audio file in storage
+        audio_url: Supabase Storage URL
         
     Returns:
-        Audio file bytes
-        
-    Raises:
-        RetryableError: If download fails
+        MD5 hash if found in URL, None otherwise
     """
-    try:
-        # Extract bucket and path from URL
-        # audio_url format: https://{project}.supabase.co/storage/v1/object/public/{bucket}/{path}
-        # or just the path if it's a relative path
-        if audio_url.startswith("http"):
-            # Extract path from full URL
-            parts = audio_url.split("/storage/v1/object/public/")
-            if len(parts) == 2:
-                bucket_and_path = parts[1]
-                bucket, path = bucket_and_path.split("/", 1)
-            else:
-                raise ValidationError(f"Invalid audio URL format: {audio_url}")
-        else:
-            # Assume it's a path, extract bucket from path
-            # Path format: {user_id}/{job_id}/{filename}
-            # Bucket is "audio-uploads"
-            bucket = "audio-uploads"
-            path = audio_url
-        
-        logger.info(f"Downloading audio file from {bucket}/{path}")
-        audio_bytes = await storage.download_file(bucket=bucket, path=path)
-        
-        if not audio_bytes:
-            raise RetryableError(f"Downloaded audio file is empty: {audio_url}")
-        
-        logger.info(f"Downloaded audio file: {len(audio_bytes)} bytes")
-        return audio_bytes
-        
-    except ValidationError:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to download audio file: {str(e)}", extra={"audio_url": audio_url})
-        raise RetryableError(f"Failed to download audio file: {str(e)}") from e
-
-
-def validate_audio_file(audio_bytes: bytes, max_size_mb: int = 10) -> bool:
-    """
-    Validate audio file format and size.
+    # Check for hash in URL parameters (if Supabase adds it in future)
+    if 'hash=' in audio_url:
+        match = re.search(r'hash=([a-f0-9]{32})', audio_url)
+        if match:
+            return match.group(1)
     
-    Args:
-        audio_bytes: Audio file bytes
-        max_size_mb: Maximum file size in MB (default: 10)
-        
-    Returns:
-        True if valid
-        
-    Raises:
-        ValidationError: If file is invalid
-    """
-    # Check file size
-    max_size_bytes = max_size_mb * 1024 * 1024
-    if len(audio_bytes) > max_size_bytes:
-        file_size_mb = len(audio_bytes) / (1024 * 1024)
-        raise ValidationError(
-            f"Audio file size ({file_size_mb:.2f} MB) exceeds maximum of {max_size_mb} MB"
-        )
+    # Check for hash in path (unlikely but possible)
+    hash_match = re.search(r'([a-f0-9]{32})', audio_url)
+    if hash_match:
+        # Only return if it looks like an MD5 hash (32 hex chars)
+        potential_hash = hash_match.group(1)
+        if len(potential_hash) == 32:
+            return potential_hash
     
-    # Validate format by trying to load with librosa
-    try:
-        audio_file = io.BytesIO(audio_bytes)
-        y, sr = librosa.load(audio_file, sr=None, duration=1.0)  # Load only first second for validation
-        if sr is None or len(y) == 0:
-            raise ValidationError("Invalid audio file: unable to load audio data")
-        
-        logger.info(f"Validated audio file: sample_rate={sr} Hz, duration_sample={len(y)}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to validate audio file: {str(e)}")
-        raise ValidationError(f"Invalid audio file format: {str(e)}") from e
-
+    # Default: Hash not in URL, will be calculated after download
+    return None

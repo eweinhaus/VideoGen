@@ -80,3 +80,4 @@ def get_cost_estimate(duration_minutes: float, environment: str) -> float:
     return max(2.00, duration_minutes * 1.50)
 
 
+

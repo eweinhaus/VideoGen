@@ -112,19 +112,33 @@ async def upload_audio(
             sanitized_filename = re.sub(r'_+', '_', sanitized_filename).strip('_') or "audio"
         
         storage_path = f"{user_id}/{job_id}/{sanitized_filename}"
+        
+        # Determine correct MIME type from file extension (don't trust upload content_type)
+        ext_lower = sanitized_filename.rsplit('.', 1)[-1].lower() if '.' in sanitized_filename else ''
+        mime_type_map = {
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'flac': 'audio/flac',
+            'ogg': 'audio/ogg',
+            'm4a': 'audio/mp4'
+        }
+        content_type = mime_type_map.get(ext_lower, audio_file.content_type or 'audio/mpeg')
+        
         logger.info(
             "Sanitized filename for storage",
             extra={
                 "original_filename": original_filename,
                 "sanitized_filename": sanitized_filename,
-                "storage_path": storage_path
+                "storage_path": storage_path,
+                "detected_content_type": content_type,
+                "original_content_type": audio_file.content_type
             }
         )
         audio_url = await storage_client.upload_file(
             bucket="audio-uploads",
             path=storage_path,
             file_data=file_data,
-            content_type=audio_file.content_type
+            content_type=content_type
         )
         
         # Create job record in database
