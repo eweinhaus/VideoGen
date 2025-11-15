@@ -247,6 +247,42 @@ export function ProgressTracker({
                   </p>
                 </div>
               )}
+
+              {audioResults.metadata && (
+                <div className="mt-4 pt-4 border-t">
+                  <p className="text-sm font-medium text-muted-foreground mb-2">Analysis Metadata</p>
+                  <div className="space-y-2 text-xs">
+                    {audioResults.metadata.cache_hit && (
+                      <p className="text-green-600">✓ Results from cache</p>
+                    )}
+                    {audioResults.metadata.fallback_used && audioResults.metadata.fallback_used.length > 0 && (
+                      <div>
+                        <p className="text-amber-600 font-medium">⚠ Fallbacks used:</p>
+                        <ul className="list-disc list-inside ml-2 text-amber-600">
+                          {audioResults.metadata.fallback_used.map((fallback, idx) => (
+                            <li key={idx}>{fallback}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {audioResults.metadata.beat_detection_confidence !== undefined && (
+                      <p className="text-muted-foreground">
+                        Beat detection confidence: {Math.round(audioResults.metadata.beat_detection_confidence * 100)}%
+                      </p>
+                    )}
+                    {audioResults.metadata.structure_confidence !== undefined && (
+                      <p className="text-muted-foreground">
+                        Structure confidence: {Math.round(audioResults.metadata.structure_confidence * 100)}%
+                      </p>
+                    )}
+                    {audioResults.metadata.processing_time !== undefined && (
+                      <p className="text-muted-foreground">
+                        Processing time: {audioResults.metadata.processing_time.toFixed(2)}s
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

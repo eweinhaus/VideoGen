@@ -21,6 +21,26 @@ export interface JobResponse {
     duration?: number
     progress?: string
   }>
+  audio_data?: {
+    bpm: number
+    duration: number
+    beat_timestamps: number[]
+    song_structure: Array<{
+      type: string
+      start: number
+      end: number
+      energy: string
+    }>
+    mood: {
+      primary: string
+      secondary?: string
+      energy_level?: string
+      confidence?: number
+    }
+    lyrics: Array<{ text: string; timestamp: number }>
+    clip_boundaries: Array<{ start: number; end: number; duration: number }>
+    metadata?: Record<string, any>
+  }
 }
 
 export class APIError extends Error {

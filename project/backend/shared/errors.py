@@ -37,8 +37,11 @@ class ConfigError(PipelineError):
 
 
 class AudioAnalysisError(PipelineError):
-    """Audio analysis failures."""
-    pass
+    """Raised when audio analysis fails."""
+    
+    def __init__(self, message: str, job_id: Optional[UUID] = None):
+        super().__init__(message, job_id=job_id)
+        self.code = "AUDIO_ANALYSIS_ERROR"
 
 
 class GenerationError(PipelineError):

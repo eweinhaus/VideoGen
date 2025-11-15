@@ -5,7 +5,15 @@ This module exports all Pydantic models used across pipeline modules.
 """
 
 from .job import Job, JobStage, JobCost
-from .audio import AudioAnalysis, SongStructure, Lyric, Mood, ClipBoundary
+from .audio import (
+    SongStructure,
+    Lyric,
+    Mood,
+    ClipBoundary,
+    AudioAnalysis,
+    SongStructureType,
+    EnergyLevel
+)
 from .scene import (
     ScenePlan,
     Character,
@@ -24,11 +32,13 @@ __all__ = [
     "JobStage",
     "JobCost",
     # Audio models
-    "AudioAnalysis",
     "SongStructure",
     "Lyric",
     "Mood",
     "ClipBoundary",
+    "AudioAnalysis",
+    "SongStructureType",
+    "EnergyLevel",
     # Scene models
     "ScenePlan",
     "Character",

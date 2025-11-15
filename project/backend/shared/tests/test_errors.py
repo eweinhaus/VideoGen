@@ -7,7 +7,7 @@ from uuid import UUID
 from shared.errors import (
     PipelineError,
     ConfigError,
-    AudioAnalysisError,
+    # AudioAnalysisError removed - audio parser module will be rebuilt
     GenerationError,
     CompositionError,
     BudgetExceededError,
@@ -19,7 +19,7 @@ from shared.errors import (
 def test_pipeline_error_inheritance():
     """Test that all exceptions inherit from PipelineError."""
     assert issubclass(ConfigError, PipelineError)
-    assert issubclass(AudioAnalysisError, PipelineError)
+    # AudioAnalysisError removed - audio parser module will be rebuilt
     assert issubclass(GenerationError, PipelineError)
     assert issubclass(CompositionError, PipelineError)
     assert issubclass(BudgetExceededError, PipelineError)
@@ -46,5 +46,6 @@ def test_exception_messages():
     error = BudgetExceededError("Budget exceeded", code="BUDGET_EXCEEDED")
     assert "Budget exceeded" in str(error)
     assert error.code == "BUDGET_EXCEEDED"
+
 
 

@@ -20,3 +20,4 @@ Generate comprehensive video plan using **music video director knowledge** to cr
 - Lighting techniques (dark mood → low-key, bright → high-key)
 
 
+

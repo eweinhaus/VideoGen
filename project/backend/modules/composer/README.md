@@ -22,3 +22,4 @@ Stitch video clips with beat-aligned transitions, sync original audio, and produ
 - FFmpeg errors → Retry composition once, then fail with detailed error message
 
 
+

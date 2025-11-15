@@ -152,3 +152,4 @@ All requests include JWT Bearer token from Supabase Auth.
 - Error handling includes network errors, API errors, and SSE failures
 - Mobile-responsive design with Tailwind CSS breakpoints
 
+

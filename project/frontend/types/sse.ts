@@ -44,11 +44,21 @@ export interface AudioParserResultsEvent {
   }>
   mood: {
     primary: string
+    secondary?: string
     energy_level?: string
     confidence?: number
   }
   lyrics_count: number
   clip_boundaries_count: number
+  metadata?: {
+    cache_hit?: boolean
+    fallback_used?: string[]
+    beat_detection_confidence?: number
+    structure_confidence?: number
+    mood_confidence?: number
+    processing_time?: number
+    [key: string]: any
+  }
 }
 
 export interface ScenePlannerResultsEvent {
