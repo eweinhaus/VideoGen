@@ -10,7 +10,7 @@ from typing import List, Tuple
 import librosa
 from sklearn.cluster import AgglomerativeClustering
 
-from shared.models.audio import SongStructure
+from shared.models.audio import SongStructure, ClipBoundary
 from shared.logging import get_logger
 
 logger = get_logger("audio_parser")
@@ -620,4 +620,146 @@ def analyze_structure(
             end=duration,
             energy="medium"
         )], True)
+
+
+def analyze_structure_from_clips(
+    y: np.ndarray,
+    sr: int,
+    clip_boundaries: List[ClipBoundary],
+    duration: float
+) -> Tuple[List[SongStructure], bool]:
+    """
+    Analyze song structure using clip boundaries as the base segments.
+    
+    This ensures structure segments align perfectly with clip boundaries,
+    which are beat-aligned. Each clip boundary is then classified as
+    verse/chorus/bridge/etc. based on its audio features.
+    
+    Args:
+        y: Audio signal array
+        sr: Sample rate
+        clip_boundaries: List of ClipBoundary objects (beat-aligned)
+        duration: Total duration in seconds
+        
+    Returns:
+        Tuple of (List of SongStructure objects, fallback_used flag)
+    """
+    logger.info(
+        f"Starting structure analysis from clip boundaries: "
+        f"duration={duration:.2f}s, clips={len(clip_boundaries)}"
+    )
+    
+    if not clip_boundaries or len(clip_boundaries) == 0:
+        logger.warning("No clip boundaries provided, using fallback single segment")
+        return ([SongStructure(
+            type="verse",
+            start=0.0,
+            end=duration,
+            energy="medium"
+        )], True)
+    
+    try:
+        # Calculate max values for normalization (use full track)
+        rms_full = librosa.feature.rms(y=y)[0]
+        centroid_full = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+        max_rms = float(np.max(rms_full)) if len(rms_full) > 0 else 1.0
+        max_centroid = float(np.max(centroid_full)) if len(centroid_full) > 0 else 5000.0
+        
+        logger.info(
+            f"Energy normalization values: max_rms={max_rms:.4f}, max_centroid={max_centroid:.2f}Hz"
+        )
+        
+        song_structure = []
+        for i, clip in enumerate(clip_boundaries):
+            start = clip.start
+            end = clip.end
+            segment_duration = end - start
+            
+            # Skip invalid segments
+            if end <= start or segment_duration <= 0:
+                logger.warning(f"Skipping invalid clip boundary: {start:.1f}-{end:.1f}s")
+                continue
+            
+            # Extract audio segment
+            start_idx = int(start * sr)
+            end_idx = int(end * sr)
+            y_segment = y[start_idx:end_idx]
+            
+            if len(y_segment) == 0:
+                logger.warning(f"Skipping empty segment: {start:.1f}-{end:.1f}s (no audio samples)")
+                continue
+            
+            # Calculate energy for this segment
+            energy = _calculate_segment_energy(y_segment, sr, max_rms, max_centroid)
+            
+            # Classify type using heuristics based on position and energy
+            n_clips = len(clip_boundaries)
+            
+            if i == 0 and segment_duration < 20 and energy < 0.4:
+                seg_type = "intro"
+            elif i == n_clips - 1 and segment_duration < 20 and energy < 0.4:
+                seg_type = "outro"
+            elif energy > 0.7:
+                seg_type = "chorus"
+            elif energy < 0.4:
+                seg_type = "verse"
+            else:
+                # Medium energy: alternate between verse and chorus based on position
+                # This prevents everything from being labeled "bridge"
+                if i % 2 == 0:
+                    seg_type = "verse"
+                else:
+                    seg_type = "chorus"
+            
+            # Map energy to level
+            if energy < 0.4:
+                energy_level = "low"
+            elif energy > 0.7:
+                energy_level = "high"
+            else:
+                energy_level = "medium"
+            
+            logger.debug(
+                f"Clip {i+1}/{n_clips}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
+                f"energy={energy:.3f} ({energy_level}), type={seg_type}"
+            )
+            
+            song_structure.append(SongStructure(
+                type=seg_type,
+                start=start,
+                end=end,
+                energy=energy_level
+            ))
+        
+        logger.info(
+            f"Structure analysis complete: {len(song_structure)} segments "
+            f"(aligned with {len(clip_boundaries)} clip boundaries). "
+            f"Segments: {[f'{s.type}({s.start:.1f}-{s.end:.1f}s, {s.energy})' for s in song_structure[:10]]}..."
+        )
+        return (song_structure, False)  # No fallback used - based on clip boundaries
+        
+    except Exception as e:
+        error_type = type(e).__name__
+        logger.error(
+            f"Structure analysis from clips failed ({error_type}): {str(e)}. "
+            f"Audio diagnostics: duration={duration:.2f}s, samples={len(y)}, "
+            f"sample_rate={sr}Hz, clips={len(clip_boundaries)}"
+        )
+        # Fallback: create structure from clip boundaries with default classification
+        logger.warning("Using fallback: creating structure from clip boundaries with default classification")
+        song_structure = []
+        for i, clip in enumerate(clip_boundaries):
+            seg_type = "verse" if i % 2 == 0 else "chorus"
+            if i == 0:
+                seg_type = "intro"
+            elif i == len(clip_boundaries) - 1:
+                seg_type = "outro"
+            
+            song_structure.append(SongStructure(
+                type=seg_type,
+                start=clip.start,
+                end=clip.end,
+                energy="medium"
+            ))
+        return (song_structure, True)
 

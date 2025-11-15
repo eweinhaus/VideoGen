@@ -17,7 +17,7 @@ def generate_boundaries(
     beat_timestamps: List[float], 
     bpm: float, 
     total_duration: float,
-    max_clips: int = 20
+    max_clips: int = None
 ) -> List[ClipBoundary]:
     """
     Generate clip boundaries aligned to beats.
@@ -26,11 +26,19 @@ def generate_boundaries(
         beat_timestamps: List of beat timestamps in seconds
         bpm: Beats per minute
         total_duration: Total audio duration in seconds
-        max_clips: Maximum number of clips (default: 20)
+        max_clips: Maximum number of clips (default: None, calculates based on duration)
+                   Roughly targets ~20 clips for typical songs, but flexible
         
     Returns:
         List of ClipBoundary objects
     """
+    # Calculate target number of clips if not specified
+    # Roughly ~20 clips for typical songs, but flexible based on duration
+    if max_clips is None:
+        # Target ~8 seconds per clip on average
+        target_clips = int(total_duration / 8.0)
+        # But keep it reasonable: 10-30 clips for most songs
+        max_clips = max(10, min(30, target_clips))
     # Edge case 1: Very short songs (<12s) → Create fewer segments to ensure 4s minimum
     # The model requires 4-8s per segment, so for songs <12s, we can't have 3 segments
     # Instead, create 1-2 segments that meet the 4s minimum requirement
@@ -103,45 +111,41 @@ def generate_boundaries(
         return boundaries[:max_clips]
     
     # Normal case: Beat-aligned boundaries
-    target_duration = 6.0  # Middle of 4-8s range
+    # Target roughly 8 seconds per clip, but flexible (can be 4-25s)
+    # Add variation: use different beats_per_clip values to create natural variation
+    target_duration = 8.0  # Rough target, but flexible
     beat_interval = np.mean(np.diff(beat_timestamps)) if len(beat_timestamps) > 1 else (60.0 / bpm)
-    beats_per_clip = max(1, math.ceil(target_duration / beat_interval))
+    base_beats_per_clip = max(1, math.ceil(target_duration / beat_interval))
     
     boundaries = []
     current_beat_idx = 0
+    clip_index = 0  # Track clip index for variation pattern
     
     while current_beat_idx < len(beat_timestamps) and len(boundaries) < max_clips:
         start = beat_timestamps[current_beat_idx]
+        
+        # Add variation: alternate between base, base+1, and base-1 beats per clip
+        # This creates natural variation in clip durations (roughly 6-10s range)
+        variation_pattern = [0, 1, -1, 0, 1, -1, 0]  # Pattern repeats every 7 clips
+        beats_variation = variation_pattern[clip_index % len(variation_pattern)]
+        beats_per_clip = max(1, base_beats_per_clip + beats_variation)
+        
         end_idx = min(current_beat_idx + beats_per_clip, len(beat_timestamps) - 1)
         end = beat_timestamps[end_idx]
         duration = end - start
         
-        # Adjust duration to fit 4-8s range
+        # Adjust duration to be roughly 8s, but flexible
+        # Allow clips from 4s to 25s (flexible constraint)
         if duration < 4.0:
-            # Extend to next beats (up to 8s max)
-            while end_idx < len(beat_timestamps) - 1 and duration < 8.0:
+            # Extend to next beats to reach at least 4s
+            while end_idx < len(beat_timestamps) - 1 and duration < 4.0:
                 end_idx += 1
                 end = beat_timestamps[end_idx]
                 duration = end - start
-                if duration >= 8.0:
+                if duration >= 4.0:
                     break
-        elif duration > 8.0:
-            # Find nearest beat to 8s mark
-            target_end = start + 8.0
-            nearest_idx = min(
-                range(current_beat_idx, len(beat_timestamps)),
-                key=lambda i: abs(beat_timestamps[i] - target_end)
-            )
-            end = beat_timestamps[nearest_idx]
-            duration = end - start
-        
-        # Ensure duration is within valid range
-        if duration < 4.0:
-            duration = 4.0
-            end = start + duration
-        elif duration > 8.0:
-            duration = 8.0
-            end = start + duration
+        # Allow longer clips (up to 25s) if beats naturally create them
+        # Don't force 8s max - let it be flexible
         
         boundaries.append(ClipBoundary(
             start=start,
@@ -150,6 +154,7 @@ def generate_boundaries(
         ))
         
         current_beat_idx = end_idx + 1
+        clip_index += 1
     
     # Ensure minimum 1 clip (for very short songs, we may have fewer than 3)
     if len(boundaries) < 1:
@@ -159,26 +164,23 @@ def generate_boundaries(
         else:
             return _create_equal_segments(total_duration, min(3, int(total_duration / 4.0)))
     
-    # Trim last clip to end if needed, but ensure duration doesn't exceed 8s
+    # Trim last clip to end if needed (flexible - can extend up to reasonable length)
     if boundaries[-1].end < total_duration:
         new_end = total_duration
         new_duration = new_end - boundaries[-1].start
-        # If extending would exceed 8s, create additional clip if there's enough time
-        if new_duration <= 8.0:
+        # Allow extending if it's reasonable (up to 25s)
+        if new_duration <= 25.0:
             boundaries[-1].end = new_end
             boundaries[-1].duration = new_duration
         else:
-            # Can't extend last clip without exceeding 8s
-            # Create additional clip if remaining time is >= 4s and <= 8s
+            # If extending would exceed 25s, create additional clip if there's enough time
             remaining_time = total_duration - boundaries[-1].end
-            if remaining_time >= 4.0 and remaining_time <= 8.0 and len(boundaries) < max_clips:
+            if remaining_time >= 4.0 and len(boundaries) < max_clips:
                 boundaries.append(ClipBoundary(
                     start=boundaries[-1].end,
                     end=total_duration,
                     duration=remaining_time
                 ))
-            # If remaining time > 8s, we'd need multiple clips, but that's complex
-            # For now, just leave the last clip as is (it's already valid)
     
     logger.info(f"Generated {len(boundaries)} beat-aligned clip boundaries")
     return boundaries[:max_clips]

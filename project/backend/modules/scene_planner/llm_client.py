@@ -6,6 +6,7 @@ cost tracking, and comprehensive prompt engineering.
 """
 
 import json
+import re
 from decimal import Decimal
 from typing import Dict, Any, Optional
 from uuid import UUID
@@ -25,6 +26,77 @@ logger = get_logger("scene_planner")
 
 # Initialize OpenAI client
 _openai_client: Optional[AsyncOpenAI] = None
+
+
+def _repair_json(json_str: str) -> str:
+    """
+    Attempt to repair truncated or malformed JSON.
+    
+    Common issues:
+    - Unterminated strings
+    - Unclosed objects/arrays
+    - Truncated response
+    
+    Args:
+        json_str: Potentially malformed JSON string
+        
+    Returns:
+        Repaired JSON string
+    """
+    if not json_str or not json_str.strip():
+        return "{}"
+    
+    # Remove trailing commas before closing braces/brackets
+    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+    
+    # Count open/close braces and brackets
+    open_braces = json_str.count('{')
+    close_braces = json_str.count('}')
+    open_brackets = json_str.count('[')
+    close_brackets = json_str.count(']')
+    
+    # Close unclosed objects/arrays
+    result = json_str
+    result += '\n' * (open_braces - close_braces)  # Add newlines for readability
+    result += '}' * (open_braces - close_braces)
+    result += ']' * (open_brackets - close_brackets)
+    
+    # Try to close unterminated strings
+    # Count unescaped quotes
+    in_string = False
+    escape_next = False
+    quote_count = 0
+    
+    for i, char in enumerate(json_str):
+        if escape_next:
+            escape_next = False
+            continue
+        if char == '\\':
+            escape_next = True
+            continue
+        if char == '"':
+            quote_count += 1
+            in_string = not in_string
+    
+    # If we're still in a string at the end, close it
+    if in_string:
+        # Find the last unclosed quote and close the string
+        result = json_str.rstrip()
+        # Remove any trailing incomplete content after last quote
+        last_quote_idx = result.rfind('"')
+        if last_quote_idx != -1:
+            # Check if there's content after the quote that might be incomplete
+            after_quote = result[last_quote_idx + 1:]
+            # If there's incomplete content (not just whitespace/punctuation), remove it
+            if after_quote.strip() and not after_quote.strip().endswith((':', ',', '}', ']')):
+                # Remove incomplete content and close the string
+                result = result[:last_quote_idx + 1] + '"'
+            else:
+                result += '"'
+        else:
+            result += '"'
+    
+    return result
 
 
 def get_openai_client() -> AsyncOpenAI:
@@ -427,7 +499,7 @@ async def generate_scene_plan(
             ],
             response_format={"type": "json_object"},
             temperature=0.7,
-            max_tokens=4000,
+            max_tokens=16000,  # Increased from 4000 to handle large scene plans
             timeout=90.0
         )
         
@@ -436,15 +508,62 @@ async def generate_scene_plan(
         if not content:
             raise GenerationError("Empty response from LLM", job_id=job_id)
         
-        # Parse JSON
+        # Try to extract JSON from markdown code blocks if present
+        if "```json" in content:
+            # Extract JSON from markdown code block
+            start_idx = content.find("```json") + 7
+            end_idx = content.find("```", start_idx)
+            if end_idx != -1:
+                content = content[start_idx:end_idx].strip()
+        elif "```" in content:
+            # Try generic code block
+            start_idx = content.find("```") + 3
+            end_idx = content.find("```", start_idx)
+            if end_idx != -1:
+                content = content[start_idx:end_idx].strip()
+        
+        # Parse JSON with repair attempts
+        scene_plan_dict = None
+        parse_error = None
         try:
             scene_plan_dict = json.loads(content)
         except json.JSONDecodeError as e:
-            logger.error(
-                f"Failed to parse LLM JSON response: {str(e)}",
-                extra={"job_id": str(job_id), "response_preview": content[:200]}
+            parse_error = e
+            # Try to repair truncated JSON (common issue with max_tokens)
+            logger.warning(
+                f"Initial JSON parse failed, attempting repair: {str(e)}",
+                extra={"job_id": str(job_id), "response_length": len(content), "error_position": getattr(e, 'pos', None)}
             )
-            raise RetryableError(f"Invalid JSON from LLM: {str(e)}", job_id=job_id) from e
+            
+            # Attempt 1: Try to find and close unclosed strings/objects
+            try:
+                repaired = _repair_json(content)
+                scene_plan_dict = json.loads(repaired)
+                logger.info("Successfully repaired truncated JSON", extra={"job_id": str(job_id)})
+            except Exception as repair_error:
+                logger.error(
+                    f"JSON repair failed: {str(repair_error)}",
+                    extra={"job_id": str(job_id), "original_error": str(e)}
+                )
+                # Log more context for debugging
+                error_pos = getattr(e, 'pos', None)
+                if error_pos:
+                    preview_start = max(0, error_pos - 100)
+                    preview_end = min(len(content), error_pos + 100)
+                    logger.error(
+                        f"JSON parse error context",
+                        extra={
+                            "job_id": str(job_id),
+                            "error_position": error_pos,
+                            "content_preview": content[preview_start:preview_end],
+                            "full_response_length": len(content),
+                            "response_preview": content[:500]
+                        }
+                    )
+                raise RetryableError(f"Invalid JSON from LLM: {str(e)}", job_id=job_id) from e
+        
+        if scene_plan_dict is None:
+            raise RetryableError(f"Invalid JSON from LLM: {str(parse_error)}", job_id=job_id) from parse_error
         
         # Track cost
         input_tokens = response.usage.prompt_tokens
