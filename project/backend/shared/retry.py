@@ -8,7 +8,7 @@ import asyncio
 import functools
 from typing import Callable, Type, Tuple, Any, TypeVar
 
-from shared.errors import RetryableError
+from shared.errors import RetryableError, RateLimitError
 from shared.logging import get_logger
 
 T = TypeVar("T")
@@ -18,7 +18,7 @@ logger = get_logger("retry")
 def retry_with_backoff(
     max_attempts: int = 3,
     base_delay: int = 2,
-    retryable_exceptions: Tuple[Type[Exception], ...] = (RetryableError,)
+    retryable_exceptions: Tuple[Type[Exception], ...] = (RetryableError, RateLimitError)
 ):
     """
     Decorator for retrying functions with exponential backoff.

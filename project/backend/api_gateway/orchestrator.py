@@ -537,38 +537,123 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         cache_key = f"job_status:{job_id}"
         await redis_client.client.delete(cache_key)
         
-        logger.info("Scene planner completed, holding pipeline (job remains in processing status)", extra={"job_id": job_id})
-        return  # Stop here gracefully - don't continue to reference generator
+        logger.info("Scene planner completed, continuing to reference generator", extra={"job_id": job_id})
         
-        # Stage 3: Reference Generator (30% progress) - DISABLED FOR NOW
+        # Stage 3: Reference Generator (30% progress)
         await publish_event(job_id, "stage_update", {
             "stage": "reference_generator",
             "status": "started"
         })
+        await update_progress(job_id, 30, "reference_generator")
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
         
-        # Check budget before expensive operation (environment-aware)
-        limit = get_budget_limit(settings.environment)
+        # Check budget before expensive operation (duration-based)
+        # Get audio duration from audio_data (already in scope after audio_parser stage)
+        duration_minutes = audio_data.duration / 60.0
+        budget_limit = Decimal(str(duration_minutes * 200.0))
+        
+        # Calculate estimated cost for reference generation (with 20% buffer)
+        estimated_cost = Decimal(str((len(plan.scenes) + len(plan.characters)) * 0.005 * 1.2))
+        
+        # Check budget
         can_proceed = await cost_tracker.check_budget(
             job_id=UUID(job_id),
-            new_cost=Decimal("50.00"),  # Estimated cost for reference generation
-            limit=limit
+            new_cost=estimated_cost,
+            limit=budget_limit
         )
         if not can_proceed:
-            raise BudgetExceededError("Would exceed budget limit before reference generation")
+            raise BudgetExceededError(
+                f"Would exceed budget limit before reference generation "
+                f"(estimated: ${estimated_cost}, limit: ${budget_limit})",
+                job_id=UUID(job_id)
+            )
         
         references = None
+        events = []
         try:
             from modules.reference_generator.process import process as generate_references
-            references = await generate_references(job_id, plan)
+            # Pass duration_seconds for mid-generation budget checks
+            references, events = await generate_references(
+                job_id=UUID(job_id),
+                plan=plan,
+                duration_seconds=audio_data.duration
+            )
+            
+            # Publish all events returned from module
+            for event in events:
+                await publish_event(job_id, event["event_type"], event["data"])
+                
         except ImportError:
             logger.warning("Reference Generator module not found, using stub", extra={"job_id": job_id})
+        except BudgetExceededError as e:
+            # Budget exceeded - publish error event
+            logger.error("Budget exceeded in reference generator", exc_info=e, extra={"job_id": job_id})
+            await publish_event(job_id, "error", {
+                "stage": "reference_generator",
+                "reason": "Budget exceeded",
+                "message": str(e),
+                "fallback_mode": True
+            })
+            await db_client.table("job_stages").insert({
+                "job_id": job_id,
+                "stage_name": "reference_generator",
+                "status": "failed",
+                "metadata": json.dumps({
+                    "fallback_mode": True,
+                    "fallback_reason": "Budget exceeded"
+                })
+            }).execute()
+            references = None
+        except ValidationError as e:
+            # Validation error - publish error event
+            logger.error("Validation error in reference generator", exc_info=e, extra={"job_id": job_id})
+            await publish_event(job_id, "error", {
+                "stage": "reference_generator",
+                "reason": "Validation error",
+                "message": str(e),
+                "fallback_mode": True
+            })
+            await db_client.table("job_stages").insert({
+                "job_id": job_id,
+                "stage_name": "reference_generator",
+                "status": "failed",
+                "metadata": json.dumps({
+                    "fallback_mode": True,
+                    "fallback_reason": str(e)
+                })
+            }).execute()
+            references = None
+        except GenerationError as e:
+            # Generation error - publish error event
+            logger.error("Generation error in reference generator", exc_info=e, extra={"job_id": job_id})
+            await publish_event(job_id, "error", {
+                "stage": "reference_generator",
+                "reason": "Generation error",
+                "message": str(e),
+                "fallback_mode": True
+            })
+            await db_client.table("job_stages").insert({
+                "job_id": job_id,
+                "stage_name": "reference_generator",
+                "status": "failed",
+                "metadata": json.dumps({
+                    "fallback_mode": True,
+                    "fallback_reason": str(e)
+                })
+            }).execute()
+            references = None
         except Exception as e:
-            # Set fallback flag
+            # Other errors - set fallback flag
             logger.warning("Reference Generator failed, setting fallback mode", exc_info=e, extra={"job_id": job_id})
+            await publish_event(job_id, "error", {
+                "stage": "reference_generator",
+                "reason": "Unknown error",
+                "message": str(e),
+                "fallback_mode": True
+            })
             await db_client.table("job_stages").insert({
                 "job_id": job_id,
                 "stage_name": "reference_generator",
@@ -581,10 +666,15 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             references = None
         
         await update_progress(job_id, 30, "reference_generator")
-        await publish_event(job_id, "stage_update", {
-            "stage": "reference_generator",
-            "status": "completed"
-        })
+        
+        # Publish completion event if not already published by module
+        if not any(e.get("event_type") == "stage_update" and e.get("data", {}).get("status") == "completed" for e in events):
+            await publish_event(job_id, "stage_update", {
+                "stage": "reference_generator",
+                "status": "completed",
+                "references": references is not None,
+                "fallback_mode": references is None
+            })
         
         # Enforce budget after reference generator (if costs were tracked)
         await enforce_budget(job_id)
