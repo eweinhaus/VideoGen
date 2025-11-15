@@ -528,7 +528,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             clip_prompts = ClipPrompts(
                 job_id=UUID(job_id),
                 clip_prompts=stub_prompts,
-                total_clips=len(stub_prompts)
+                total_clips=len(stub_prompts),
+                generation_time=0.0
             )
         
         await update_progress(job_id, 40, "prompt_generator")
