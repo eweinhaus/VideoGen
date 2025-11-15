@@ -165,17 +165,19 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         user_prompt: User's creative prompt
     """
     try:
-        # Update job status to processing
-        await db_client.table("jobs").update({
-            "status": "processing",
-            "updated_at": "now()"
-        }).eq("id", job_id).execute()
-        
         # Stage 1: Audio Parser (10% progress)
+        # Publish stage update FIRST before status change to avoid flickering
         await publish_event(job_id, "stage_update", {
             "stage": "audio_parser",
             "status": "started"
         })
+        
+        # Update job status to processing
+        await db_client.table("jobs").update({
+            "status": "processing",
+            "current_stage": "audio_parser",
+            "updated_at": "now()"
+        }).eq("id", job_id).execute()
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
@@ -187,7 +189,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             "text": "Starting audio analysis...",
             "stage": "audio_parser"
         })
-        await update_progress(job_id, 2, "audio_parser")
+        # Set initial progress after stage is established
+        await update_progress(job_id, 1, "audio_parser")
         
         try:
             from modules.audio_parser.process import process as parse_audio
@@ -209,13 +212,13 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             # Simulate processing time with progress updates
             import asyncio
             await asyncio.sleep(0.5)  # Simulate processing
-            await update_progress(job_id, 7, "audio_parser")
+            await update_progress(job_id, 6, "audio_parser")
             await publish_event(job_id, "message", {
                 "text": "Detecting beats and structure...",
                 "stage": "audio_parser"
             })
             await asyncio.sleep(0.5)
-            await update_progress(job_id, 9, "audio_parser")
+            await update_progress(job_id, 8, "audio_parser")
             
             # Create stub audio_data
             from shared.models.audio import AudioAnalysis, SongStructure, Mood
@@ -243,7 +246,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
                 clip_boundaries=[]
             )
         
-        await update_progress(job_id, 100, "audio_parser")
+        await update_progress(job_id, 10, "audio_parser")  # Audio parser is 10% of total job
         await publish_event(job_id, "message", {
             "text": "Audio analysis complete!",
             "stage": "audio_parser"
@@ -328,13 +331,17 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
             return
         
         try:
-            from modules.scene_planner.process import process as plan_scene
-            plan = await plan_scene(job_id, user_prompt, audio_data)
+            from modules.scene_planner.main import process_scene_planning
+            plan = await process_scene_planning(
+                job_id=UUID(job_id),
+                user_prompt=user_prompt,
+                audio_data=audio_data
+            )
         except ImportError:
             logger.warning("Scene Planner module not found, using stub", extra={"job_id": job_id})
             from shared.models.scene import ScenePlan, Character, Scene, Style, ClipScript, Transition
             plan = ScenePlan(
-                job_id=job_id,
+                job_id=UUID(job_id),
                 video_summary=f"Music video for: {user_prompt[:100]}",
                 characters=[
                     Character(id="char1", description="Main character", role="main character")
@@ -372,6 +379,60 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         await publish_event(job_id, "stage_update", {
             "stage": "scene_planner",
             "status": "completed"
+        })
+        
+        # Publish scene planner results for frontend display
+        await publish_event(job_id, "scene_planner_results", {
+            "job_id": str(plan.job_id),
+            "video_summary": plan.video_summary,
+            "characters": [
+                {
+                    "id": char.id,
+                    "description": char.description,
+                    "role": char.role
+                }
+                for char in plan.characters
+            ],
+            "scenes": [
+                {
+                    "id": scene.id,
+                    "description": scene.description,
+                    "time_of_day": scene.time_of_day
+                }
+                for scene in plan.scenes
+            ],
+            "style": {
+                "color_palette": plan.style.color_palette,
+                "visual_style": plan.style.visual_style,
+                "mood": plan.style.mood,
+                "lighting": plan.style.lighting,
+                "cinematography": plan.style.cinematography
+            },
+            "clip_scripts": [
+                {
+                    "clip_index": clip.clip_index,
+                    "start": clip.start,
+                    "end": clip.end,
+                    "visual_description": clip.visual_description,
+                    "motion": clip.motion,
+                    "camera_angle": clip.camera_angle,
+                    "characters": clip.characters,
+                    "scenes": clip.scenes,
+                    "lyrics_context": clip.lyrics_context,
+                    "beat_intensity": clip.beat_intensity
+                }
+                for clip in plan.clip_scripts
+            ],
+            "transitions": [
+                {
+                    "from_clip": trans.from_clip,
+                    "to_clip": trans.to_clip,
+                    "type": trans.type,
+                    "duration": trans.duration,
+                    "rationale": trans.rationale
+                }
+                for trans in plan.transitions
+            ]
         })
         
         # Stage 3: Reference Generator (30% progress) - with fallback
@@ -451,7 +512,25 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         except ImportError:
             logger.warning("Prompt Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import ClipPrompts, ClipPrompt
-            clip_prompts = ClipPrompts(prompts=[ClipPrompt(clip_index=0, prompt="A scene")])
+            # Create stub ClipPrompts from plan's clip_scripts with all required fields
+            stub_prompts = []
+            for clip_script in plan.clip_scripts:
+                duration = clip_script.end - clip_script.start
+                stub_prompts.append(ClipPrompt(
+                    clip_index=clip_script.clip_index,
+                    prompt=clip_script.visual_description or "A scene",
+                    negative_prompt="blurry, low quality, distorted, watermark, text",
+                    duration=duration,
+                    scene_reference_url=None,
+                    character_reference_urls=[],
+                    metadata={}
+                ))
+            clip_prompts = ClipPrompts(
+                job_id=UUID(job_id),
+                clip_prompts=stub_prompts,
+                total_clips=len(stub_prompts),
+                generation_time=0.0
+            )
         
         await update_progress(job_id, 40, "prompt_generator")
         await publish_event(job_id, "stage_update", {

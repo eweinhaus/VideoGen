@@ -6,11 +6,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { ProgressTracker } from "@/components/ProgressTracker"
+import { StageIndicator } from "@/components/StageIndicator"
 import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
+import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft } from "lucide-react"
+import type { StageUpdateEvent } from "@/types/sse"
 
 export default function JobProgressPage() {
   const params = useParams()
@@ -19,6 +22,10 @@ export default function JobProgressPage() {
   const jobId = params.jobId as string
   const { job, isLoading: jobLoading, error, fetchJob } = useJob(jobId)
   const [sseError, setSseError] = useState<string | null>(null)
+  const [stages, setStages] = useState<
+    Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
+  >([])
+  const [currentStage, setCurrentStage] = useState<string | null>(null)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -33,6 +40,25 @@ export default function JobProgressPage() {
       })
     }
   }, [jobId, fetchJob])
+
+  // Track stages for StageIndicator
+  useSSE(jobId, {
+    onStageUpdate: (data: StageUpdateEvent) => {
+      setCurrentStage(data.stage)
+      setStages((prev) => {
+        const existing = prev.find((s) => s.name === data.stage)
+        const status = data.status as "pending" | "processing" | "completed" | "failed"
+        if (existing) {
+          return prev.map((s) =>
+            s.name === data.stage
+              ? { ...s, status }
+              : s
+          )
+        }
+        return [...prev, { name: data.stage, status }]
+      })
+    },
+  })
 
   const handleComplete = (videoUrl: string) => {
     // Job is already updated by ProgressTracker
@@ -83,7 +109,7 @@ export default function JobProgressPage() {
   const isProcessing = job.status === "processing"
 
   return (
-    <div className="container mx-auto max-w-4xl px-4 py-8">
+    <div className="container mx-auto max-w-7xl px-4 py-8">
       <div className="mb-6">
         <Button
           variant="ghost"
@@ -93,18 +119,28 @@ export default function JobProgressPage() {
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back to Upload
         </Button>
-        <Card>
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Job Progress</CardTitle>
             <CardDescription>Job ID: {jobId}</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="w-full">
             {isQueued && (
               <Alert className="mb-4">
                 <AlertDescription>
                   <div className="flex items-center gap-2">
                     <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-                    <span>Job is queued and waiting to be processed...</span>
+                    <span>
+                      Job is queued and waiting to start{" "}
+                      {job.currentStage === "audio_parser" && "audio analysis"}
+                      {job.currentStage === "scene_planner" && "scene planning"}
+                      {job.currentStage === "reference_generator" && "reference generation"}
+                      {job.currentStage === "prompt_generation" && "prompt generation"}
+                      {job.currentStage === "video_generation" && "video generation"}
+                      {job.currentStage === "composition" && "composition"}
+                      {!job.currentStage && "processing"}
+                      ...
+                    </span>
                   </div>
                 </AlertDescription>
               </Alert>
