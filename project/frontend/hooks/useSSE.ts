@@ -165,6 +165,15 @@ export function useSSE(
       }
     })
 
+    eventSource.addEventListener("scene_planner_results", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onScenePlannerResults?.(data)
+      } catch (err) {
+        console.error("Failed to parse scene_planner_results event:", err)
+      }
+    })
+
     eventSourceRef.current = eventSource
   }, [jobId, handlers, close])
 
