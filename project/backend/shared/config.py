@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_fail_closed: bool = False  # Default: fail-open for MVP
     
+    # Prompt Generator configuration
+    prompt_generator_use_llm: bool = True
+    prompt_generator_llm_model: Literal["gpt-4o", "claude-3-5-sonnet"] = "gpt-4o"
+    
     @field_validator("supabase_url")
     @classmethod
     def validate_supabase_url(cls, v: str) -> str:

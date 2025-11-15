@@ -784,6 +784,39 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 generation_time=0.0
             )
         
+        try:
+            llm_used = any(
+                getattr(prompt, "metadata", {}).get("llm_used")
+                for prompt in clip_prompts.clip_prompts
+            )
+            llm_model = None
+            if llm_used:
+                for prompt in clip_prompts.clip_prompts:
+                    maybe = (prompt.metadata or {}).get("llm_model")
+                    if maybe:
+                        llm_model = maybe
+                        break
+            await publish_event(job_id, "prompt_generator_results", {
+                "total_clips": clip_prompts.total_clips,
+                "generation_time": clip_prompts.generation_time,
+                "llm_used": llm_used,
+                "llm_model": llm_model,
+                "clip_prompts": [
+                    {
+                        "clip_index": prompt.clip_index,
+                        "prompt": prompt.prompt,
+                        "negative_prompt": prompt.negative_prompt,
+                        "duration": prompt.duration,
+                        "scene_reference_url": prompt.scene_reference_url,
+                        "character_reference_urls": prompt.character_reference_urls,
+                        "metadata": prompt.metadata,
+                    }
+                    for prompt in clip_prompts.clip_prompts
+                ]
+            })
+        except Exception as e:
+            logger.error("Failed to publish prompt generator results", exc_info=e, extra={"job_id": job_id})
+        
         await update_progress(job_id, 40, "prompt_generator")
         await publish_event(job_id, "stage_update", {
             "stage": "prompt_generator",

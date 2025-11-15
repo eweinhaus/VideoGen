@@ -1,0 +1,23 @@
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "clip_prompts": [
+    {
+      "clip_index": 0,
+      "prompt": "Base prompt clip 0",
+      "negative_prompt": "bad_faces",
+      "duration": 5.0,
+      "scene_reference_url": "https://cdn.example.com/scene_city_alley.png",
+      "character_reference_urls": ["https://cdn.example.com/character_protagonist.png"],
+      "metadata": {
+        "word_count": 3,
+        "style_keywords": ["cyberpunk"],
+        "scene_id": "city_alley",
+        "character_ids": ["protagonist"],
+        "validated": false
+      }
+    }
+  ],
+  "total_clips": 1,
+  "generation_time": 0.5
+}
+
