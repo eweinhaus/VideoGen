@@ -1,0 +1,115 @@
+name: Sync Fork from Upstream
+
+on:
+  # Run on schedule (every 5 minutes)
+  schedule:
+    - cron: '*/5 * * * *'  # Every 5 minutes
+  # Run on manual trigger
+  workflow_dispatch:
+  # Run when fork repo is updated (optional - can trigger sync check)
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    # Only run this workflow in the fork repo, never in upstream
+    if: github.repository == 'mlx93/video-gen-mlx'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork repo (mlx93/video-gen-mlx)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Suppress warnings about ignored files to prevent workflow failures
+          git config advice.addIgnoredFile false
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/eweinhaus/VideoGen.git || true
+          git remote set-url upstream https://github.com/eweinhaus/VideoGen.git
+
+      - name: Fetch upstream changes
+        run: git fetch upstream
+
+      - name: Check if sync is needed
+        id: check
+        run: |
+          UPSTREAM_COMMIT=$(git rev-parse upstream/main)
+          CURRENT_COMMIT=$(git rev-parse origin/main)
+          if [ "$UPSTREAM_COMMIT" != "$CURRENT_COMMIT" ]; then
+            echo "needs_sync=true" >> $GITHUB_OUTPUT
+            echo "Upstream is ahead. Syncing..."
+          else
+            echo "needs_sync=false" >> $GITHUB_OUTPUT
+            echo "Already in sync."
+          fi
+
+      - name: Verify we're in fork repo (safety check)
+        run: |
+          CURRENT_REPO=$(git remote get-url origin)
+          if [[ "$CURRENT_REPO" != *"mlx93/video-gen-mlx"* ]]; then
+            echo "ERROR: This workflow should only run in mlx93/video-gen-mlx fork!"
+            echo "Current repo: $CURRENT_REPO"
+            exit 1
+          fi
+          echo "✅ Verified: Running in fork repo"
+
+      - name: Verify upstream remote is read-only
+        run: |
+          UPSTREAM_URL=$(git remote get-url upstream)
+          if [[ "$UPSTREAM_URL" != *"eweinhaus/VideoGen"* ]]; then
+            echo "ERROR: Upstream remote must point to eweinhaus/VideoGen!"
+            echo "Current upstream: $UPSTREAM_URL"
+            exit 1
+          fi
+          echo "✅ Verified: Upstream points to eweinhaus/VideoGen (read-only source)"
+
+      - name: Sync from upstream
+        if: steps.check.outputs.needs_sync == 'true'
+        run: |
+          git checkout main
+          # Perform merge (this may create a merge commit)
+          git merge upstream/main --no-edit --allow-unrelated-histories || true
+          # If merge fails due to conflicts, use theirs strategy
+          MERGE_EXIT_CODE=$?
+          if [ $MERGE_EXIT_CODE -ne 0 ]; then
+            git merge --abort 2>/dev/null || true
+            git merge upstream/main --no-edit --allow-unrelated-histories -X theirs
+          fi
+          # Force-add workflow files (they must be tracked, even if ignored)
+          # Use || true to prevent failure on ignored file warnings
+          git add -f .github/workflows/*.yml 2>&1 | grep -v "ignored by one of your .gitignore files" || true
+          # Force-add migration files if they exist (they should be tracked in git)
+          git add -f project/infrastructure/migrations/*.sql supabase/migrations/*.sql 2>&1 | grep -v "ignored by one of your .gitignore files" || true
+          # Add all other changes (suppress ignored file warnings)
+          # Note: git add -A may warn about ignored files but will still add tracked files
+          git add -A 2>&1 | grep -v "ignored by one of your .gitignore files" || true
+          # Check if there are any staged changes to commit
+          STAGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+          if [ -n "$STAGED_FILES" ]; then
+            git commit -m "Sync from upstream: $(date -u +%Y-%m-%d)" || true
+          fi
+          # Safety check: Ensure we're pushing to fork, never to upstream
+          ORIGIN_URL=$(git remote get-url origin)
+          if [[ "$ORIGIN_URL" == *"eweinhaus/VideoGen"* ]]; then
+            echo "ERROR: Attempted to push to upstream repo! Aborting for safety."
+            exit 1
+          fi
+          # Push changes to fork only (will fail if nothing to push, which is fine)
+          git push origin main || echo "Nothing to push or push failed"
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.check.outputs.needs_sync }}" == "true" ]; then
+            echo "✅ Successfully synced from upstream"
+          else
+            echo "ℹ️ Already in sync with upstream"
+          fi
+

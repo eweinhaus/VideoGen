@@ -1,0 +1,108 @@
+"""
+Unit tests for script generator.
+"""
+
+import pytest
+from uuid import uuid4
+
+from shared.models.audio import ClipBoundary, Lyric
+from modules.scene_planner.script_generator import (
+    generate_clip_scripts,
+    _align_lyrics_to_clip
+)
+
+
+@pytest.fixture
+def sample_clip_boundaries():
+    """Sample clip boundaries."""
+    return [
+        ClipBoundary(start=0.0, end=5.0, duration=5.0),
+        ClipBoundary(start=5.0, end=10.0, duration=5.0),
+        ClipBoundary(start=10.0, end=15.0, duration=5.0),
+    ]
+
+
+@pytest.fixture
+def sample_lyrics():
+    """Sample lyrics."""
+    return [
+        Lyric(text="Hello", timestamp=1.0),
+        Lyric(text="world", timestamp=2.0),
+        Lyric(text="test", timestamp=6.0),
+    ]
+
+
+@pytest.fixture
+def sample_llm_output():
+    """Sample LLM output."""
+    return {
+        "clip_scripts": [
+            {
+                "clip_index": 0,
+                "start": 0.0,
+                "end": 5.0,
+                "visual_description": "Test scene 1",
+                "motion": "Static shot",
+                "camera_angle": "Medium shot",
+                "characters": ["protagonist"],
+                "scenes": ["scene1"],
+                "lyrics_context": None,
+                "beat_intensity": "medium"
+            },
+            {
+                "clip_index": 1,
+                "start": 5.0,
+                "end": 10.0,
+                "visual_description": "Test scene 2",
+                "motion": "Tracking shot",
+                "camera_angle": "Wide shot",
+                "characters": ["protagonist"],
+                "scenes": ["scene2"],
+                "lyrics_context": None,
+                "beat_intensity": "high"
+            },
+            {
+                "clip_index": 2,
+                "start": 10.0,
+                "end": 15.0,
+                "visual_description": "Test scene 3",
+                "motion": "Static shot",
+                "camera_angle": "Close-up",
+                "characters": [],
+                "scenes": ["scene1"],
+                "lyrics_context": None,
+                "beat_intensity": "low"
+            }
+        ]
+    }
+
+
+def test_generate_clip_scripts(sample_llm_output, sample_clip_boundaries, sample_lyrics):
+    """Test generating clip scripts from LLM output."""
+    clip_scripts = generate_clip_scripts(
+        llm_output=sample_llm_output,
+        clip_boundaries=sample_clip_boundaries,
+        lyrics=sample_lyrics
+    )
+    
+    assert len(clip_scripts) == len(sample_clip_boundaries)
+    assert clip_scripts[0].clip_index == 0
+    assert clip_scripts[0].start == 0.0
+    assert clip_scripts[0].end == 5.0
+    assert clip_scripts[0].visual_description == "Test scene 1"
+
+
+def test_align_lyrics_to_clip(sample_lyrics):
+    """Test aligning lyrics to clip time range."""
+    # Lyrics within range
+    lyrics = _align_lyrics_to_clip(0.5, 2.5, sample_lyrics)
+    assert lyrics == "Hello world"
+    
+    # No lyrics in range
+    lyrics = _align_lyrics_to_clip(20.0, 25.0, sample_lyrics)
+    assert lyrics is None
+    
+    # Single lyric in range
+    lyrics = _align_lyrics_to_clip(5.5, 7.0, sample_lyrics)
+    assert lyrics == "test"
+

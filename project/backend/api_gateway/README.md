@@ -174,6 +174,24 @@ api_gateway/
 - **Modules**: Orchestrator uses stub implementations until modules 3-8 are implemented.
 - **SSE**: Uses Redis pub/sub for event distribution from workers to FastAPI SSE connections.
 
+## Deployment
+
+### Railway Deployment
+
+See deployment guides in `myles-docs/deployment/` (gitignored, local only).
+
+**Quick Deploy**:
+1. Push code to GitHub
+2. Create Railway project from GitHub repo
+3. Set Root Directory: `project/backend`
+4. Add Redis service (Railway provides)
+5. Set environment variables (see RAILWAY_DEPLOYMENT.md)
+6. Deploy!
+
+**Two Services Required**:
+- **API Gateway**: Runs FastAPI server (`uvicorn api_gateway.main:app`)
+- **Worker**: Processes jobs from queue (`python -m api_gateway.worker`)
+
 ## Next Steps
 
 1. Implement pipeline modules (3-8) to replace stubs

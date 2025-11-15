@@ -3,6 +3,12 @@ import { APIError, UploadResponse, JobResponse } from "@/types/api"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
+// Debug: Log API base URL (only in browser)
+if (typeof window !== "undefined") {
+  console.log("🔧 API_BASE_URL:", API_BASE_URL)
+  console.log("🔧 NEXT_PUBLIC_API_URL env:", process.env.NEXT_PUBLIC_API_URL)
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -31,7 +37,12 @@ async function request<T>(
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const fullUrl = `${API_BASE_URL}${endpoint}`
+    // Debug: Log full URL being requested
+    if (typeof window !== "undefined") {
+      console.log("🌐 Making request to:", fullUrl)
+    }
+    const response = await fetch(fullUrl, {
       ...options,
       headers,
     })

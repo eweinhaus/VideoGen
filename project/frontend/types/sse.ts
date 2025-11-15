@@ -61,6 +61,47 @@ export interface AudioParserResultsEvent {
   }
 }
 
+export interface ScenePlannerResultsEvent {
+  job_id: string
+  video_summary: string
+  characters: Array<{
+    id: string
+    description: string
+    role: string
+  }>
+  scenes: Array<{
+    id: string
+    description: string
+    time_of_day: string
+  }>
+  style: {
+    color_palette: string[]
+    visual_style: string
+    mood: string
+    lighting: string
+    cinematography: string
+  }
+  clip_scripts: Array<{
+    clip_index: number
+    start: number
+    end: number
+    visual_description: string
+    motion: string
+    camera_angle: string
+    characters: string[]
+    scenes: string[]
+    lyrics_context?: string | null
+    beat_intensity: string
+  }>
+  transitions: Array<{
+    from_clip: number
+    to_clip: number
+    type: string
+    duration: number
+    rationale: string
+  }>
+}
+
 export interface SSEHandlers {
   onStageUpdate?: (data: StageUpdateEvent) => void
   onProgress?: (data: ProgressEvent) => void
@@ -69,5 +110,6 @@ export interface SSEHandlers {
   onCompleted?: (data: CompletedEvent) => void
   onError?: (data: ErrorEvent) => void
   onAudioParserResults?: (data: AudioParserResultsEvent) => void
+  onScenePlannerResults?: (data: ScenePlannerResultsEvent) => void
 }
 

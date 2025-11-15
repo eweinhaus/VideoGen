@@ -47,6 +47,37 @@ npm run dev
 
 4. Open [http://localhost:3000](http://localhost:3000)
 
+## Deployment to Vercel
+
+See deployment guides in `myles-docs/deployment/` (gitignored, local only).
+
+### Quick Deploy
+
+1. **Push to Git repository** (GitHub/GitLab/Bitbucket)
+
+2. **Import to Vercel**:
+   - Go to [vercel.com/new](https://vercel.com/new)
+   - Import your repository
+   - Set **Root Directory** to `project/frontend`
+   - Add environment variables:
+     - `NEXT_PUBLIC_API_URL` - Your backend API URL
+     - `NEXT_PUBLIC_SUPABASE_URL` - Your Supabase project URL
+     - `NEXT_PUBLIC_SUPABASE_ANON_KEY` - Your Supabase anonymous key
+
+3. **Deploy** - Vercel will automatically build and deploy
+
+### Environment Variables for Vercel
+
+Set these in Vercel Dashboard → Settings → Environment Variables:
+
+```
+NEXT_PUBLIC_API_URL=https://your-backend-api.com
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+```
+
+**Note**: All environment variables must start with `NEXT_PUBLIC_` to be available in the browser.
+
 ### Project Structure
 
 ```

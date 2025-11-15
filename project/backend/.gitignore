@@ -1,0 +1,4 @@
+# Backend logs
+logs/
+app.log
+*.log

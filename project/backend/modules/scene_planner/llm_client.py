@@ -1,0 +1,493 @@
+"""
+LLM API integration for scene plan generation.
+
+Handles OpenAI GPT-4o and Claude 3.5 Sonnet API calls with retry logic,
+cost tracking, and comprehensive prompt engineering.
+"""
+
+import json
+from decimal import Decimal
+from typing import Dict, Any, Optional
+from uuid import UUID
+
+from openai import OpenAI, AsyncOpenAI
+from openai import APIError, RateLimitError, APITimeoutError
+
+from shared.config import settings
+from shared.cost_tracking import cost_tracker
+from shared.errors import GenerationError, RetryableError
+from shared.logging import get_logger
+from shared.retry import retry_with_backoff
+from shared.models.audio import AudioAnalysis
+
+logger = get_logger("scene_planner")
+
+
+# Initialize OpenAI client
+_openai_client: Optional[AsyncOpenAI] = None
+
+
+def get_openai_client() -> AsyncOpenAI:
+    """Get or create OpenAI async client."""
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    return _openai_client
+
+
+def _calculate_llm_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int
+) -> Decimal:
+    """
+    Calculate LLM API cost based on token usage.
+    
+    Args:
+        model: Model name ("gpt-4o" or "claude-3-5-sonnet")
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+        
+    Returns:
+        Cost in USD
+    """
+    # Pricing as of 2024 (adjust if needed)
+    if model == "gpt-4o":
+        # GPT-4o: $0.005 per 1K input tokens, $0.015 per 1K output tokens
+        input_cost = Decimal(input_tokens) / 1000 * Decimal("0.005")
+        output_cost = Decimal(output_tokens) / 1000 * Decimal("0.015")
+        return input_cost + output_cost
+    elif model == "claude-3-5-sonnet":
+        # Claude 3.5 Sonnet: $0.003 per 1K input tokens, $0.015 per 1K output tokens
+        input_cost = Decimal(input_tokens) / 1000 * Decimal("0.003")
+        output_cost = Decimal(output_tokens) / 1000 * Decimal("0.015")
+        return input_cost + output_cost
+    else:
+        logger.warning(f"Unknown model {model}, using GPT-4o pricing")
+        input_cost = Decimal(input_tokens) / 1000 * Decimal("0.005")
+        output_cost = Decimal(output_tokens) / 1000 * Decimal("0.015")
+        return input_cost + output_cost
+
+
+def _build_system_prompt(
+    director_knowledge: str,
+    audio_data: AudioAnalysis
+) -> str:
+    """
+    Build comprehensive system prompt with director knowledge and audio context.
+    
+    Args:
+        director_knowledge: Full director knowledge base text
+        audio_data: AudioAnalysis with mood, BPM, structure, etc.
+        
+    Returns:
+        Formatted system prompt
+    """
+    # Extract audio characteristics
+    mood = audio_data.mood.primary
+    energy_level = audio_data.mood.energy_level
+    bpm = audio_data.bpm
+    
+    # Build mood/energy-specific instructions
+    mood_instructions = _get_mood_instructions(mood, energy_level, bpm)
+    
+    system_prompt = f"""You are an expert music video director with decades of experience creating professional music videos. Your task is to transform a user's creative vision into a comprehensive, director-informed scene plan that will guide video generation.
+
+## Director Knowledge Base
+
+{director_knowledge}
+
+## Audio Analysis Context
+
+The audio has the following characteristics:
+- **Mood:** {mood} (energy level: {energy_level})
+- **BPM:** {bpm:.1f}
+- **Duration:** {audio_data.duration:.1f} seconds
+- **Song Structure:** {len(audio_data.song_structure)} segments (intro, verse, chorus, bridge, outro)
+- **Clip Boundaries:** {len(audio_data.clip_boundaries)} clips defined
+
+{mood_instructions}
+
+## Your Task
+
+Generate a complete scene plan that:
+1. **Maintains the user's core creative vision** - Their prompt is the anchor for the entire video
+2. **Applies director knowledge intelligently** - Use color palettes, camera movements, lighting, and transitions that match the mood and energy level
+3. **Aligns to clip boundaries** - Generate exactly {len(audio_data.clip_boundaries)} clip scripts matching the provided boundaries
+4. **Ensures consistency** - Same character appearances, same scene lighting, same color palette per location across all clips
+5. **Plans transitions** - Generate {len(audio_data.clip_boundaries) - 1} transitions between clips based on beat intensity
+6. **Creates coherent narrative** - All clips should tell a visual story that makes sense
+
+## Output Format
+
+You must output a valid JSON object matching this exact structure:
+
+{{
+  "job_id": "uuid-string",
+  "video_summary": "High-level narrative overview (2-3 sentences describing the overall video concept)",
+  "characters": [
+    {{
+      "id": "protagonist",
+      "description": "Detailed character description (age, appearance, clothing, style, signature elements)",
+      "role": "main character"
+    }}
+  ],
+  "scenes": [
+    {{
+      "id": "scene_id",
+      "description": "Detailed scene description (location, atmosphere, time of day, key visual elements)",
+      "time_of_day": "night|day|dawn|dusk"
+    }}
+  ],
+  "style": {{
+    "color_palette": ["#00FFFF", "#FF00FF", "#0000FF"],
+    "visual_style": "Description of overall aesthetic (e.g., 'Neo-noir cyberpunk with rain and neon')",
+    "mood": "Emotional tone description",
+    "lighting": "Lighting style description (e.g., 'High-contrast neon with deep shadows')",
+    "cinematography": "Camera style description (e.g., 'Handheld, slight shake, tracking shots')"
+  }},
+  "clip_scripts": [
+    {{
+      "clip_index": 0,
+      "start": 0.0,
+      "end": 5.2,
+      "visual_description": "Detailed visual description (1-2 sentences: what's happening, key visual elements, character actions)",
+      "motion": "How elements move (character movement, camera movement, object movement)",
+      "camera_angle": "Shot type and angle (e.g., 'Medium wide shot, slightly low angle, eye level height')",
+      "characters": ["character_id"],
+      "scenes": ["scene_id"],
+      "lyrics_context": "Relevant lyrics during this clip or null",
+      "beat_intensity": "low|medium|high"
+    }}
+  ],
+  "transitions": [
+    {{
+      "from_clip": 0,
+      "to_clip": 1,
+      "type": "cut|crossfade|fade",
+      "duration": 0.0,
+      "rationale": "Explanation for transition choice based on beat intensity and song structure"
+    }}
+  ]
+}}
+
+## Critical Requirements
+
+1. **Character Consistency:** The main character must appear in 60-80% of clips with consistent appearance. Define 1-3 signature elements (e.g., red jacket, blonde wig) that remain constant.
+
+2. **Scene Consistency:** Use 2-4 distinct scenes. Each scene should have consistent lighting, color palette, and time of day across all clips.
+
+3. **Color Palette:** Define 2-3 main colors per scene plus one accent color. Apply the color palette consistently - if a scene uses muted blues, all clips in that scene must use muted blues.
+
+4. **Beat Alignment:** Clip scripts must align to the provided clip boundaries (±0.5s tolerance). Transitions should align with beat intensity (hard cut for high energy, crossfade for medium, fade for low).
+
+5. **Director Knowledge Application:** Be explicit about applying director knowledge:
+   - If mood is calm → Use muted, desaturated colors from the calm mood palette
+   - If energy is high → Use fast cuts, handheld camera, tracking shots
+   - If BPM >130 → Use hard cuts on strong beats, quick zooms, low angles
+   - If BPM <90 → Use static shots, slow zooms, wide shots, fade transitions
+
+6. **Visual Description Quality:** Each clip script should be detailed enough for video generation:
+   - Specify what's happening (character actions, scene elements)
+   - Specify camera movement (tracking, static, panning, zooming)
+   - Specify shot type (wide, medium, close-up, extreme close-up)
+   - Specify camera angle (low, eye level, high)
+   - Include visual metaphors if relevant to lyrics
+
+7. **Transition Planning:** Generate exactly {len(audio_data.clip_boundaries) - 1} transitions:
+   - Hard cut (0s duration): Strong beats, high energy, chorus transitions
+   - Crossfade (0.5s duration): Medium beats, continuous motion, verse transitions
+   - Fade (0.5s duration): Soft beats, low energy, intro/outro transitions
+
+## Example Clip Script (High Quality)
+
+{{
+  "clip_index": 0,
+  "start": 0.0,
+  "end": 5.2,
+  "visual_description": "Protagonist walks toward camera through rain-slicked cyberpunk street, neon signs reflecting in puddles. Distant city lights create bokeh in background. Character wears signature red jacket, visible even in the dim lighting.",
+  "motion": "Slow tracking shot following character, camera moves backward as character approaches. Rain falls steadily, creating movement in frame. Character walks with deliberate pace, matching the calm mood.",
+  "camera_angle": "Medium wide shot, slightly low angle, eye level height",
+  "characters": ["protagonist"],
+  "scenes": ["city_street"],
+  "lyrics_context": "I see the lights shining bright",
+  "beat_intensity": "medium"
+}}
+
+Remember: The user's creative prompt is your anchor. Apply director knowledge to enhance and professionalize their vision, but never lose their core concept."""
+    
+    return system_prompt
+
+
+def _get_mood_instructions(mood: str, energy_level: str, bpm: float) -> str:
+    """
+    Generate mood/energy-specific instructions for the LLM.
+    
+    Args:
+        mood: Primary mood
+        energy_level: Energy level
+        bpm: Beats per minute
+        
+    Returns:
+        Formatted instructions
+    """
+    instructions = []
+    
+    # Determine energy category
+    if bpm > 130 or energy_level == "high":
+        energy_category = "high"
+    elif bpm < 90 or energy_level == "low":
+        energy_category = "low"
+    else:
+        energy_category = "medium"
+    
+    # Mood-specific instructions
+    if mood.lower() == "energetic":
+        instructions.append("""
+**ENERGETIC MOOD GUIDELINES:**
+- Use vibrant, saturated colors (electric blues, magentas, neon yellows, hot pinks)
+- Apply high contrast between foreground and background
+- Use fast cuts (0.5-1 second shots) for high energy sections
+- Camera movements: Fast tracking shots, whip pans, quick zooms, handheld with slight shake
+- Transitions: Hard cuts on strong beats, beat-synchronized cuts
+- Lighting: Dynamic lighting with color shifts, neon, practical lights, high contrast
+- Shot types: Close-ups for intensity, medium shots for action, low angles for power
+""")
+    elif mood.lower() == "calm":
+        instructions.append("""
+**CALM MOOD GUIDELINES:**
+- Use muted, desaturated colors (soft blues, lavender, mint, peach, pastels)
+- Desaturate colors by 30-40% for peaceful feeling
+- Use longer shots (5-10 seconds minimum) for contemplation
+- Camera movements: Static shots, slow zooms, wide shots, slow pans
+- Transitions: Fade or crossfade for smooth flow
+- Lighting: Soft, natural, diffused light, low contrast
+- Shot types: Wide shots primary, medium shots for context, high angles for perspective
+""")
+    elif mood.lower() == "dark":
+        instructions.append("""
+**DARK MOOD GUIDELINES:**
+- Use low saturation, high contrast colors (blacks, deep purples, dark blues, dark reds)
+- High contrast between light and shadow
+- Use single accent color sparingly (e.g., deep red)
+- Camera movements: Deliberate tracking shots, slow movements, static shots
+- Transitions: Fade transitions, crossfade for smooth flow
+- Lighting: Low-key lighting, single primary light source, shadows cover 60-70% of frame
+- Shot types: Wide shots for atmosphere, medium shots, silhouettes
+""")
+    elif mood.lower() == "bright":
+        instructions.append("""
+**BRIGHT MOOD GUIDELINES:**
+- Use high brightness, low contrast colors (yellows, whites, light blues, pinks)
+- Pastel or neon colors depending on energy
+- Even illumination across frame
+- Camera movements: Smooth tracking shots, balanced framing, steady movements
+- Transitions: Crossfade for smooth flow, fade for intro/outro
+- Lighting: High-key lighting, multiple light sources, soft diffused light, minimal shadows
+- Shot types: Balanced framing, medium shots primary, wide shots for context
+""")
+    
+    # Energy-specific instructions
+    if energy_category == "high":
+        instructions.append("""
+**HIGH ENERGY (BPM >130) GUIDELINES:**
+- Faster cuts align with musical beats
+- Bigger camera moves (whip pans, quick zooms, orbits)
+- Hard cuts on snare hits or strong beats
+- Low angles for power and dominance
+- Quick movements match tempo
+""")
+    elif energy_category == "low":
+        instructions.append("""
+**LOW ENERGY (BPM <90) GUIDELINES:**
+- Longer takes (5-10 seconds minimum)
+- Minimal camera movement for contemplation
+- Slow, deliberate movements
+- Fade transitions for emotional moments
+- Wide shots for atmosphere
+""")
+    
+    return "\n".join(instructions)
+
+
+def _build_user_prompt(
+    user_prompt: str,
+    audio_data: AudioAnalysis
+) -> str:
+    """
+    Build user prompt with audio context and clip boundaries.
+    
+    Args:
+        user_prompt: User's creative prompt (50-500 characters)
+        audio_data: AudioAnalysis with structure and boundaries
+        
+    Returns:
+        Formatted user prompt with audio context
+    """
+    # Format song structure
+    structure_lines = []
+    for segment in audio_data.song_structure:
+        structure_lines.append(
+            f"  - {segment.type.upper()}: {segment.start:.1f}s - {segment.end:.1f}s ({segment.energy} energy)"
+        )
+    
+    # Format clip boundaries
+    boundary_lines = []
+    for i, boundary in enumerate(audio_data.clip_boundaries):
+        boundary_lines.append(
+            f"  Clip {i}: {boundary.start:.1f}s - {boundary.end:.1f}s (duration: {boundary.duration:.1f}s)"
+        )
+    
+    # Format lyrics (if available)
+    lyrics_text = ""
+    if audio_data.lyrics:
+        lyrics_lines = []
+        for lyric in audio_data.lyrics[:20]:  # Limit to first 20 lyrics to avoid token bloat
+            lyrics_lines.append(f"  [{lyric.timestamp:.1f}s] {lyric.text}")
+        lyrics_text = f"""
+## Lyrics Context
+
+{chr(10).join(lyrics_lines)}
+"""
+    
+    user_prompt_formatted = f"""## User's Creative Vision
+
+{user_prompt}
+
+## Song Structure
+
+{chr(10).join(structure_lines)}
+
+## Clip Boundaries (You must generate scripts for these exact boundaries)
+
+{chr(10).join(boundary_lines)}
+{lyrics_text}
+
+Generate a complete scene plan that transforms the user's creative vision into a professional music video plan. Apply director knowledge to enhance the vision while maintaining the core concept. Ensure all clip scripts align to the provided boundaries and create a coherent visual narrative."""
+    
+    return user_prompt_formatted
+
+
+@retry_with_backoff(max_attempts=3, base_delay=2)
+async def generate_scene_plan(
+    job_id: UUID,
+    user_prompt: str,
+    audio_data: AudioAnalysis,
+    director_knowledge: str
+) -> Dict[str, Any]:
+    """
+    Generate scene plan using LLM API.
+    
+    This is the core function that constructs the final LLM prompt by:
+    1. Loading director knowledge
+    2. Extracting relevant sections based on audio mood/energy/BPM
+    3. Formatting user prompt as creative vision anchor
+    4. Structuring audio context as constraints
+    5. Explicitly instructing LLM to apply director knowledge
+    6. Requesting JSON output matching ScenePlan model
+    
+    Args:
+        job_id: Job ID for cost tracking
+        user_prompt: User's creative prompt (50-500 characters)
+        audio_data: AudioAnalysis with BPM, mood, structure, boundaries
+        director_knowledge: Director knowledge base text
+        
+    Returns:
+        Parsed JSON dict matching ScenePlan structure
+        
+    Raises:
+        GenerationError: If LLM call fails after retries
+        RetryableError: If transient error occurs (will be retried)
+    """
+    model = "gpt-4o"  # Preferred model
+    
+    try:
+        # Build prompts
+        system_prompt = _build_system_prompt(director_knowledge, audio_data)
+        user_prompt_formatted = _build_user_prompt(user_prompt, audio_data)
+        
+        logger.info(
+            f"Calling LLM for scene plan generation",
+            extra={
+                "job_id": str(job_id),
+                "model": model,
+                "system_prompt_length": len(system_prompt),
+                "user_prompt_length": len(user_prompt_formatted)
+            }
+        )
+        
+        # Call OpenAI API
+        client = get_openai_client()
+        
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt_formatted}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            max_tokens=4000,
+            timeout=90.0
+        )
+        
+        # Extract response
+        content = response.choices[0].message.content
+        if not content:
+            raise GenerationError("Empty response from LLM", job_id=job_id)
+        
+        # Parse JSON
+        try:
+            scene_plan_dict = json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Failed to parse LLM JSON response: {str(e)}",
+                extra={"job_id": str(job_id), "response_preview": content[:200]}
+            )
+            raise RetryableError(f"Invalid JSON from LLM: {str(e)}", job_id=job_id) from e
+        
+        # Track cost
+        input_tokens = response.usage.prompt_tokens
+        output_tokens = response.usage.completion_tokens
+        cost = _calculate_llm_cost(model, input_tokens, output_tokens)
+        
+        await cost_tracker.track_cost(
+            job_id=job_id,
+            stage_name="scene_planning",
+            api_name=model,
+            cost=cost
+        )
+        
+        logger.info(
+            f"Scene plan generated successfully",
+            extra={
+                "job_id": str(job_id),
+                "model": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost": float(cost)
+            }
+        )
+        
+        return scene_plan_dict
+        
+    except RateLimitError as e:
+        logger.warning(f"Rate limit error: {str(e)}", extra={"job_id": str(job_id)})
+        raise RetryableError(f"Rate limit error: {str(e)}", job_id=job_id) from e
+    except APITimeoutError as e:
+        logger.warning(f"API timeout: {str(e)}", extra={"job_id": str(job_id)})
+        raise RetryableError(f"API timeout: {str(e)}", job_id=job_id) from e
+    except APIError as e:
+        logger.error(f"OpenAI API error: {str(e)}", extra={"job_id": str(job_id)})
+        # Check if retryable
+        if e.status_code and e.status_code >= 500:
+            raise RetryableError(f"Retryable API error: {str(e)}", job_id=job_id) from e
+        raise GenerationError(f"OpenAI API error: {str(e)}", job_id=job_id) from e
+    except Exception as e:
+        logger.error(
+            f"Unexpected error in LLM call: {str(e)}",
+            extra={"job_id": str(job_id)},
+            exc_info=True
+        )
+        raise GenerationError(f"Unexpected error: {str(e)}", job_id=job_id) from e
+

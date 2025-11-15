@@ -151,10 +151,18 @@ async def upload_audio(
             "audio_url": audio_url,
             "user_prompt": user_prompt,
             "progress": 0,
+            "current_stage": "audio_parser",  # Set initial stage so frontend knows what's next
             "created_at": datetime.utcnow().isoformat()
         }
         
         await db_client.table("jobs").insert(job_data).execute()
+        
+        # Publish initial stage update so frontend knows which stage is pending
+        from api_gateway.services.event_publisher import publish_event
+        await publish_event(job_id, "stage_update", {
+            "stage": "audio_parser",
+            "status": "pending"
+        })
         
         # Enqueue job to queue
         await enqueue_job(job_id, user_id, audio_url, user_prompt)
