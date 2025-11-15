@@ -13,6 +13,8 @@ on:
 
 jobs:
   sync:
+    # Only run this workflow in the fork repo, never in upstream
+    if: github.repository == 'mlx93/video-gen-mlx'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout fork repo (mlx93/video-gen-mlx)
@@ -49,6 +51,26 @@ jobs:
             echo "Already in sync."
           fi
 
+      - name: Verify we're in fork repo (safety check)
+        run: |
+          CURRENT_REPO=$(git remote get-url origin)
+          if [[ "$CURRENT_REPO" != *"mlx93/video-gen-mlx"* ]]; then
+            echo "ERROR: This workflow should only run in mlx93/video-gen-mlx fork!"
+            echo "Current repo: $CURRENT_REPO"
+            exit 1
+          fi
+          echo "✅ Verified: Running in fork repo"
+
+      - name: Verify upstream remote is read-only
+        run: |
+          UPSTREAM_URL=$(git remote get-url upstream)
+          if [[ "$UPSTREAM_URL" != *"eweinhaus/VideoGen"* ]]; then
+            echo "ERROR: Upstream remote must point to eweinhaus/VideoGen!"
+            echo "Current upstream: $UPSTREAM_URL"
+            exit 1
+          fi
+          echo "✅ Verified: Upstream points to eweinhaus/VideoGen (read-only source)"
+
       - name: Sync from upstream
         if: steps.check.outputs.needs_sync == 'true'
         run: |
@@ -70,7 +92,13 @@ jobs:
               git commit -m "Sync from upstream: $(date -u +%Y-%m-%d)" || true
             fi
           fi
-          # Push changes (will fail if nothing to push, which is fine)
+          # Safety check: Ensure we're pushing to fork, never to upstream
+          ORIGIN_URL=$(git remote get-url origin)
+          if [[ "$ORIGIN_URL" == *"eweinhaus/VideoGen"* ]]; then
+            echo "ERROR: Attempted to push to upstream repo! Aborting for safety."
+            exit 1
+          fi
+          # Push changes to fork only (will fail if nothing to push, which is fine)
           git push origin main || echo "Nothing to push or push failed"
 
       - name: Summary
