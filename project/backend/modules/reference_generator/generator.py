@@ -240,7 +240,7 @@ async def generate_all_references(
     from .prompts import synthesize_prompt
     from shared.errors import BudgetExceededError
     from shared.cost_tracking import cost_tracker
-    from decimal import Decimal
+    # Decimal is already imported at module level, no need to import again
     
     # Get concurrency limit from environment (default: 4)
     import os
