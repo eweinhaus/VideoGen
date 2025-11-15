@@ -20,6 +20,7 @@ class Job(BaseModel):
     audio_url: str
     user_prompt: str
     current_stage: Optional[str] = None
+    stop_at_stage: Optional[str] = Field(default=None, description="Optional stage to stop at for testing")
     progress: int = Field(default=0, ge=0, le=100, description="Progress percentage 0-100")
     estimated_remaining: Optional[int] = Field(default=None, description="Estimated remaining time in seconds")
     total_cost: Decimal = Field(default=Decimal("0.00"), description="Total cost in USD")

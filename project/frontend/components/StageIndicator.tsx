@@ -63,13 +63,13 @@ export function StageIndicator({ stages, currentStage, showOnly }: StageIndicato
 
   return (
     <Card>
-      <CardContent className="p-4">
-        <div className="flex flex-row flex-nowrap gap-4 overflow-x-auto">
+      <CardContent className="p-6">
+        <div className="flex flex-row flex-wrap gap-6">
           {orderedStages.map((stage, index) => (
             <div
               key={stage.name}
               className={cn(
-                "flex items-center gap-2 flex-shrink-0 whitespace-nowrap"
+                "flex items-center gap-3 flex-shrink-0 whitespace-nowrap"
               )}
             >
               {getStatusIcon(stage.status, stage.isCurrent)}

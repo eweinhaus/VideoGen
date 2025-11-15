@@ -31,6 +31,7 @@ db_client = DatabaseClient()
 async def upload_audio(
     audio_file: UploadFile = File(...),
     user_prompt: str = Form(...),
+    stop_at_stage: str = Form(None),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -39,6 +40,7 @@ async def upload_audio(
     Args:
         audio_file: Audio file (MP3/WAV/FLAC, ≤10MB)
         user_prompt: Creative prompt (50-500 characters)
+        stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
         current_user: Current authenticated user
         
     Returns:
@@ -141,6 +143,11 @@ async def upload_audio(
             content_type=content_type
         )
         
+        # Validate stop_at_stage if provided
+        valid_stages = ["audio_parser", "scene_planner", "reference_generator", "prompt_generator", "video_generator", "composer"]
+        if stop_at_stage and stop_at_stage not in valid_stages:
+            raise ValidationError(f"Invalid stop_at_stage: {stop_at_stage}. Must be one of: {', '.join(valid_stages)}")
+        
         # Create job record in database
         # Note: Using 'id' as job_id (primary key) since schema uses 'id' as PK
         # Note: Schema has 'total_cost' not 'estimated_cost', so we don't store estimated_cost
@@ -152,6 +159,7 @@ async def upload_audio(
             "user_prompt": user_prompt,
             "progress": 0,
             "current_stage": "audio_parser",  # Set initial stage so frontend knows what's next
+            "stop_at_stage": stop_at_stage,  # Store stop_at_stage for orchestrator
             "created_at": datetime.utcnow().isoformat()
         }
         
@@ -164,8 +172,8 @@ async def upload_audio(
             "status": "pending"
         })
         
-        # Enqueue job to queue
-        await enqueue_job(job_id, user_id, audio_url, user_prompt)
+        # Enqueue job to queue (pass stop_at_stage to orchestrator)
+        await enqueue_job(job_id, user_id, audio_url, user_prompt, stop_at_stage)
         
         logger.info(
             "Job created and enqueued",

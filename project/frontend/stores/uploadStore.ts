@@ -1,13 +1,16 @@
 import { create } from "zustand"
 import { uploadAudio } from "@/lib/api"
+import type { PipelineStage } from "@/components/StepSelector"
 
 interface UploadState {
   audioFile: File | null
   userPrompt: string
+  stopAtStage: PipelineStage | null
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   setAudioFile: (file: File | null) => void
   setUserPrompt: (prompt: string) => void
+  setStopAtStage: (stage: PipelineStage | null) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -26,6 +29,7 @@ const VALID_AUDIO_TYPES = [
 export const uploadStore = create<UploadState>((set, get) => ({
   audioFile: null,
   userPrompt: "",
+  stopAtStage: "scene_planner" as PipelineStage | null, // Default to scene_planner for testing
   isSubmitting: false,
   errors: {},
 
@@ -74,6 +78,10 @@ export const uploadStore = create<UploadState>((set, get) => ({
     }
   },
 
+  setStopAtStage: (stage: PipelineStage | null) => {
+    set({ stopAtStage: stage })
+  },
+
   validate: () => {
     const { audioFile, userPrompt } = get()
     const errors: { audio?: string; prompt?: string } = {}
@@ -115,7 +123,8 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ isSubmitting: true, errors: {} })
 
     try {
-      const response = await uploadAudio(audioFile, userPrompt)
+      const { stopAtStage } = get()
+      const response = await uploadAudio(audioFile, userPrompt, stopAtStage)
       set({ isSubmitting: false })
       return response.job_id
     } catch (error: any) {
@@ -142,6 +151,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({
       audioFile: null,
       userPrompt: "",
+      stopAtStage: "scene_planner" as PipelineStage | null, // Reset to default
       errors: {},
       isSubmitting: false,
     })

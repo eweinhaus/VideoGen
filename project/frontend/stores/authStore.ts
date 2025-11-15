@@ -17,7 +17,7 @@ interface AuthState {
 export const authStore = create<AuthState>((set) => ({
   user: null,
   token: null,
-  isLoading: false,
+  isLoading: true, // Start as loading to prevent premature redirects
   error: null,
 
   login: async (email: string, password: string) => {
@@ -108,6 +108,7 @@ export const authStore = create<AuthState>((set) => ({
   },
 
   checkAuth: async () => {
+    set({ isLoading: true })
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (session) {
@@ -116,12 +117,14 @@ export const authStore = create<AuthState>((set) => ({
         set({
           user: session.user,
           token: accessToken,
+          isLoading: false,
         })
       } else {
         console.log("No session found")
         set({
           user: null,
           token: null,
+          isLoading: false,
         })
       }
     } catch (error: any) {
@@ -129,6 +132,7 @@ export const authStore = create<AuthState>((set) => ({
       set({
         user: null,
         token: null,
+        isLoading: false,
       })
     }
   },
