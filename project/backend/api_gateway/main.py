@@ -28,11 +28,20 @@ app = FastAPI(
 )
 
 # Configure CORS
+# Allow Vercel domains (main domain and preview deployments)
+cors_origins = [settings.frontend_url]
+# Also allow the base domain without trailing slash
+if settings.frontend_url.endswith("/"):
+    cors_origins.append(settings.frontend_url.rstrip("/"))
+else:
+    cors_origins.append(settings.frontend_url + "/")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_origins=cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Allow all Vercel preview deployments
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     allow_credentials=True,
     max_age=3600
 )
