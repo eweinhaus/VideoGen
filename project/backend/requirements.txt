@@ -41,8 +41,8 @@ replicate>=0.20.0
 ffmpeg-python>=0.2.0  # Python wrapper for FFmpeg (optional, can use subprocess)
 
 # Job Queue (Module 2: API Gateway)
-# Note: Using bullmq-py for BullMQ compatibility (Python client)
-bullmq-py>=0.1.0  # Python client for BullMQ (requires Redis)
+# Note: Using Redis directly for queue (simplified implementation)
+# bullmq-py>=0.1.0  # Not available for Python 3.13, using Redis directly instead
 
 # Server-Sent Events (Module 2: API Gateway)
 sse-starlette>=1.6.5  # SSE support for FastAPI
