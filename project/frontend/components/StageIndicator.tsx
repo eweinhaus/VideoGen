@@ -12,28 +12,33 @@ interface Stage {
 interface StageIndicatorProps {
   stages: Stage[]
   currentStage: string | null
+  showOnly?: string[] // Optional: only show specific stages
 }
 
 const STAGE_DISPLAY_NAMES: Record<string, string> = {
-  audio_analysis: "Audio Analysis",
-  scene_planning: "Scene Planning",
-  reference_generation: "Reference Generation",
+  audio_parser: "Audio Analysis",
+  audio_analysis: "Audio Analysis", // Alias for compatibility
+  scene_planner: "Scene Planning",
+  scene_planning: "Scene Planning", // Alias for compatibility
+  reference_generator: "Reference Generation",
+  reference_generation: "Reference Generation", // Alias for compatibility
   prompt_generation: "Prompt Generation",
   video_generation: "Video Generation",
   composition: "Composition",
 }
 
 const STAGE_ORDER = [
-  "audio_analysis",
-  "scene_planning",
-  "reference_generation",
+  "audio_parser",
+  "scene_planner",
+  "reference_generator",
   "prompt_generation",
   "video_generation",
   "composition",
 ]
 
-export function StageIndicator({ stages, currentStage }: StageIndicatorProps) {
-  const orderedStages = STAGE_ORDER.map((stageName) => {
+export function StageIndicator({ stages, currentStage, showOnly }: StageIndicatorProps) {
+  const stagesToShow = showOnly || STAGE_ORDER
+  const orderedStages = stagesToShow.map((stageName) => {
     const stage = stages.find((s) => s.name === stageName)
     return {
       name: stageName,
@@ -59,13 +64,12 @@ export function StageIndicator({ stages, currentStage }: StageIndicatorProps) {
   return (
     <Card>
       <CardContent className="p-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:justify-between">
+        <div className="flex flex-row flex-nowrap gap-4 overflow-x-auto">
           {orderedStages.map((stage, index) => (
             <div
               key={stage.name}
               className={cn(
-                "flex items-center gap-2",
-                index < orderedStages.length - 1 && "sm:mb-0"
+                "flex items-center gap-2 flex-shrink-0 whitespace-nowrap"
               )}
             >
               {getStatusIcon(stage.status, stage.isCurrent)}
