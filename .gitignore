@@ -44,3 +44,5 @@ tasks/
 
 logs/
 *.log
+# GitHub Actions workflows (local only, not committed)
+.github/workflows/
