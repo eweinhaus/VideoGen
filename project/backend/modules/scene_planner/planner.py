@@ -115,13 +115,20 @@ async def plan_scenes(
         if "video_summary" in llm_output:
             video_summary = llm_output["video_summary"]
         
-        # Ensure job_id matches
+        # Ensure job_id matches (if LLM provided one)
         if "job_id" in llm_output:
-            # Validate job_id matches
-            llm_job_id = UUID(llm_output["job_id"])
-            if llm_job_id != job_id:
-                logger.warning(
-                    f"LLM job_id mismatch: {llm_job_id} vs {job_id}, using provided job_id"
+            try:
+                # Validate job_id matches (LLM might return invalid UUID format)
+                llm_job_id = UUID(str(llm_output["job_id"]))
+                if llm_job_id != job_id:
+                    logger.warning(
+                        f"LLM job_id mismatch: {llm_job_id} vs {job_id}, using provided job_id"
+                    )
+            except (ValueError, TypeError) as e:
+                # LLM returned invalid UUID format - ignore and use provided job_id
+                logger.debug(
+                    f"LLM returned invalid job_id format: {llm_output['job_id']}, using provided job_id",
+                    extra={"error": str(e)}
                 )
         
         # Step 6: Assemble ScenePlan
