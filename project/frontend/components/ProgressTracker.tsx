@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { StageIndicator } from "@/components/StageIndicator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent, ScenePlannerResultsEvent } from "@/types/sse"
+import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent, ScenePlannerResultsEvent, PromptGeneratorResultsEvent } from "@/types/sse"
 import { formatDuration } from "@/lib/utils"
 
 interface ProgressTrackerProps {
@@ -82,8 +82,11 @@ export function ProgressTracker({
     : stages
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
+  const [promptResults, setPromptResults] = useState<PromptGeneratorResultsEvent | null>(null)
 
   const { updateJob } = jobStore()
+  const truncatePrompt = (text: string, limit = 180) =>
+    text.length > limit ? `${text.slice(0, limit)}…` : text
   
   // Sync state when job data updates (for SSE updates to work correctly)
   useEffect(() => {
@@ -170,6 +173,9 @@ export function ProgressTracker({
     },
     onScenePlannerResults: (data: ScenePlannerResultsEvent) => {
       setScenePlanResults(data)
+    },
+    onPromptGeneratorResults: (data: PromptGeneratorResultsEvent) => {
+      setPromptResults(data)
     },
   })
 
@@ -458,6 +464,43 @@ export function ProgressTracker({
                   ))}
                 </div>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {promptResults && (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle className="text-lg">Clip Prompts</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              {promptResults.llm_used
+                ? `Optimized by ${promptResults.llm_model ?? "LLM"}`
+                : "Generated via deterministic template"}
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {promptResults.clip_prompts.map((clip) => (
+                <div key={clip.clip_index} className="border-l-4 border-primary/70 pl-4 py-2 space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold">Clip {clip.clip_index}</span>
+                    <span className="text-muted-foreground">{clip.duration.toFixed(1)}s</span>
+                  </div>
+                  <p className="text-sm">{truncatePrompt(clip.prompt)}</p>
+                  <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
+                    {clip.metadata?.style_keywords?.length ? (
+                      <span>Style: {clip.metadata.style_keywords.slice(0, 3).join(", ")}</span>
+                    ) : null}
+                    {clip.metadata?.word_count ? (
+                      <span>Words: {clip.metadata.word_count}</span>
+                    ) : null}
+                    {clip.metadata?.reference_mode ? (
+                      <span>References: {clip.metadata.reference_mode}</span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>

@@ -107,6 +107,22 @@ export interface ScenePlannerResultsEvent {
   }>
 }
 
+export interface PromptGeneratorResultsEvent {
+  total_clips: number
+  generation_time: number
+  llm_used: boolean
+  llm_model?: string | null
+  clip_prompts: Array<{
+    clip_index: number
+    prompt: string
+    negative_prompt: string
+    duration: number
+    scene_reference_url?: string | null
+    character_reference_urls: string[]
+    metadata?: Record<string, any>
+  }>
+}
+
 export interface SSEHandlers {
   onStageUpdate?: (data: StageUpdateEvent) => void
   onProgress?: (data: ProgressEvent) => void
@@ -116,5 +132,6 @@ export interface SSEHandlers {
   onError?: (data: ErrorEvent) => void
   onAudioParserResults?: (data: AudioParserResultsEvent) => void
   onScenePlannerResults?: (data: ScenePlannerResultsEvent) => void
+  onPromptGeneratorResults?: (data: PromptGeneratorResultsEvent) => void
 }
 

@@ -1,0 +1,90 @@
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "video_summary": "A neon-soaked chase through rain-slicked streets that resolves with a hopeful rooftop finale.",
+  "characters": [
+    {
+      "id": "protagonist",
+      "description": "Young woman, reflective visor, iridescent trench coat, determined expression",
+      "role": "main character"
+    },
+    {
+      "id": "ally",
+      "description": "Holographic guide, translucent blue light form",
+      "role": "support"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "city_alley",
+      "description": "Claustrophobic alley with neon billboards, puddles reflecting cyan lights",
+      "time_of_day": "night"
+    },
+    {
+      "id": "rooftop",
+      "description": "Open rooftop overlooking skyline, early dawn light",
+      "time_of_day": "dawn"
+    }
+  ],
+  "style": {
+    "color_palette": ["#00FFFF", "#FF00FF", "#121212"],
+    "visual_style": "Neo-noir cyberpunk",
+    "mood": "melancholic",
+    "lighting": "high-contrast neon",
+    "cinematography": "wide tracking shots"
+  },
+  "clip_scripts": [
+    {
+      "clip_index": 0,
+      "start": 0.0,
+      "end": 5.0,
+      "visual_description": "Protagonist steps into neon rain, reflections swirling around her boots.",
+      "motion": "Slow push in as rain falls diagonally across frame.",
+      "camera_angle": "Medium wide shot, slightly low angle.",
+      "characters": ["protagonist"],
+      "scenes": ["city_alley"],
+      "lyrics_context": "I walk alone",
+      "beat_intensity": "medium"
+    },
+    {
+      "clip_index": 1,
+      "start": 5.0,
+      "end": 10.2,
+      "visual_description": "Holographic ally materializes, guiding her toward blinding light.",
+      "motion": "Tracking shot following side-by-side strides.",
+      "camera_angle": "Profile shot, camera glides smoothly.",
+      "characters": ["protagonist", "ally"],
+      "scenes": ["city_alley"],
+      "lyrics_context": "But signals pull me through",
+      "beat_intensity": "high"
+    },
+    {
+      "clip_index": 2,
+      "start": 10.2,
+      "end": 15.6,
+      "visual_description": "They reach rooftop as dawn breaks, skyline glowing.",
+      "motion": "Camera orbits slowly revealing horizon.",
+      "camera_angle": "Wide shot from behind characters, slight tilt.",
+      "characters": ["protagonist", "ally"],
+      "scenes": ["rooftop"],
+      "lyrics_context": "Now I see the sun",
+      "beat_intensity": "low"
+    }
+  ],
+  "transitions": [
+    {
+      "from_clip": 0,
+      "to_clip": 1,
+      "type": "cut",
+      "duration": 0.0,
+      "rationale": "Beat hits hard into chorus"
+    },
+    {
+      "from_clip": 1,
+      "to_clip": 2,
+      "type": "crossfade",
+      "duration": 0.5,
+      "rationale": "Energy drops into outro"
+    }
+  ]
+}
+
