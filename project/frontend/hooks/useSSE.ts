@@ -55,9 +55,10 @@ export function useSSE(
     if (!token) {
       console.error("❌ No token found in authStore for SSE connection!")
       console.error("Full auth state:", authState)
-      // Try to get session from Supabase directly
-      import("@/lib/supabase").then(({ supabase }) => {
-        supabase.auth.getSession().then(({ data: { session } }) => {
+      // Try to get session from Supabase directly (use static import to avoid multiple instances)
+      import("@/lib/supabase").then((module) => {
+        // Use the same supabase instance from the module
+        module.supabase.auth.getSession().then(({ data: { session } }) => {
           if (session?.access_token) {
             console.log("✅ Found token in Supabase session, updating authStore")
             authStore.setState({ token: session.access_token })

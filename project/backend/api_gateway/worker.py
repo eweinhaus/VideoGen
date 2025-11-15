@@ -28,20 +28,31 @@ async def process_job(job_data: dict) -> None:
     Process a single job from the queue.
     
     Args:
-        job_data: Job data dictionary with job_id, user_id, audio_url, user_prompt
+        job_data: Job data dictionary with job_id, user_id, audio_url, user_prompt, stop_at_stage
     """
     job_id = job_data.get("job_id")
     user_id = job_data.get("user_id")
     audio_url = job_data.get("audio_url")
     user_prompt = job_data.get("user_prompt")
+    stop_at_stage = job_data.get("stop_at_stage")  # Optional: for testing
     
     if not all([job_id, user_id, audio_url, user_prompt]):
         logger.error("Invalid job data", extra={"job_data": job_data})
         return
     
-    logger.info("Processing job", extra={"job_id": job_id, "user_id": user_id})
+    logger.info(
+        "Processing job",
+        extra={"job_id": job_id, "user_id": user_id, "stop_at_stage": stop_at_stage}
+    )
     
     try:
+        # Publish message that processing is starting
+        from api_gateway.services.event_publisher import publish_event
+        await publish_event(job_id, "message", {
+            "text": "Starting pipeline execution...",
+            "stage": "queue"
+        })
+        
         # Check cancellation flag before starting
         cancel_key = f"job_cancel:{job_id}"
         if await redis_client.get(cancel_key):
@@ -52,8 +63,8 @@ async def process_job(job_data: dict) -> None:
             }).eq("id", job_id).execute()
             return
         
-        # Execute pipeline
-        await execute_pipeline(job_id, audio_url, user_prompt)
+        # Execute pipeline (pass stop_at_stage for testing)
+        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage)
         
         logger.info("Job processed successfully", extra={"job_id": job_id})
         
@@ -126,14 +137,23 @@ async def worker_loop():
     while True:
         try:
             # Pop job from queue (blocking with timeout)
+            logger.debug(f"Waiting for job from queue: {queue_key}")
             job_json = await redis_client.client.brpop(queue_key, timeout=5)
             
             if job_json:
+                logger.info(f"Job popped from queue: {queue_key}")
                 # job_json is a tuple: (queue_key, job_data)
                 job_data_str = job_json[1]
                 job_data = json.loads(job_data_str)
                 
                 job_id = job_data.get("job_id")
+                
+                # Publish message that worker picked up the job
+                from api_gateway.services.event_publisher import publish_event
+                await publish_event(job_id, "message", {
+                    "text": "Worker picked up job, starting pipeline...",
+                    "stage": "queue"
+                })
                 
                 # Move to processing set
                 await redis_client.client.sadd(processing_key, job_id)
@@ -153,7 +173,7 @@ async def worker_loop():
             logger.info("Worker loop cancelled")
             break
         except Exception as e:
-            logger.error("Error in worker loop", exc_info=e)
+            logger.error("Error in worker loop", exc_info=e, extra={"queue_key": queue_key})
             await asyncio.sleep(5)  # Wait before retrying
 
 
