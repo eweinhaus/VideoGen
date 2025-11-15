@@ -1,12 +1,12 @@
 name: Sync Fork from Upstream
 
 on:
-  # Run on schedule (every hour)
+  # Run on schedule (every 5 minutes)
   schedule:
-    - cron: '0 * * * *'  # Every hour
+    - cron: '*/5 * * * *'  # Every 5 minutes
   # Run on manual trigger
   workflow_dispatch:
-  # Run when upstream repo is updated (via webhook or manual trigger)
+  # Run when fork repo is updated (optional - can trigger sync check)
   push:
     branches:
       - main
@@ -15,11 +15,18 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout current repo (mlx93/video-gen-mlx)
+      - name: Checkout fork repo (mlx93/video-gen-mlx)
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Suppress warnings about ignored files to prevent workflow failures
+          git config advice.addIgnoredFile false
 
       - name: Add upstream remote
         run: |
@@ -45,10 +52,6 @@ jobs:
       - name: Sync from upstream
         if: steps.check.outputs.needs_sync == 'true'
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Suppress warnings about ignored files to prevent workflow failures
-          git config advice.addIgnoredFile false
           git checkout main
           # Perform merge (this may create a merge commit)
           git merge upstream/main --no-edit --allow-unrelated-histories || true
