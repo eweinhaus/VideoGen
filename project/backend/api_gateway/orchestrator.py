@@ -195,14 +195,23 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         await update_progress(job_id, 1, "audio_parser")
         
         try:
-            from modules.audio_parser.process import process as parse_audio
+            from modules.audio_parser.main import process_audio_analysis
             await publish_event(job_id, "message", {
                 "text": "Analyzing audio structure and beats...",
                 "stage": "audio_parser"
             })
             await update_progress(job_id, 5, "audio_parser")
-            audio_data = await parse_audio(job_id, audio_url)
-        except ImportError:
+            # Convert job_id from str to UUID for audio parser
+            job_id_uuid = UUID(job_id)
+            logger.info(f"Calling audio parser for job {job_id}", extra={"job_id": job_id, "audio_url": audio_url})
+            audio_data = await process_audio_analysis(job_id_uuid, audio_url)
+            logger.info(
+                f"Audio parser completed successfully for job {job_id}: "
+                f"BPM={audio_data.bpm:.1f}, duration={audio_data.duration:.2f}s, "
+                f"beats={len(audio_data.beat_timestamps)}",
+                extra={"job_id": job_id}
+            )
+        except ImportError as e:
             # Module not implemented yet - use stub
             logger.warning("Audio Parser module not found, using stub", extra={"job_id": job_id})
             await publish_event(job_id, "message", {
@@ -263,8 +272,10 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
                         duration=end - start
                     ))
             
+            # Convert job_id to UUID for stub as well
+            job_id_uuid = UUID(job_id)
             audio_data = AudioAnalysis(
-                job_id=job_id,
+                job_id=job_id_uuid,
                 bpm=120.0,
                 duration=duration,
                 beat_timestamps=beat_timestamps,
@@ -311,6 +322,9 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
         )
         
         # Publish audio parser results for frontend display
+        # Extract metadata if available
+        metadata = audio_data.metadata if hasattr(audio_data, 'metadata') and audio_data.metadata else {}
+        
         await publish_event(job_id, "audio_parser_results", {
             "bpm": audio_data.bpm,
             "duration": audio_data.duration,
@@ -331,7 +345,15 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str) -> Non
                 "confidence": audio_data.mood.confidence if hasattr(audio_data.mood, 'confidence') else None
             },
             "lyrics_count": len(audio_data.lyrics),
-            "clip_boundaries_count": len(audio_data.clip_boundaries)
+            "clip_boundaries_count": len(audio_data.clip_boundaries),
+            "metadata": {
+                "cache_hit": metadata.get("cache_hit", False),
+                "fallback_used": metadata.get("fallbacks_used", []),
+                "beat_detection_confidence": metadata.get("beat_detection_confidence"),
+                "structure_confidence": metadata.get("structure_confidence"),
+                "mood_confidence": metadata.get("mood_confidence"),
+                "processing_time": metadata.get("processing_time")
+            }
         })
         
         # Stage 2: Scene Planner (20% progress)
