@@ -20,14 +20,14 @@ def get_budget_limit(environment: str) -> Decimal:
         
     Examples:
         >>> get_budget_limit("production")
-        Decimal('2000.00')
+        Decimal('10000.00')
         >>> get_budget_limit("development")
-        Decimal('50.00')
+        Decimal('1000.00')
     """
     if environment in ["production", "staging"]:
-        return Decimal("2000.00")
+        return Decimal("10000.00")
     # Default to development mode
-    return Decimal("50.00")
+    return Decimal("1000.00")
 
 
 def get_cost_per_minute(environment: str) -> float:

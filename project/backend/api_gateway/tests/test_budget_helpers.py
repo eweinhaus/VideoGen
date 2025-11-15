@@ -14,25 +14,25 @@ from api_gateway.services.budget_helpers import (
 class TestGetBudgetLimit:
     """Tests for get_budget_limit function."""
     
-    def test_production_mode_returns_2000(self):
-        """Test production mode returns $2000 limit."""
+    def test_production_mode_returns_10000(self):
+        """Test production mode returns $10000 limit."""
         limit = get_budget_limit("production")
-        assert limit == Decimal("2000.00")
+        assert limit == Decimal("10000.00")
     
-    def test_staging_mode_returns_2000(self):
-        """Test staging mode returns $2000 limit."""
+    def test_staging_mode_returns_10000(self):
+        """Test staging mode returns $10000 limit."""
         limit = get_budget_limit("staging")
-        assert limit == Decimal("2000.00")
+        assert limit == Decimal("10000.00")
     
-    def test_development_mode_returns_50(self):
-        """Test development mode returns $50 limit."""
+    def test_development_mode_returns_1000(self):
+        """Test development mode returns $1000 limit."""
         limit = get_budget_limit("development")
-        assert limit == Decimal("50.00")
+        assert limit == Decimal("1000.00")
     
     def test_invalid_environment_defaults_to_development(self):
         """Test invalid environment defaults to development mode."""
         limit = get_budget_limit("invalid")
-        assert limit == Decimal("50.00")
+        assert limit == Decimal("1000.00")
 
 
 class TestGetCostPerMinute:

@@ -52,17 +52,58 @@ async def download_audio_file(audio_url: str) -> bytes:
                 path = path.split('?')[0]
             
             logger.info(f"Downloading from bucket: {bucket}, path: {path}")
-            return await storage.download_file(bucket, path)
+            try:
+                return await storage.download_file(bucket, path)
+            except Exception as storage_error:
+                logger.error(
+                    f"Storage download failed: {str(storage_error)}",
+                    extra={"bucket": bucket, "path": path, "error_type": type(storage_error).__name__}
+                )
+                # Re-raise with more context
+                raise AudioAnalysisError(
+                    f"Failed to download audio file from storage (bucket: {bucket}, path: {path}): {str(storage_error)}"
+                ) from storage_error
         else:
             # Fallback: Download directly from URL using HTTP
             logger.info(f"Downloading directly from URL: {audio_url}")
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.get(audio_url)
-                response.raise_for_status()
-                return response.content
+            # Use longer timeout for large files (5 minutes)
+            timeout = httpx.Timeout(300.0, connect=30.0)
+            try:
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                    response = await client.get(audio_url)
+                    response.raise_for_status()
+                    return response.content
+            except httpx.ConnectError as e:
+                logger.error(f"Connection error downloading audio file: {str(e)}", extra={"url": audio_url})
+                raise AudioAnalysisError(
+                    f"Connection error: Could not connect to download audio file. "
+                    f"Please check your network connection and the audio file URL."
+                ) from e
+            except httpx.TimeoutException as e:
+                logger.error(f"Timeout downloading audio file: {str(e)}", extra={"url": audio_url})
+                raise AudioAnalysisError(
+                    f"Download timeout: The audio file download took too long. "
+                    f"The file may be too large or the server is slow."
+                ) from e
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"HTTP error downloading audio file: {e.response.status_code} - {str(e)}",
+                    extra={"url": audio_url, "status_code": e.response.status_code}
+                )
+                raise AudioAnalysisError(
+                    f"HTTP error {e.response.status_code}: Failed to download audio file. "
+                    f"The file may not exist or you may not have permission to access it."
+                ) from e
                 
+    except AudioAnalysisError:
+        # Re-raise AudioAnalysisError as-is
+        raise
     except Exception as e:
-        logger.error(f"Failed to download audio file: {str(e)}")
+        logger.error(
+            f"Unexpected error downloading audio file: {str(e)}",
+            extra={"url": audio_url, "error_type": type(e).__name__},
+            exc_info=True
+        )
         raise AudioAnalysisError(f"Failed to download audio file: {str(e)}") from e
 
 

@@ -175,12 +175,30 @@ class StorageClient:
             
             return response
             
-        except Exception as e:
+        except ConnectionError as e:
             logger.error(
-                f"Failed to download file from {bucket}/{path}: {str(e)}",
-                extra={"bucket": bucket, "path": path, "error": str(e)}
+                f"Connection error downloading file from {bucket}/{path}: {str(e)}",
+                extra={"bucket": bucket, "path": path, "error_type": "ConnectionError"}
             )
-            raise RetryableError(f"Failed to download file: {str(e)}") from e
+            raise RetryableError(
+                f"Connection error: Could not connect to Supabase Storage. "
+                f"Please check your network connection and Supabase configuration."
+            ) from e
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            logger.error(
+                f"Failed to download file from {bucket}/{path}: {error_msg}",
+                extra={"bucket": bucket, "path": path, "error": error_msg, "error_type": error_type},
+                exc_info=True
+            )
+            # Check if it's a connection-related error
+            if "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                raise RetryableError(
+                    f"Connection error downloading file: {error_msg}. "
+                    f"Please check your network connection and Supabase Storage configuration."
+                ) from e
+            raise RetryableError(f"Failed to download file: {error_msg}") from e
     
     async def get_signed_url(
         self,

@@ -759,7 +759,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         except ImportError:
             logger.warning("Video Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import Clips, Clip
-            from decimal import Decimal
             # Create stub clips (minimum 3 required)
             stub_clips = [
                 Clip(
@@ -829,7 +828,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         except ImportError:
             logger.warning("Composer module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import VideoOutput
-            from decimal import Decimal
             video_output = VideoOutput(
                 job_id=UUID(job_id),
                 video_url="stub_final_video_url",

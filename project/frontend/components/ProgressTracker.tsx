@@ -4,22 +4,16 @@ import { useState, useEffect, useMemo } from "react"
 import { useSSE } from "@/hooks/useSSE"
 import { jobStore } from "@/stores/jobStore"
 import { Progress } from "@/components/ui/progress"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { StageIndicator } from "@/components/StageIndicator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import type { StageUpdateEvent, ProgressEvent, MessageEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent, ScenePlannerResultsEvent, PromptGeneratorResultsEvent } from "@/types/sse"
+import { AccordionItem } from "@/components/ui/accordion"
+import type { StageUpdateEvent, ProgressEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent, ScenePlannerResultsEvent, PromptGeneratorResultsEvent } from "@/types/sse"
 import { formatDuration } from "@/lib/utils"
 
 interface ProgressTrackerProps {
   jobId: string
   onComplete?: (videoUrl: string) => void
   onError?: (error: string) => void
-}
-
-interface StatusMessage {
-  text: string
-  stage?: string
-  timestamp: Date
 }
 
 export function ProgressTracker({
@@ -61,7 +55,6 @@ export function ProgressTracker({
   // Use state for values that can be updated by SSE, but prefer memoized values for initial render
   const [progress, setProgress] = useState(initialValues.progress)
   const [currentStage, setCurrentStage] = useState<string | null>(initialValues.currentStage)
-  const [messages, setMessages] = useState<StatusMessage[]>([])
   const [estimatedRemaining, setEstimatedRemaining] = useState<number | null>(initialValues.estimatedRemaining)
   const [cost, setCost] = useState<number | null>(initialValues.cost)
   const [stages, setStages] = useState<
@@ -143,12 +136,6 @@ export function ProgressTracker({
         setEstimatedRemaining(data.estimated_remaining)
       }
     },
-    onMessage: (data: MessageEvent) => {
-      setMessages((prev) => [
-        { text: data.text, stage: data.stage, timestamp: new Date() },
-        ...prev.slice(0, 4), // Keep last 5 messages
-      ])
-    },
     onCostUpdate: (data: CostUpdateEvent) => {
       setCost(data.total)
       updateJob(jobId, { totalCost: data.total })
@@ -206,28 +193,6 @@ export function ProgressTracker({
         currentStage={displayStage}
       />
 
-      {messages.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Status Messages</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {messages.map((msg, index) => (
-                <div key={index} className="text-sm">
-                  <p className="font-medium">{msg.text}</p>
-                  {msg.stage && (
-                    <p className="text-xs text-muted-foreground">
-                      {msg.stage}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {sseError && (
         <Alert variant="destructive">
           <AlertDescription>{sseError}</AlertDescription>
@@ -241,12 +206,8 @@ export function ProgressTracker({
       )}
 
       {audioResults && (
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle className="text-lg">Audio Analysis Results</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
+        <AccordionItem title="Audio Analysis Output" className="mt-6">
+          <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">BPM</p>
@@ -372,17 +333,12 @@ export function ProgressTracker({
                 </div>
               )}
             </div>
-          </CardContent>
-        </Card>
+          </AccordionItem>
       )}
 
       {scenePlanResults && (
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle className="text-lg">Scene Plan</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
+        <AccordionItem title="Scene Planning Output" className="mt-6">
+          <div className="space-y-4">
               <div className="prose prose-sm max-w-none dark:prose-invert">
                 <h3 className="text-lg font-semibold">Video Summary</h3>
                 <p className="text-muted-foreground">{scenePlanResults.video_summary}</p>
@@ -465,22 +421,15 @@ export function ProgressTracker({
                 </div>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </AccordionItem>
       )}
 
       {promptResults && (
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle className="text-lg">Clip Prompts</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              {promptResults.llm_used
-                ? `Optimized by ${promptResults.llm_model ?? "LLM"}`
-                : "Generated via deterministic template"}
-            </p>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
+        <AccordionItem 
+          title={`Clip Prompts ${promptResults.llm_used ? `(Optimized by ${promptResults.llm_model ?? "LLM"})` : "(Template-based)"}`}
+          className="mt-6"
+        >
+          <div className="space-y-3">
               {promptResults.clip_prompts.map((clip) => (
                 <div key={clip.clip_index} className="border-l-4 border-primary/70 pl-4 py-2 space-y-1">
                   <div className="flex items-center justify-between text-sm">
@@ -502,8 +451,7 @@ export function ProgressTracker({
                 </div>
               ))}
             </div>
-          </CardContent>
-        </Card>
+          </AccordionItem>
       )}
     </div>
   )
