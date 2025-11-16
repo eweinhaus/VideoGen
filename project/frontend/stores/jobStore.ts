@@ -26,10 +26,10 @@ function jobResponseToJob(response: JobResponse): Job {
     errorMessage: response.error_message ?? null,
     createdAt: response.created_at || new Date().toISOString(),
     updatedAt: response.updated_at || new Date().toISOString(),
-    estimatedRemaining: response.estimated_remaining ?? null,
-    totalCost: response.total_cost ?? null,
+    estimatedRemaining: response.estimated_remaining ?? undefined,
+    totalCost: response.total_cost ?? undefined,
     stages: response.stages ?? {},
-    audioData: response.audio_data ?? null,
+    audioData: response.audio_data ?? undefined,
   }
 }
 
