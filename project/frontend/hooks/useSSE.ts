@@ -21,6 +21,13 @@ export function useSSE(
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  // Store handlers in ref to prevent re-connections when handlers change
+  const handlersRef = useRef<SSEHandlers>(handlers)
+  
+  // Update handlers ref when they change (but don't trigger re-connection)
+  useEffect(() => {
+    handlersRef.current = handlers
+  }, [handlers])
 
   const close = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -99,11 +106,11 @@ export function useSSE(
       }
     }
 
-    // Register event listeners
+    // Register event listeners - use handlersRef to get latest handlers without re-creating connection
     eventSource.addEventListener("stage_update", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onStageUpdate?.(data)
+        handlersRef.current.onStageUpdate?.(data)
       } catch (err) {
         console.error("Failed to parse stage_update event:", err)
       }
@@ -112,7 +119,7 @@ export function useSSE(
     eventSource.addEventListener("progress", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onProgress?.(data)
+        handlersRef.current.onProgress?.(data)
       } catch (err) {
         console.error("Failed to parse progress event:", err)
       }
@@ -121,7 +128,7 @@ export function useSSE(
     eventSource.addEventListener("message", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onMessage?.(data)
+        handlersRef.current.onMessage?.(data)
       } catch (err) {
         console.error("Failed to parse message event:", err)
       }
@@ -130,7 +137,7 @@ export function useSSE(
     eventSource.addEventListener("cost_update", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onCostUpdate?.(data)
+        handlersRef.current.onCostUpdate?.(data)
       } catch (err) {
         console.error("Failed to parse cost_update event:", err)
       }
@@ -139,7 +146,7 @@ export function useSSE(
     eventSource.addEventListener("completed", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onCompleted?.(data)
+        handlersRef.current.onCompleted?.(data)
         // Don't close immediately - wait a bit to ensure all events are received
         setTimeout(() => close(), 2000)
       } catch (err) {
@@ -150,7 +157,7 @@ export function useSSE(
     eventSource.addEventListener("error", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onError?.(data)
+        handlersRef.current.onError?.(data)
       } catch (err) {
         // If parsing fails, it might be a connection error
         console.error("Failed to parse error event:", err)
@@ -160,7 +167,7 @@ export function useSSE(
     eventSource.addEventListener("audio_parser_results", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onAudioParserResults?.(data)
+        handlersRef.current.onAudioParserResults?.(data)
       } catch (err) {
         console.error("Failed to parse audio_parser_results event:", err)
       }
@@ -169,7 +176,7 @@ export function useSSE(
     eventSource.addEventListener("scene_planner_results", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onScenePlannerResults?.(data)
+        handlersRef.current.onScenePlannerResults?.(data)
       } catch (err) {
         console.error("Failed to parse scene_planner_results event:", err)
       }
@@ -178,7 +185,7 @@ export function useSSE(
     eventSource.addEventListener("prompt_generator_results", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onPromptGeneratorResults?.(data)
+        handlersRef.current.onPromptGeneratorResults?.(data)
       } catch (err) {
         console.error("Failed to parse prompt_generator_results event:", err)
       }
@@ -186,7 +193,7 @@ export function useSSE(
     eventSource.addEventListener("video_generation_start", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onVideoGenerationStart?.(data)
+        handlersRef.current.onVideoGenerationStart?.(data)
       } catch (err) {
         console.error("Failed to parse video_generation_start event:", err)
       }
@@ -194,7 +201,7 @@ export function useSSE(
     eventSource.addEventListener("video_generation_complete", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onVideoGenerationComplete?.(data)
+        handlersRef.current.onVideoGenerationComplete?.(data)
       } catch (err) {
         console.error("Failed to parse video_generation_complete event:", err)
       }
@@ -202,7 +209,7 @@ export function useSSE(
     eventSource.addEventListener("video_generation_failed", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onVideoGenerationFailed?.(data)
+        handlersRef.current.onVideoGenerationFailed?.(data)
       } catch (err) {
         console.error("Failed to parse video_generation_failed event:", err)
       }
@@ -210,7 +217,7 @@ export function useSSE(
     eventSource.addEventListener("video_generation_retry", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onVideoGenerationRetry?.(data)
+        handlersRef.current.onVideoGenerationRetry?.(data)
       } catch (err) {
         console.error("Failed to parse video_generation_retry event:", err)
       }
@@ -219,7 +226,7 @@ export function useSSE(
     eventSource.addEventListener("reference_generation_start", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onReferenceGenerationStart?.(data)
+        handlersRef.current.onReferenceGenerationStart?.(data)
       } catch (err) {
         console.error("Failed to parse reference_generation_start event:", err)
       }
@@ -228,7 +235,7 @@ export function useSSE(
     eventSource.addEventListener("reference_generation_complete", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onReferenceGenerationComplete?.(data)
+        handlersRef.current.onReferenceGenerationComplete?.(data)
       } catch (err) {
         console.error("Failed to parse reference_generation_complete event:", err)
       }
@@ -237,7 +244,7 @@ export function useSSE(
     eventSource.addEventListener("reference_generation_failed", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onReferenceGenerationFailed?.(data)
+        handlersRef.current.onReferenceGenerationFailed?.(data)
       } catch (err) {
         console.error("Failed to parse reference_generation_failed event:", err)
       }
@@ -246,14 +253,14 @@ export function useSSE(
     eventSource.addEventListener("reference_generation_retry", (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data)
-        handlers.onReferenceGenerationRetry?.(data)
+        handlersRef.current.onReferenceGenerationRetry?.(data)
       } catch (err) {
         console.error("Failed to parse reference_generation_retry event:", err)
       }
     })
 
     eventSourceRef.current = eventSource
-  }, [jobId, handlers, close])
+  }, [jobId, close])
 
   useEffect(() => {
     if (jobId && !eventSourceRef.current) {
