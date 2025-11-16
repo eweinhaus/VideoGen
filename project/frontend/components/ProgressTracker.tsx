@@ -127,12 +127,51 @@ export function ProgressTracker({
   const displayStage = currentJob?.currentStage !== undefined ? currentJob.currentStage : currentStage
   const displayEstimatedRemaining = currentJob?.estimatedRemaining !== undefined ? currentJob.estimatedRemaining : estimatedRemaining
   const displayCost = currentJob?.totalCost !== undefined ? currentJob.totalCost : cost
-  const displayStages = currentJob?.stages 
-    ? Object.entries(currentJob.stages).map(([name, stageData]) => ({
+  
+  // Merge stages from database with local SSE-updated stages, prioritizing SSE updates
+  // This prevents database lag from overriding real-time SSE completion events
+  const displayStages = useMemo(() => {
+    // CRITICAL: Always prioritize local stages from SSE - they're real-time
+    // Only use database stages as fallback or to fill in missing stages
+    if (stages.length > 0) {
+      // We have local stages from SSE - use them as base
+      const localStagesMap = new Map(stages.map(s => [s.name, s]))
+      
+      // Merge with database stages, but don't downgrade completed stages
+      if (currentJob?.stages && Object.keys(currentJob.stages).length > 0) {
+        Object.entries(currentJob.stages).forEach(([name, stageData]) => {
+          const dbStatus = (stageData.status || "pending") as "pending" | "processing" | "completed" | "failed"
+          const localStage = localStagesMap.get(name)
+          
+          if (!localStage) {
+            // Stage exists in DB but not in local state - add it
+            localStagesMap.set(name, { name, status: dbStatus })
+          } else if (localStage.status === "completed" || localStage.status === "failed") {
+            // Never downgrade completed or failed stages from SSE
+            // Keep the local state
+          } else {
+            // For pending/processing stages, prefer database status if it's more advanced
+            if (dbStatus === "completed" || dbStatus === "failed") {
+              localStagesMap.set(name, { name, status: dbStatus })
+            }
+          }
+        })
+      }
+      
+      return Array.from(localStagesMap.values())
+    }
+    
+    // Fallback: Use database stages if no local stages
+    if (currentJob?.stages && Object.keys(currentJob.stages).length > 0) {
+      return Object.entries(currentJob.stages).map(([name, stageData]) => ({
         name,
         status: (stageData.status || "pending") as "pending" | "processing" | "completed" | "failed",
       }))
-    : stages
+    }
+    
+    // No stages at all
+    return []
+  }, [currentJob?.stages, stages, displayStage])
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
   const [promptResults, setPromptResults] = useState<PromptGeneratorResultsEvent | null>(null)
@@ -141,7 +180,7 @@ export function ProgressTracker({
   const [clipStatuses, setClipStatuses] = useState<Record<number, "pending" | "processing" | "completed" | "failed" | "retrying">>({})
   
   // Timer state
-  const [elapsedTime, setElapsedTime] = useState<number>(0)
+  const [remainingTime, setRemainingTime] = useState<number | null>(initialValues.estimatedRemaining)
   const [timerStarted, setTimerStarted] = useState<boolean>(false)
   const [hasStarted, setHasStarted] = useState<boolean>(false)
 
@@ -159,7 +198,22 @@ export function ProgressTracker({
         setCurrentStage((prev) => currentJob.currentStage !== prev ? currentJob.currentStage : prev)
       }
       if (currentJob.estimatedRemaining !== undefined) {
-        setEstimatedRemaining((prev) => currentJob.estimatedRemaining !== prev ? (currentJob.estimatedRemaining ?? null) : prev)
+        const newRemaining = currentJob.estimatedRemaining ?? null
+        setEstimatedRemaining((prev) => newRemaining !== prev ? newRemaining : prev)
+        // Only update remainingTime if it's a new value (don't reset countdown unnecessarily)
+        setRemainingTime((prev) => {
+          // If we have a new estimate that's significantly different, update it
+          // Otherwise, let the countdown continue
+          if (newRemaining === null) return null
+          if (prev === null) return newRemaining
+          // Only update if the new value is significantly different (more than 10 seconds)
+          // This prevents resetting the countdown on every render or minor updates
+          // Allow updates if the new value is much larger (new estimate) or much smaller (shouldn't happen)
+          if (Math.abs(newRemaining - prev) > 10 || newRemaining > prev) {
+            return newRemaining
+          }
+          return prev // Keep the countdown going
+        })
       }
       if (currentJob.totalCost !== undefined) {
         setCost((prev) => currentJob.totalCost !== prev ? (currentJob.totalCost ?? null) : prev)
@@ -171,6 +225,11 @@ export function ProgressTracker({
           status: (stageData.status || "pending") as "pending" | "processing" | "completed" | "failed",
         }))
         setStages((prev) => {
+          // CRITICAL: Don't overwrite local SSE stages with empty database stages
+          // If database has no stages but we have local stages from SSE, keep local stages
+          if (jobStages.length === 0 && prev.length > 0) {
+            return prev
+          }
           const stagesChanged = JSON.stringify(jobStages) !== JSON.stringify(prev)
           return stagesChanged ? jobStages : prev
         })
@@ -180,7 +239,7 @@ export function ProgressTracker({
 
   useEffect(() => {
     setReferenceState(initialReferenceState)
-    setElapsedTime(0)
+    setRemainingTime(initialValues.estimatedRemaining)
     setTimerStarted(false)
     setHasStarted(false)
   }, [jobId])
@@ -199,24 +258,35 @@ export function ProgressTracker({
     }
     
     const interval = setInterval(() => {
-      setElapsedTime((prev) => prev + 1)
+      // Update remaining time (countdown) if available
+      setRemainingTime((prev) => {
+        if (prev === null || prev <= 0) {
+          // Update job store when timer reaches 0
+          if (prev === 0) {
+            updateJob(jobId, { estimatedRemaining: 0 })
+          }
+          return prev
+        }
+        const newValue = prev - 1
+        // Update job store with countdown value so header stays in sync
+        updateJob(jobId, { estimatedRemaining: newValue })
+        return newValue
+      })
     }, 1000)
     
     return () => clearInterval(interval)
-  }, [timerStarted, currentJob])
+  }, [timerStarted, currentJob, jobId, updateJob])
 
   const referenceKey = (imageType: string, imageId: string) => `${imageType}:${imageId}`
   
-  // Format elapsed time as HH:MM:SS or MM:SS
-  const formatElapsedTime = (seconds: number): string => {
-    const hours = Math.floor(seconds / 3600)
-    const minutes = Math.floor((seconds % 3600) / 60)
-    const secs = seconds % 60
+  // Format remaining time (countdown)
+  const formatRemainingTime = (seconds: number | null): string => {
+    if (seconds === null) return ""
+    if (seconds < 0) return "Less than a minute remaining"
+    if (seconds < 60) return "Less than a minute remaining"
     
-    if (hours > 0) {
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-    }
-    return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    const minutes = Math.ceil(seconds / 60)
+    return `About ${minutes} minute${minutes !== 1 ? 's' : ''} remaining`
   }
 
   const handleReferenceStart = (data: ReferenceGenerationStartEvent) => {
@@ -382,8 +452,11 @@ export function ProgressTracker({
     onProgress: (data: ProgressEvent) => {
       setProgress(data.progress)
       updateJob(jobId, { progress: data.progress })
-      if (data.estimated_remaining) {
+      if (data.estimated_remaining !== undefined && data.estimated_remaining !== null) {
         setEstimatedRemaining(data.estimated_remaining)
+        setRemainingTime(data.estimated_remaining)
+        // Update job store so header can display estimated time
+        updateJob(jobId, { estimatedRemaining: data.estimated_remaining })
       }
     },
     onCostUpdate: (data: CostUpdateEvent) => {
@@ -471,23 +544,15 @@ export function ProgressTracker({
       <div className="space-y-3 p-4 bg-muted/30 rounded-lg border min-h-[120px] flex flex-col justify-center">
         <div className="flex items-center justify-between mb-2">
           <span className="text-base font-semibold">Progress</span>
-          <div className="flex items-center gap-4">
-            {timerStarted && (
-              <span className="text-sm font-mono text-muted-foreground">
-                ⏱ {formatElapsedTime(elapsedTime)}
-              </span>
-            )}
           <span className="text-base font-semibold text-muted-foreground">{displayProgress}%</span>
-          </div>
         </div>
         <Progress value={displayProgress} className="h-3" />
+        {remainingTime !== null && remainingTime !== undefined && (
+          <p className="text-sm text-muted-foreground mt-2">
+            {formatRemainingTime(remainingTime)}
+          </p>
+        )}
       </div>
-
-      {displayEstimatedRemaining !== null && (
-        <p className="text-sm text-muted-foreground">
-          Estimated time remaining: {formatDuration(displayEstimatedRemaining)}
-        </p>
-      )}
 
       {displayCost !== null && (
         <p className="text-sm text-muted-foreground">
@@ -513,29 +578,29 @@ export function ProgressTracker({
       )}
 
       {audioResults && (
-        <CollapsibleCard title="Audio Analysis Results" defaultOpen={true}>
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+        <CollapsibleCard title="Audio Analysis" defaultOpen={false}>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">BPM</p>
-                  <p className="text-2xl font-bold">{audioResults.bpm.toFixed(1)}</p>
+                  <p className="text-xs font-medium text-muted-foreground">BPM</p>
+                  <p className="text-xl font-bold leading-tight">{audioResults.bpm.toFixed(1)}</p>
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Duration</p>
-                  <p className="text-2xl font-bold">{formatDuration(audioResults.duration)}</p>
+                  <p className="text-xs font-medium text-muted-foreground">Duration</p>
+                  <p className="text-xl font-bold leading-tight">{formatDuration(audioResults.duration)}</p>
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Beats Detected</p>
-                  <p className="text-2xl font-bold">{audioResults.beat_count}</p>
+                  <p className="text-xs font-medium text-muted-foreground">Beats Detected</p>
+                  <p className="text-xl font-bold leading-tight">{audioResults.beat_count}</p>
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Structure Segments</p>
-                  <p className="text-2xl font-bold">{audioResults.song_structure.length}</p>
+                  <p className="text-xs font-medium text-muted-foreground">Structure Segments</p>
+                  <p className="text-xl font-bold leading-tight">{audioResults.song_structure.length}</p>
                 </div>
               </div>
               
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-2">Mood</p>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Mood</p>
                 <div className="flex items-center gap-2">
                   <span className="font-semibold capitalize">{audioResults.mood.primary}</span>
                   {audioResults.mood.energy_level && (
@@ -552,10 +617,10 @@ export function ProgressTracker({
               </div>
 
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-2">Song Structure</p>
-                <div className="space-y-1">
+                <p className="text-xs font-medium text-muted-foreground mb-1">Song Structure</p>
+                <div className="space-y-0.5">
                   {audioResults.song_structure.map((seg, idx) => (
-                    <div key={idx} className="flex items-center justify-between text-sm">
+                    <div key={idx} className="flex items-center justify-between text-xs">
                       <span className="capitalize font-medium">{seg.type}</span>
                       <span className="text-muted-foreground">
                         {seg.start.toFixed(1)}s - {seg.end.toFixed(1)}s
@@ -574,10 +639,10 @@ export function ProgressTracker({
 
               {audioResults.beat_timestamps.length > 0 && (
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
                     First {Math.min(20, audioResults.beat_timestamps.length)} Beats (seconds)
                   </p>
-                  <p className="text-xs font-mono text-muted-foreground">
+                  <p className="text-xs font-mono text-muted-foreground leading-tight">
                     {audioResults.beat_timestamps.map(t => t.toFixed(2)).join(", ")}
                   </p>
                 </div>
@@ -585,12 +650,12 @@ export function ProgressTracker({
 
               {audioResults.clip_boundaries && audioResults.clip_boundaries.length > 0 && (
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-2">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
                     Clip Boundaries ({audioResults.clip_boundaries.length} clips)
                   </p>
-                  <div className="space-y-1 max-h-60 overflow-y-auto">
+                  <div className="space-y-0.5 max-h-60 overflow-y-auto">
                     {audioResults.clip_boundaries.map((boundary, idx) => (
-                      <div key={idx} className="flex items-center justify-between text-sm p-2 bg-muted/30 rounded">
+                      <div key={idx} className="flex items-center justify-between text-xs p-1.5 bg-muted/30 rounded">
                         <span className="font-medium">Clip {idx + 1}</span>
                         <span className="text-muted-foreground">
                           {boundary.start.toFixed(1)}s - {boundary.end.toFixed(1)}s
@@ -605,9 +670,9 @@ export function ProgressTracker({
               )}
 
               {audioResults.metadata && (
-                <div className="mt-4 pt-4 border-t">
-                  <p className="text-sm font-medium text-muted-foreground mb-2">Analysis Metadata</p>
-                  <div className="space-y-2 text-xs">
+                <div className="mt-2 pt-2 border-t">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">Analysis Metadata</p>
+                  <div className="space-y-1 text-xs leading-tight">
                     {audioResults.metadata.cache_hit && (
                       <p className="text-green-600">✓ Results from cache</p>
                     )}
@@ -644,43 +709,43 @@ export function ProgressTracker({
       )}
 
       {scenePlanResults && (
-        <CollapsibleCard title="Scene Plan" defaultOpen={false}>
-            <div className="space-y-4">
+        <CollapsibleCard title="Scene Planning" defaultOpen={false}>
+            <div className="space-y-2">
               <div className="prose prose-sm max-w-none dark:prose-invert">
-                <h3 className="text-lg font-semibold">Video Summary</h3>
-                <p className="text-muted-foreground">{scenePlanResults.video_summary}</p>
+                <h3 className="text-base font-semibold mb-1">Video Summary</h3>
+                <p className="text-sm text-muted-foreground leading-tight">{scenePlanResults.video_summary}</p>
                 
-                <h3 className="text-lg font-semibold mt-4">Characters</h3>
-                <ul className="list-disc list-inside space-y-1">
+                <h3 className="text-base font-semibold mt-2 mb-1">Characters</h3>
+                <ul className="list-disc list-inside space-y-0.5 text-sm">
                   {scenePlanResults.characters.map((char) => (
-                    <li key={char.id}>
+                    <li key={char.id} className="leading-tight">
                       <strong>{char.id}</strong> ({char.role}): {char.description}
                     </li>
                   ))}
                 </ul>
                 
-                <h3 className="text-lg font-semibold mt-4">Scenes</h3>
-                <ul className="list-disc list-inside space-y-1">
+                <h3 className="text-base font-semibold mt-2 mb-1">Scenes</h3>
+                <ul className="list-disc list-inside space-y-0.5 text-sm">
                   {scenePlanResults.scenes.map((scene) => (
-                    <li key={scene.id}>
+                    <li key={scene.id} className="leading-tight">
                       <strong>{scene.id}</strong> ({scene.time_of_day}): {scene.description}
                     </li>
                   ))}
                 </ul>
                 
-                <h3 className="text-lg font-semibold mt-4">Style</h3>
-                <div className="space-y-2">
+                <h3 className="text-base font-semibold mt-2 mb-1">Style</h3>
+                <div className="space-y-1 text-sm leading-tight">
                   <p><strong>Visual Style:</strong> {scenePlanResults.style.visual_style}</p>
                   <p><strong>Mood:</strong> {scenePlanResults.style.mood}</p>
                   <p><strong>Lighting:</strong> {scenePlanResults.style.lighting}</p>
                   <p><strong>Cinematography:</strong> {scenePlanResults.style.cinematography}</p>
                   <div>
                     <strong>Color Palette:</strong>
-                    <div className="flex gap-2 mt-1">
+                    <div className="flex gap-1.5 mt-0.5">
                       {scenePlanResults.style.color_palette.map((color, idx) => (
                         <div
                           key={idx}
-                          className="w-8 h-8 rounded border border-gray-300"
+                          className="w-6 h-6 rounded border border-gray-300"
                           style={{ backgroundColor: color }}
                           title={color}
                         />
@@ -689,18 +754,18 @@ export function ProgressTracker({
                   </div>
                 </div>
                 
-                <h3 className="text-lg font-semibold mt-4">Clip Scripts</h3>
-                <div className="space-y-3">
+                <h3 className="text-base font-semibold mt-2 mb-1">Clip Scripts</h3>
+                <div className="space-y-1.5">
                   {scenePlanResults.clip_scripts.map((clip) => (
-                    <div key={clip.clip_index} className="border-l-4 border-primary pl-4 py-2">
-                      <div className="flex items-center justify-between mb-1">
-                        <strong>Clip {clip.clip_index}</strong>
-                        <span className="text-sm text-muted-foreground">
+                    <div key={clip.clip_index} className="border-l-4 border-primary pl-3 py-1">
+                      <div className="flex items-center justify-between mb-0.5">
+                        <strong className="text-sm">Clip {clip.clip_index}</strong>
+                        <span className="text-xs text-muted-foreground">
                           {clip.start.toFixed(1)}s - {clip.end.toFixed(1)}s
                         </span>
                       </div>
-                      <p className="text-sm">{clip.visual_description}</p>
-                      <div className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                      <p className="text-xs leading-tight">{clip.visual_description}</p>
+                      <div className="text-xs text-muted-foreground mt-0.5 space-y-0 leading-tight">
                         <p><strong>Motion:</strong> {clip.motion}</p>
                         <p><strong>Camera:</strong> {clip.camera_angle}</p>
                         <p><strong>Beat Intensity:</strong> {clip.beat_intensity}</p>
@@ -714,10 +779,10 @@ export function ProgressTracker({
                   ))}
                 </div>
                 
-                <h3 className="text-lg font-semibold mt-4">Transitions</h3>
-                <div className="space-y-2">
+                <h3 className="text-base font-semibold mt-2 mb-1">Transitions</h3>
+                <div className="space-y-1">
                   {scenePlanResults.transitions.map((trans, idx) => (
-                    <div key={idx} className="text-sm">
+                    <div key={idx} className="text-xs leading-tight">
                       <strong>Clip {trans.from_clip} → Clip {trans.to_clip}:</strong> {trans.type}
                       {trans.duration > 0 && ` (${trans.duration.toFixed(2)}s)`}
                       {trans.rationale && (
@@ -733,8 +798,8 @@ export function ProgressTracker({
 
       {referenceImages.length > 0 && (
         <CollapsibleCard 
-          title="Reference Images" 
-          defaultOpen={true}
+          title="Reference Generation" 
+          defaultOpen={false}
         >
           <div className="space-y-4">
             <div>
@@ -790,7 +855,7 @@ export function ProgressTracker({
       )}
 
       {promptResults && (
-        <CollapsibleCard title="Clip Prompts" defaultOpen={false}>
+        <CollapsibleCard title="Prompt Generation" defaultOpen={false}>
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               {promptResults.llm_used
@@ -824,7 +889,7 @@ export function ProgressTracker({
       )}
 
       {(videoTotals.total > 0) && (
-        <CollapsibleCard title="Video Generation" defaultOpen={true}>
+        <CollapsibleCard title="Video Generation" defaultOpen={false}>
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Overall Progress</span>
