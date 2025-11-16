@@ -15,8 +15,8 @@ logger = get_logger("video_generator.config")
 # Model versions (pinned for stability)
 # Using kwaivgi/kling-v2.1 - better prompt adherence, handles character references better
 # Kling has better ability to follow prompts and ignore backgrounds from character reference images
-# Latest version hash retrieved from Replicate API (Nov 2025): daad218feb714b03e2a1ac445986aebb9d05243cd00da2af17be2e4049f48f69
-KLING_MODEL_VERSION = os.getenv("KLING_MODEL_VERSION", "daad218feb714b03e2a1ac445986aebb9d05243cd00da2af17be2e4049f48f69")
+# Note: Old pinned version hash was invalid. Using "latest" to dynamically retrieve current version.
+KLING_MODEL_VERSION = os.getenv("KLING_MODEL_VERSION", "latest")
 SVD_MODEL_VERSION = os.getenv("SVD_MODEL_VERSION", "155d6d446da5e7cd4a2ef72725461ba8687bdf63a2a1fb7bb574f25af24dc7b5")
 COGVIDEOX_MODEL_VERSION = os.getenv("COGVIDEOX_MODEL_VERSION", "latest")
 
@@ -30,8 +30,8 @@ COGVIDEOX_MODEL = f"THUDM/cogvideox:{COGVIDEOX_MODEL_VERSION}"
 MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     "kling_v21": {
         "replicate_string": "kwaivgi/kling-v2.1",
-        "version": KLING_MODEL_VERSION,
-        "full_model": KLING_MODEL,
+        "version": "latest",  # Dynamically retrieve latest version
+        "full_model": "kwaivgi/kling-v2.1:latest",
         "type": "image-to-video",
         "supports_lip_sync": False,
         "supports_motion_control": False,

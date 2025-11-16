@@ -3,9 +3,8 @@ Image handling for video generation.
 
 Downloads images from Supabase Storage and uploads to Replicate.
 """
-from typing import Optional, Union
+from typing import Optional
 from uuid import UUID
-import io
 import re
 from shared.storage import StorageClient
 from shared.retry import retry_with_backoff
@@ -56,7 +55,7 @@ def parse_supabase_url(url: str) -> tuple[str, str]:
 async def download_and_upload_image(
     image_url: str,
     job_id: UUID
-) -> Optional[Union[str, io.BytesIO]]:
+) -> Optional[str]:
     """
     Download image from Supabase and prepare for Replicate.
     
@@ -65,7 +64,7 @@ async def download_and_upload_image(
         job_id: Job ID for logging
         
     Returns:
-        Signed URL string, file object (io.BytesIO), or None if all attempts fail
+        Signed URL string, or None if all attempts fail
         
     Raises:
         RetryableError: If download fails (will retry)
@@ -83,11 +82,10 @@ async def download_and_upload_image(
         )
         image_bytes = await storage.download_file(bucket, path)
         
-        # Replicate accepts file URLs, file objects, or file paths directly
-        # Strategy: Try Supabase signed URL first, fallback to file object
-        # Note: Replicate will handle the file automatically when passed in input
+        # Replicate requires URL strings, not BytesIO objects
+        # Strategy: Try Supabase signed URL first, fallback to uploading to temp location
         
-        # Option 1: Try using Supabase signed URL directly (if Replicate accepts HTTP URLs)
+        # Option 1: Try using Supabase signed URL directly (fastest approach)
         # This avoids download/upload overhead
         try:
             signed_url = await storage.get_signed_url(bucket, path, expires_in=3600)
@@ -98,24 +96,51 @@ async def download_and_upload_image(
             return signed_url
         except Exception as e:
             logger.debug(
-                f"Signed URL approach failed, using file object: {e}",
+                f"Signed URL approach failed, uploading to temporary location: {e}",
                 extra={"job_id": str(job_id)}
             )
         
-        # Option 2: Pass file bytes as file object (Replicate accepts this in input)
-        # Create a temporary file-like object from bytes
-        file_obj = io.BytesIO(image_bytes)
-        file_obj.name = "image.jpg"  # Replicate may need filename
-        
-        logger.info(
-            f"Prepared file object for Replicate input",
-            extra={"job_id": str(job_id), "size": len(image_bytes)}
-        )
-        
-        # Return file object - will be passed directly in Replicate input
-        # Note: This returns the file object, not a URL
-        # The generator will pass this directly in the input dict
-        return file_obj
+        # Option 2: Upload to temporary Supabase location and get URL
+        # Replicate requires URLs, not BytesIO objects
+        # Upload to a temporary location in Supabase and return the signed URL
+        try:
+            import uuid
+            
+            # Upload to Supabase temporary location
+            temp_bucket = "reference-images"  # Use existing bucket
+            # Generate unique filename to avoid conflicts
+            unique_id = str(uuid.uuid4())[:8]
+            temp_path = f"temp/{job_id}/{unique_id}.jpg"
+            
+            logger.info(
+                f"Uploading image to temporary Supabase location for Replicate",
+                extra={"job_id": str(job_id), "size": len(image_bytes), "temp_path": temp_path}
+            )
+            
+            # Upload file to temporary location
+            await storage.upload_file(
+                bucket=temp_bucket,
+                path=temp_path,
+                file_data=image_bytes,
+                content_type="image/jpeg"
+            )
+            
+            # Get signed URL for Replicate
+            signed_url = await storage.get_signed_url(temp_bucket, temp_path, expires_in=3600)
+            
+            logger.info(
+                f"Successfully uploaded image to temporary location and got signed URL",
+                extra={"job_id": str(job_id), "temp_path": temp_path}
+            )
+            
+            return signed_url
+        except Exception as e:
+            logger.error(
+                f"Failed to upload image to temporary location: {e}",
+                extra={"job_id": str(job_id), "error": str(e)}
+            )
+            # Return None to proceed with text-only generation
+            return None
         
     except RetryableError:
         # Re-raise retryable errors (will be retried by decorator)
