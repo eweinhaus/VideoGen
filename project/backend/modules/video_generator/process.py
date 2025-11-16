@@ -156,12 +156,26 @@ async def process(
         extra={"job_id": str(job_id)}
     )
     
+    # Reference images are always enabled (hardcoded)
+    use_references = True
+    image_cache: Dict[str, Optional[Union[str, io.BytesIO]]] = {}
+    if use_references:
+        unique_urls = extract_unique_image_urls(clip_prompts.clip_prompts)
+        image_cache = await pre_download_images(unique_urls, job_id)
+        logger.info(
+            f"Image cache ready: {len([v for v in image_cache.values() if v is not None])}/{len(image_cache)} pre-downloaded",
+            extra={"job_id": str(job_id)}
+        )
+    
     # Collect events for UI (published by orchestrator)
     events: list[dict] = []
     # We intentionally do not build extra scene plan context here.
     # The prompt generator outputs are considered final and self-contained.
     
-    async def generate_with_retry(clip_prompt: ClipPrompt) -> Optional[Clip]:
+    async def generate_with_retry(
+        clip_prompt: ClipPrompt,
+        image_cache: Dict[str, Optional[Union[str, io.BytesIO]]]
+    ) -> Optional[Clip]:
         """
         Generate clip with retry logic.
         
@@ -182,12 +196,9 @@ async def process(
             })
             # Download and upload image if available (optional via env)
             # Priority: Character reference images > Scene reference images
-            # Default to NOT using reference images unless explicitly enabled
-            use_references = os.getenv("VIDEO_USE_REFERENCES", "false").lower() in ("1", "true", "yes", "on")
             image_url = None
             
-            # Prioritize character reference images (for character appearance)
-            if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+            if use_references and clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
                 character_ref_url = clip_prompt.character_reference_urls[0]
                 image_url = image_cache.get(character_ref_url)
                 
@@ -211,7 +222,7 @@ async def process(
                             image_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
             
             # Use scene reference images if no character reference available
-            elif clip_prompt.scene_reference_url:
+            elif use_references and clip_prompt.scene_reference_url:
                 image_url = image_cache.get(clip_prompt.scene_reference_url)
                 
                 if image_url:

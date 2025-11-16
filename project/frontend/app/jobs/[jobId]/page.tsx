@@ -179,6 +179,17 @@ export default function JobProgressPage() {
   const isQueued = job.status === "queued" && !job.currentStage
   const isProcessing = job.status === "processing"
 
+  // Start/stop the header timer based on job status immediately on load
+  useEffect(() => {
+    if (!job) return
+    if ((job.status === "queued" || job.status === "processing") && !timerOn) {
+      setTimerOn(true)
+    }
+    if ((job.status === "completed" || job.status === "failed") && timerOn) {
+      setTimerOn(false)
+    }
+  }, [job, timerOn])
+
   return (
     <div className="container mx-auto max-w-7xl px-4 py-8">
       <div className="mb-6">
