@@ -264,11 +264,11 @@ async def process(
                 }
             )
             
-            # Step 5: Apply transitions - 94-97%
-            await publish_progress(job_id_uuid, "Applying transitions...", 94)
+            # Step 5: Apply transitions (with optional beat alignment)
+            await publish_progress(job_id_uuid, "Applying transitions...")
             step_start = time.time()
             concatenated_path = await apply_transitions(
-                duration_handled_paths, transitions, temp_dir, job_id_uuid
+                duration_handled_paths, transitions, temp_dir, job_id_uuid, beat_timestamps
             )
             timings["apply_transitions"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Transitions applied", 97)

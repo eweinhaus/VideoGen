@@ -40,6 +40,7 @@ def build_base_prompt(
         "reference_mode": mapping.reference_mode,
         "lyrics_context": context.lyrics_context,
         "draft_prompt": prompt,
+        "beat_metadata": context.beat_metadata,  # Add beat timing metadata
     }
 
     return BasePromptTemplate(

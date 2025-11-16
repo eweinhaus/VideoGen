@@ -4,16 +4,23 @@ Prompt synthesis helpers for Module 6.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple, Literal
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, Literal, Dict, Any
 
 from shared.logging import get_logger
 
 logger = get_logger("prompt_generator")
 
+# Enhanced negative prompt to prevent anatomy errors and quality issues
+# Added specific anatomy constraints to prevent common issues like extra limbs, missing body parts
 DEFAULT_NEGATIVE_PROMPT = (
-    "blurry, low resolution, distorted faces, extra limbs, text, watermark, logo, "
-    "oversaturated, flickering, low quality, cartoon, illustration, duplicate subject"
+    "blurry, low resolution, distorted faces, "
+    "extra limbs, missing limbs, extra fingers, missing fingers, deformed hands, "
+    "extra legs, extra arms, three legs, three arms, four legs, four arms, "
+    "deformed anatomy, mutated body parts, asymmetric body, distorted proportions, "
+    "malformed limbs, incorrect anatomy, unnatural body structure, "
+    "text, watermark, logo, oversaturated, flickering, low quality, "
+    "cartoon, illustration, duplicate subject"
 )
 
 HEX_NAME_LOOKUP = {
@@ -57,6 +64,7 @@ class ClipContext:
     character_descriptions: List[str]
     primary_scene_id: Optional[str]
     lyrics_context: Optional[str] = None
+    beat_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
@@ -100,10 +108,21 @@ def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
         camera = _default_camera(context.beat_intensity)
     fragments.append(f"Camera: {camera}")
 
+    # Add character descriptions with anatomy constraints for human characters
     if context.character_descriptions:
-        fragments.append(
-            f"Characters: {', '.join(context.character_descriptions)}"
+        # Check if any human characters are present (basic heuristic: look for human-related terms)
+        has_humans = any(
+            word in ' '.join(context.character_descriptions).lower()
+            for word in ['person', 'man', 'woman', 'human', 'boy', 'girl', 'child', 'adult', 'people']
         )
+
+        char_desc = f"Characters: {', '.join(context.character_descriptions)}"
+
+        # Add anatomy keywords if human characters are present
+        if has_humans:
+            char_desc += ", anatomically correct human, proper human anatomy, two arms, two legs"
+
+        fragments.append(char_desc)
 
     if context.scene_descriptions and not using_character_ref:
         # Only add scene descriptions here if we didn't already add them at the start

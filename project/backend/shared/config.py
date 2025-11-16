@@ -52,6 +52,21 @@ class Settings(BaseSettings):
     # Prompt Generator configuration
     prompt_generator_use_llm: bool = True
     prompt_generator_llm_model: Literal["gpt-4o", "claude-3-5-sonnet"] = "gpt-4o"
+
+    # Reference Generator configuration
+    # USE_REFERENCE_IMAGES: Enable/disable reference images (default: true for backward compatibility)
+    # Set to false to use text-only mode for video generation
+    use_reference_images: bool = True
+
+    # REFERENCE_VARIATIONS_PER_CHARACTER: Number of reference image variations to generate per character
+    # Default: 1 (original behavior), can be increased to 3-5 for more variety
+    # Higher values increase cost but reduce repetition across clips
+    reference_variations_per_character: int = 1
+
+    # Video Generator configuration
+    # VIDEO_MODEL: Select which video generation model to use
+    # Options: "kling_v21" (default), "kling_v25_turbo", "hailuo_23", "wan_25_i2v", "veo_31"
+    video_model: str = "kling_v21"
     
     @field_validator("supabase_url")
     @classmethod

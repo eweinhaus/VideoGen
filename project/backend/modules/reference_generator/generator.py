@@ -277,7 +277,8 @@ async def generate_all_references(
 ) -> List[Dict[str, Any]]:
     """
     Generate all reference images in parallel with retry logic.
-    
+    Generates multiple variations per character based on config.
+
     Args:
         job_id: Job ID
         plan: Scene plan
@@ -285,13 +286,14 @@ async def generate_all_references(
         characters: List of unique characters
         duration_seconds: Optional audio duration for budget checks
         events_callback: Optional callback to publish SSE events
-        
+
     Returns:
         List of result dictionaries with success/failure info
     """
     from .prompts import synthesize_prompt
     from shared.errors import BudgetExceededError
     from shared.cost_tracking import cost_tracker
+    from shared.config import settings
     # Decimal is already imported at module level, no need to import again
     
     # Get concurrency limit from environment (default: 8 for faster generation)
@@ -306,13 +308,16 @@ async def generate_all_references(
     async def generate_one(
         sem: asyncio.Semaphore,
         scene_or_char: Any,
-        img_type: Literal["scene", "character"]
+        img_type: Literal["scene", "character"],
+        variation_index: int = 0
     ) -> Dict[str, Any]:
         """Generate a single reference image with retry logic."""
         nonlocal rate_limit_count
-        
+
         async with sem:
-            image_id = scene_or_char.id
+            # For variations, append variation index to image_id
+            base_image_id = scene_or_char.id
+            image_id = f"{base_image_id}_var{variation_index}" if img_type == "character" and variation_index > 0 else base_image_id
             description = scene_or_char.description
             
             # Check budget before generation (if duration provided)
@@ -342,8 +347,8 @@ async def generate_all_references(
                     raise BudgetExceededError(error_msg, job_id=job_id)
             
             try:
-                # Synthesize prompt
-                prompt = synthesize_prompt(description, plan.style, img_type)
+                # Synthesize prompt with variation support
+                prompt = synthesize_prompt(description, plan.style, img_type, variation_index)
                 
                 # Generate image (first attempt)
                 retry_count = 0
@@ -397,6 +402,8 @@ async def generate_all_references(
                     "image_id": image_id,
                     "scene_id": image_id if img_type == "scene" else None,
                     "character_id": image_id if img_type == "character" else None,
+                    "base_character_id": base_image_id if img_type == "character" else None,
+                    "variation_index": variation_index if img_type == "character" else 0,
                     "image_bytes": image_bytes,
                     "generation_time": gen_time,
                     "cost": cost,
@@ -447,22 +454,36 @@ async def generate_all_references(
         concurrency = 2
         semaphore = asyncio.Semaphore(concurrency)
     
+    # Get number of variations per character from settings
+    variations_per_character = settings.reference_variations_per_character
+
     # Create tasks for all images
+    # Scenes: 1 per scene
+    # Characters: N variations per character
+    total_character_tasks = len(characters) * variations_per_character
+    total_tasks = len(scenes) + total_character_tasks
+
     logger.info(
         f"Creating generation tasks for job {job_id}",
         extra={
             "job_id": str(job_id),
             "scenes_count": len(scenes),
             "characters_count": len(characters),
-            "total_tasks": len(scenes) + len(characters)
+            "variations_per_character": variations_per_character,
+            "total_character_tasks": total_character_tasks,
+            "total_tasks": total_tasks
         }
     )
-    
+
     tasks = []
+    # Generate scene references (1 per scene)
     for scene in scenes:
-        tasks.append(generate_one(semaphore, scene, "scene"))
+        tasks.append(generate_one(semaphore, scene, "scene", variation_index=0))
+
+    # Generate character references (N variations per character)
     for char in characters:
-        tasks.append(generate_one(semaphore, char, "character"))
+        for var_idx in range(variations_per_character):
+            tasks.append(generate_one(semaphore, char, "character", variation_index=var_idx))
     
     if len(tasks) == 0:
         logger.warning(
