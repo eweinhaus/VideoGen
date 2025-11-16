@@ -11,9 +11,8 @@ import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
-import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft } from "lucide-react"
-import type { StageUpdateEvent } from "@/types/sse"
+import { jobStore } from "@/stores/jobStore"
 
 export default function JobProgressPage() {
   const params = useParams()
@@ -22,12 +21,6 @@ export default function JobProgressPage() {
   const jobId = params.jobId as string
   const { job, isLoading: jobLoading, error, fetchJob } = useJob(jobId)
   const [sseError, setSseError] = useState<string | null>(null)
-  const [stages, setStages] = useState<
-    Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
-  >([])
-  const [currentStage, setCurrentStage] = useState<string | null>(null)
-  const [elapsed, setElapsed] = useState<number>(0)
-  const [timerOn, setTimerOn] = useState<boolean>(false)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -37,7 +30,6 @@ export default function JobProgressPage() {
 
   useEffect(() => {
     if (jobId) {
-      console.log("🔄 JobProgressPage: Fetching job", jobId)
       fetchJob(jobId).catch((error) => {
         console.error("❌ JobProgressPage: Failed to fetch job", error)
         // Error handled by jobStore, but log it here too
@@ -45,71 +37,17 @@ export default function JobProgressPage() {
     }
   }, [jobId, fetchJob])
 
-  // Track stages for StageIndicator
-  useSSE(jobId, {
-    onStageUpdate: (data: StageUpdateEvent) => {
-      const normalize = (name: string) => {
-        const n = name.toLowerCase()
-        if (n === "audio_analysis") return "audio_parser"
-        if (n === "scene_planning") return "scene_planner"
-        if (n === "reference_generation") return "reference_generator"
-        if (n === "prompt_generator") return "prompt_generation"
-        if (n === "video_generator") return "video_generation"
-        return n
-      }
-      const stage = normalize(data.stage)
-      const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
-        started: "processing",
-        processing: "processing",
-        completed: "completed",
-        failed: "failed",
-        pending: "pending",
-      }
-      const status = statusMap[(data.status || "").toLowerCase()] || "processing"
-      setCurrentStage(stage)
-      if (!timerOn) setTimerOn(true)
-      setStages((prev) => {
-        const existing = prev.find((s) => s.name === stage)
-        if (existing) {
-          return prev.map((s) =>
-            s.name === stage
-              ? { ...s, status }
-              : s
-          )
-        }
-        return [...prev, { name: stage, status }]
-      })
-    },
-  })
+  // Note: ProgressTracker handles all SSE events, so we don't need a separate useSSE here
+  // This prevents duplicate SSE connections
 
-  // Timer lifecycle: start on first stage update; stop on completion/failure
-  useEffect(() => {
-    if (!timerOn) return
-    if (job?.status === "completed" || job?.status === "failed") {
-      setTimerOn(false)
-      return
-    }
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000)
-    return () => clearInterval(id)
-  }, [timerOn, job?.status])
-
-  // Start/stop the header timer based on job status immediately on load
-  useEffect(() => {
-    if (!job) return
-    if (job.status === "queued" || job.status === "processing") {
-      setTimerOn(true)
-    } else if (job.status === "completed" || job.status === "failed") {
-      setTimerOn(false)
-    }
-  }, [job])
-
-  const formatElapsed = (s: number) => {
-    const h = Math.floor(s / 3600)
-    const m = Math.floor((s % 3600) / 60)
-    const sec = s % 60
-    return h > 0
-      ? `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
-      : `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+  // Format remaining time for display in header
+  const formatRemaining = (s: number | null): string => {
+    if (s === null || s === undefined) return ""
+    if (s < 0) return "Less than a minute remaining"
+    if (s < 60) return "Less than a minute remaining"
+    
+    const minutes = Math.ceil(s / 60)
+    return `About ${minutes} minute${minutes !== 1 ? 's' : ''} remaining`
   }
 
   const handleComplete = (videoUrl: string) => {
@@ -121,18 +59,7 @@ export default function JobProgressPage() {
     setSseError(error)
   }
 
-  // Debug logging
-  useEffect(() => {
-    console.log("🔍 JobProgressPage state:", {
-      jobId,
-      authLoading,
-      jobLoading,
-      hasJob: !!job,
-      error,
-      jobStatus: job?.status,
-      jobProgress: job?.progress
-    })
-  }, [jobId, authLoading, jobLoading, job, error])
+  // Removed debug logging to prevent excessive re-renders
 
   // Early returns after all hooks
   if (authLoading || jobLoading) {
@@ -208,14 +135,10 @@ export default function JobProgressPage() {
                 <CardTitle>Job Progress</CardTitle>
                 <CardDescription>Job ID: {jobId}</CardDescription>
               </div>
-              {/* Timer aligned to the right of the title */}
-              {(isProcessing || timerOn) && (
-                <div className="text-sm font-mono text-muted-foreground self-center inline-flex items-center gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-                    Live
-                  </span>
-                  <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+              {/* Timer aligned to the right of the title - get from job store */}
+              {job?.estimatedRemaining != null && (isProcessing || isQueued) && (
+                <div className="text-sm font-mono text-muted-foreground self-center">
+                  <span className="tabular-nums">{formatRemaining(job.estimatedRemaining)}</span>
                 </div>
               )}
             </div>
