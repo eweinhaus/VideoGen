@@ -180,11 +180,10 @@ async def process(
                     "total_clips": len(clip_prompts.clip_prompts),
                 }
             })
-            # Download and upload image if available
-            # Get image from cache (pre-downloaded)
+            # Download and upload image if available (optional via env)
             # Priority: Character reference images > Scene reference images
-            # Character reference images are used for character appearance consistency
-            # Scene reference images are used for scene/background consistency
+            # Default to NOT using reference images unless explicitly enabled
+            use_references = os.getenv("VIDEO_USE_REFERENCES", "false").lower() in ("1", "true", "yes", "on")
             image_url = None
             
             # Prioritize character reference images (for character appearance)

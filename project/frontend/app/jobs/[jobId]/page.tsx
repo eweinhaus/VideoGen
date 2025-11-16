@@ -26,6 +26,8 @@ export default function JobProgressPage() {
     Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
   >([])
   const [currentStage, setCurrentStage] = useState<string | null>(null)
+  const [elapsed, setElapsed] = useState<number>(0)
+  const [timerOn, setTimerOn] = useState<boolean>(false)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -46,21 +48,59 @@ export default function JobProgressPage() {
   // Track stages for StageIndicator
   useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
-      setCurrentStage(data.stage)
+      const normalize = (name: string) => {
+        const n = name.toLowerCase()
+        if (n === "audio_analysis") return "audio_parser"
+        if (n === "scene_planning") return "scene_planner"
+        if (n === "reference_generation") return "reference_generator"
+        if (n === "prompt_generator") return "prompt_generation"
+        if (n === "video_generator") return "video_generation"
+        return n
+      }
+      const stage = normalize(data.stage)
+      const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
+        started: "processing",
+        processing: "processing",
+        completed: "completed",
+        failed: "failed",
+        pending: "pending",
+      }
+      const status = statusMap[(data.status || "").toLowerCase()] || "processing"
+      setCurrentStage(stage)
+      if (!timerOn) setTimerOn(true)
       setStages((prev) => {
-        const existing = prev.find((s) => s.name === data.stage)
-        const status = data.status as "pending" | "processing" | "completed" | "failed"
+        const existing = prev.find((s) => s.name === stage)
         if (existing) {
           return prev.map((s) =>
-            s.name === data.stage
+            s.name === stage
               ? { ...s, status }
               : s
           )
         }
-        return [...prev, { name: data.stage, status }]
+        return [...prev, { name: stage, status }]
       })
     },
   })
+
+  // Timer lifecycle: start on first stage update; stop on completion/failure
+  useEffect(() => {
+    if (!timerOn) return
+    if (job?.status === "completed" || job?.status === "failed") {
+      setTimerOn(false)
+      return
+    }
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000)
+    return () => clearInterval(id)
+  }, [timerOn, job?.status])
+
+  const formatElapsed = (s: number) => {
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    const sec = s % 60
+    return h > 0
+      ? `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+      : `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+  }
 
   const handleComplete = (videoUrl: string) => {
     // Job is already updated by ProgressTracker
@@ -152,8 +192,22 @@ export default function JobProgressPage() {
         </Button>
         <Card className="w-full">
           <CardHeader>
-            <CardTitle>Job Progress</CardTitle>
-            <CardDescription>Job ID: {jobId}</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Job Progress</CardTitle>
+                <CardDescription>Job ID: {jobId}</CardDescription>
+              </div>
+              {/* Timer aligned to the right of the title */}
+              {(isProcessing || timerOn) && (
+                <div className="text-sm font-mono text-muted-foreground self-center inline-flex items-center gap-3">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+                    Live
+                  </span>
+                  <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="w-full">
             {isQueued && (
@@ -176,7 +230,7 @@ export default function JobProgressPage() {
                 </AlertDescription>
               </Alert>
             )}
-            {isProcessing && job.progress === 0 && (
+            {isProcessing && job.progress === 0 && !job.currentStage && (
               <Alert className="mb-4">
                 <AlertDescription>
                   <div className="flex items-center gap-2">

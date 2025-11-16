@@ -354,7 +354,14 @@ export function ProgressTracker({
       
       setStages((prev) => {
         const existing = prev.find((s) => s.name === stage)
-        const status = data.status as "pending" | "processing" | "completed" | "failed"
+        const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
+          started: "processing",
+          processing: "processing",
+          completed: "completed",
+          failed: "failed",
+          pending: "pending",
+        }
+        const status = statusMap[(data.status || "").toLowerCase()] || "processing"
         if (existing) {
           return prev.map((s) =>
             s.name === stage
