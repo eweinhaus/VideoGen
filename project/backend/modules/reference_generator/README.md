@@ -8,11 +8,11 @@ The Reference Generator creates visual reference images that ensure consistency 
 - **Scene references**: One per unique scene location/setting
 - **Character references**: One per character
 
-All images are generated in parallel with controlled concurrency (default: 4 concurrent) and uploaded to Supabase Storage immediately after generation.
+All images are generated in parallel with controlled concurrency (default: 6 concurrent) and uploaded to Supabase Storage immediately after generation.
 
 ## Features
 
-- **Parallel Generation**: Generates all images concurrently (4 concurrent by default)
+- **Parallel Generation**: Generates all images concurrently (6 concurrent by default)
 - **Cost Tracking**: Tracks actual costs per image (~$0.005 per image)
 - **Partial Success Handling**: Returns results if ≥50% threshold met AND minimum 1 scene + 1 character
 - **Retry Logic**: 1 retry per image with exponential backoff
@@ -48,7 +48,7 @@ else:
 
 - `REPLICATE_API_TOKEN` (required): Replicate API token (starts with `r8_`)
 - `REFERENCE_MODEL_DEV` (optional): Override model version for development
-- `REFERENCE_GEN_CONCURRENCY` (optional): Concurrency limit (default: 4)
+- `REFERENCE_GEN_CONCURRENCY` (optional): Concurrency limit (default: 6)
 - `ENVIRONMENT`: "development" | "production" (affects model selection)
 
 ### Model Selection
@@ -95,7 +95,7 @@ If all three conditions pass, returns `ReferenceImages` object with status:
 
 - **Generation Time**: <60s total for 4 images (parallel)
 - **Per Image**: <15s average (including API call + upload)
-- **Concurrency**: 4 concurrent (configurable via `REFERENCE_GEN_CONCURRENCY`)
+- **Concurrency**: 6 concurrent (configurable via `REFERENCE_GEN_CONCURRENCY`)
 
 ## Testing
 

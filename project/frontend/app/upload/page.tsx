@@ -11,6 +11,7 @@ import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { StepSelector, type PipelineStage } from "@/components/StepSelector"
 import { useAuth } from "@/hooks/useAuth"
 import { uploadStore } from "@/stores/uploadStore"
+import { jobStore } from "@/stores/jobStore"
 
 export default function UploadPage() {
   const router = useRouter()
@@ -51,10 +52,33 @@ export default function UploadPage() {
     try {
       const jobId = await submit()
       console.log("✅ Upload successful, jobId:", jobId)
-      router.push(`/jobs/${jobId}`)
+      
+      // Ensure isSubmitting is reset before navigation
+      // Use window.location for more reliable navigation
+      if (jobId) {
+        // Pre-fetch the job to ensure it's in the store before navigation
+        try {
+          await jobStore.getState().fetchJob(jobId)
+        } catch (err) {
+          console.warn("⚠️ Failed to pre-fetch job, but continuing with navigation:", err)
+        }
+        // Use window.location for more reliable navigation
+        window.location.href = `/jobs/${jobId}`
+      } else {
+        console.error("❌ No jobId returned from submit")
+        // Reset submitting state manually
+        uploadStore.getState().reset()
+      }
     } catch (error: any) {
       console.error("❌ Upload failed:", error)
-      // Error is handled by uploadStore
+      // Error is handled by uploadStore, but ensure isSubmitting is reset
+      // The uploadStore should handle this, but we'll add a safety check
+      setTimeout(() => {
+        if (uploadStore.getState().isSubmitting) {
+          console.warn("⚠️ isSubmitting still true after error, resetting...")
+          uploadStore.getState().reset()
+        }
+      }, 1000)
     }
   }
 

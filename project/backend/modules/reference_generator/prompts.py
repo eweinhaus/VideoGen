@@ -91,10 +91,13 @@ def synthesize_prompt(
     else:
         color_palette_str = "#FFFFFF"  # Default white
     
-    # Build prompt template
+    # Build prompt template with explicit style enforcement
+    # Use style keywords multiple times to ensure they're strongly emphasized
+    # Format: description, in [style] style, [style] aesthetic, color scheme, lighting, etc.
     prompt = (
-        f"{description}, {visual_style} aesthetic, {color_palette_str} color scheme, "
-        f"{lighting}, {cinematography}, highly detailed, professional quality, 4K"
+        f"{description}, in {visual_style} style, {visual_style} aesthetic, "
+        f"{color_palette_str} color scheme, {lighting}, {cinematography}, "
+        f"highly detailed, professional quality, 4K"
     )
     
     # Validate and truncate if too long (>500 characters)
