@@ -11,8 +11,10 @@ import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
+import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft } from "lucide-react"
 import { jobStore } from "@/stores/jobStore"
+import type { StageUpdateEvent } from "@/types/sse"
 
 export default function JobProgressPage() {
   const params = useParams()
@@ -41,17 +43,13 @@ export default function JobProgressPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]) // Only depend on jobId, not fetchJob to prevent unnecessary refetches
 
-  // Track stages for StageIndicator and handle uploadStore reset
+  // Handle uploadStore reset when audio_parser starts (hide loading modal)
+  // This ensures the loading modal persists until the job progress page is fully loaded and audio analysis is running
   useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
       const normalize = (name: string) => {
         const n = name.toLowerCase()
         if (n === "audio_analysis") return "audio_parser"
-        if (n === "scene_planning") return "scene_planner"
-        if (n === "reference_generation") return "reference_generator"
-        if (n === "prompt_generator") return "prompt_generation"
-        if (n === "video_generator") return "video_generation"
-        if (n === "composer") return "composition"
         return n
       }
       const stage = normalize(data.stage)
@@ -65,7 +63,6 @@ export default function JobProgressPage() {
       const status = statusMap[(data.status || "").toLowerCase()] || "processing"
       
       // Hide loading modal when audio_parser starts (means job progress page is ready and processing has started)
-      // This ensures the loading modal persists until the job progress page is fully loaded and audio analysis is running
       if (stage === "audio_parser" && (status === "processing" || status === "completed")) {
         import("@/stores/uploadStore").then(({ uploadStore }) => {
           if (uploadStore.getState().isSubmitting) {
@@ -74,80 +71,15 @@ export default function JobProgressPage() {
           }
         })
       }
-      
-      setCurrentStage(stage)
-      if (!timerOn) setTimerOn(true)
-      setStages((prev) => {
-        const existing = prev.find((s) => s.name === stage)
-
-        // Define stage order for marking previous stages as completed
-        const stageOrder = [
-          "audio_parser",
-          "scene_planner",
-          "reference_generator",
-          "prompt_generation",
-          "video_generation",
-          "composition",
-        ]
-        const currentStageIndex = stageOrder.indexOf(stage)
-
-        if (existing) {
-          // Don't downgrade from completed to processing
-          if (existing.status === "completed" && status === "processing") {
-            return prev
-          }
-          return prev.map((s) => {
-            const stageIndex = stageOrder.indexOf(s.name)
-            // Mark all previous stages as completed when a new stage starts
-            if (stageIndex !== -1 && stageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
-              return { ...s, status: "completed" }
-            }
-            return s.name === stage ? { ...s, status } : s
-          })
-        }
-
-        // Add new stage and mark all previous stages as completed
-        const updatedStages = prev.map((s) => {
-          const stageIndex = stageOrder.indexOf(s.name)
-          if (stageIndex !== -1 && stageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
-            return { ...s, status: "completed" }
-          }
-          return s
-        })
-
-        return [...updatedStages, { name: stage, status }]
-      })
     },
   })
 
-  // Timer lifecycle: start on first stage update; stop on completion/failure
-  useEffect(() => {
-    if (!timerOn) return
-    if (job?.status === "completed" || job?.status === "failed") {
-      setTimerOn(false)
-      return
-    }
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000)
-    return () => clearInterval(id)
-  }, [timerOn, job?.status])
-
-  // Start/stop the header timer based on job status immediately on load
-  useEffect(() => {
-    if (!job) return
-    if (job.status === "queued" || job.status === "processing") {
-      setTimerOn(true)
-    } else if (job.status === "completed" || job.status === "failed") {
-      setTimerOn(false)
-    }
-  }, [job])
-
-  const formatElapsed = (s: number) => {
-    const h = Math.floor(s / 3600)
-    const m = Math.floor((s % 3600) / 60)
-    const sec = s % 60
-    return h > 0
-      ? `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
-      : `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+  // Format remaining time for display in header
+  const formatRemaining = (seconds: number | null | undefined): string => {
+    if (seconds === null || seconds === undefined) return ""
+    if (seconds < 60) return "Less than a minute remaining"
+    const minutes = Math.ceil(seconds / 60)
+    return `About ${minutes} minute${minutes !== 1 ? 's' : ''} remaining`
   }
 
   const handleComplete = (videoUrl: string) => {
