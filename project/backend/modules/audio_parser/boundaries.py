@@ -65,16 +65,33 @@ def generate_boundaries(
             ))
         else:
             # 8s <= duration < 12s: create 2 segments of ~4-6s each
-            mid_point = total_duration / 2.0
+            # Ensure both segments are at least 4s
+            mid_point = max(4.0, total_duration - 4.0)  # Ensure second segment is at least 4s
+            if mid_point > total_duration - 4.0:
+                mid_point = total_duration / 2.0  # If possible, split evenly
+            
             boundaries.append(ClipBoundary(
                 start=0.0,
                 end=mid_point,
                 duration=mid_point
             ))
+            second_duration = total_duration - mid_point
+            # Ensure second segment is at least 4s
+            if second_duration < 4.0:
+                # Adjust mid_point to ensure second segment is 4s
+                mid_point = total_duration - 4.0
+                # Recreate first boundary with adjusted end
+                boundaries[0] = ClipBoundary(
+                    start=0.0,
+                    end=mid_point,
+                    duration=mid_point
+                )
+                second_duration = 4.0
+            
             boundaries.append(ClipBoundary(
                 start=mid_point,
                 end=total_duration,
-                duration=total_duration - mid_point
+                duration=second_duration
             ))
         
         logger.info(f"Very short song ({total_duration:.1f}s), created {len(boundaries)} segments")
@@ -144,8 +161,71 @@ def generate_boundaries(
                 duration = end - start
                 if duration >= 4.0:
                     break
+            
+            # If we've run out of beats and duration is still < 4.0, extend to total_duration
+            if duration < 4.0:
+                # Extend to total_duration to ensure minimum 4s duration
+                end = min(start + 4.0, total_duration)
+                duration = end - start
+                # If extending to 4s would exceed total_duration, we need to handle this differently
+                if duration < 4.0:
+                    # This means we're near the end and can't create a 4s clip
+                    # Merge with previous boundary if possible, or extend to end
+                    if len(boundaries) > 0:
+                        # Merge with previous boundary
+                        prev_boundary = boundaries[-1]
+                        # Create new boundary with merged end
+                        boundaries[-1] = ClipBoundary(
+                            start=prev_boundary.start,
+                            end=total_duration,
+                            duration=total_duration - prev_boundary.start
+                        )
+                        # Skip creating this boundary
+                        break
+                    else:
+                        # First boundary - extend to at least 4s or total_duration
+                        end = max(start + 4.0, total_duration)
+                        duration = end - start
+        
+        # Ensure duration is at least 4.0 before creating boundary
+        if duration < 4.0:
+            # If we still can't reach 4s, skip this boundary or merge with previous
+            if len(boundaries) > 0:
+                # Merge with previous boundary
+                prev_boundary = boundaries[-1]
+                new_end = min(end, total_duration)
+                new_duration = new_end - prev_boundary.start
+                # Create new boundary with merged end
+                boundaries[-1] = ClipBoundary(
+                    start=prev_boundary.start,
+                    end=new_end,
+                    duration=new_duration
+                )
+                # Skip creating this boundary
+                continue
+            else:
+                # First boundary - must be at least 4s or use total_duration
+                end = max(start + 4.0, total_duration)
+                duration = end - start
+        
         # Allow longer clips (up to 25s) if beats naturally create them
         # Don't force 8s max - let it be flexible
+        
+        # Final safeguard: ensure duration is at least 4.0 before creating boundary
+        if duration < 4.0:
+            # This should not happen after all the checks above, but as a final safeguard
+            # extend to ensure minimum duration
+            end = min(start + 4.0, total_duration)
+            duration = end - start
+            # If still < 4.0, we're at the end - merge with previous or skip
+            if duration < 4.0 and len(boundaries) > 0:
+                prev_boundary = boundaries[-1]
+                boundaries[-1] = ClipBoundary(
+                    start=prev_boundary.start,
+                    end=total_duration,
+                    duration=total_duration - prev_boundary.start
+                )
+                continue
         
         boundaries.append(ClipBoundary(
             start=start,
@@ -170,8 +250,13 @@ def generate_boundaries(
         new_duration = new_end - boundaries[-1].start
         # Allow extending if it's reasonable (up to 25s)
         if new_duration <= 25.0:
-            boundaries[-1].end = new_end
-            boundaries[-1].duration = new_duration
+            # Create new boundary with extended end
+            prev_boundary = boundaries[-1]
+            boundaries[-1] = ClipBoundary(
+                start=prev_boundary.start,
+                end=new_end,
+                duration=new_duration
+            )
         else:
             # If extending would exceed 25s, create additional clip if there's enough time
             remaining_time = total_duration - boundaries[-1].end
@@ -181,6 +266,68 @@ def generate_boundaries(
                     end=total_duration,
                     duration=remaining_time
                 ))
+    
+    # Final validation: ensure all boundaries have duration >= 4.0
+    # Filter out any boundaries that don't meet the minimum and merge/skip as needed
+    validated_boundaries = []
+    for i, boundary in enumerate(boundaries):
+        if boundary.duration >= 4.0:
+            validated_boundaries.append(boundary)
+        else:
+            # If duration < 4.0, try to merge with previous or next boundary
+            if len(validated_boundaries) > 0:
+                # Merge with previous boundary
+                prev_boundary = validated_boundaries[-1]
+                new_end = min(boundary.end, total_duration)
+                new_duration = new_end - prev_boundary.start
+                # Ensure merged duration is still >= 4.0
+                if new_duration >= 4.0:
+                    # Create new boundary with merged end
+                    validated_boundaries[-1] = ClipBoundary(
+                        start=prev_boundary.start,
+                        end=new_end,
+                        duration=new_duration
+                    )
+                else:
+                    # Can't merge without violating 4s minimum, skip this boundary
+                    continue
+            elif i < len(boundaries) - 1:
+                # Merge with next boundary (skip this one, extend next)
+                next_boundary = boundaries[i + 1]
+                new_start = boundary.start
+                new_duration = next_boundary.end - new_start
+                if new_duration >= 4.0:
+                    validated_boundaries.append(ClipBoundary(
+                        start=new_start,
+                        end=next_boundary.end,
+                        duration=new_duration
+                    ))
+            else:
+                # Last boundary - extend to ensure >= 4.0
+                new_end = max(boundary.start + 4.0, total_duration)
+                new_duration = new_end - boundary.start
+                if new_duration >= 4.0:
+                    validated_boundaries.append(ClipBoundary(
+                        start=boundary.start,
+                        end=new_end,
+                        duration=new_duration
+                    ))
+    
+    # Use validated boundaries if we filtered any out, otherwise use original
+    # Only replace if we have validated boundaries (don't lose all boundaries)
+    if len(validated_boundaries) > 0 and len(validated_boundaries) != len(boundaries):
+        boundaries = validated_boundaries
+    elif len(validated_boundaries) == 0:
+        # All boundaries were < 4.0 - this shouldn't happen, but ensure we have at least one
+        # Extend the last boundary to meet minimum
+        if boundaries:
+            last_boundary = boundaries[-1]
+            last_boundary = ClipBoundary(
+                start=last_boundary.start,
+                end=max(last_boundary.start + 4.0, total_duration),
+                duration=max(4.0, total_duration - last_boundary.start)
+            )
+            boundaries = [last_boundary]
     
     logger.info(f"Generated {len(boundaries)} beat-aligned clip boundaries")
     return boundaries[:max_clips]

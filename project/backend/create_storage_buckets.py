@@ -40,7 +40,7 @@ REQUIRED_BUCKETS = {
     },
     "video-outputs": {
         "public": False,
-        "file_size_limit": 100 * 1024 * 1024,  # 100MB
+        "file_size_limit": 500 * 1024 * 1024,  # 500MB
         "allowed_mime_types": ["video/mp4"]
     }
 }

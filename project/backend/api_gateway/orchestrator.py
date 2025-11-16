@@ -725,7 +725,16 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         # Note: If stop_at_stage is not set or is beyond scene_planner, continue to next stage
         
         # Stage 3: Reference Generator (30% progress)
-        # Note: Reference generator publishes its own "started" event, so we don't duplicate it here
+        # Publish stage update BEFORE calling generator so UI shows spinner immediately
+        await publish_event(job_id, "stage_update", {
+            "stage": "reference_generator",
+            "status": "started"
+        })
+        await publish_event(job_id, "message", {
+            "text": "Starting reference image generation...",
+            "stage": "reference_generator"
+        })
+        await update_progress(job_id, 25, "reference_generator")
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
