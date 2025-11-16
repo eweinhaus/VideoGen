@@ -171,7 +171,7 @@ export function ProgressTracker({
     
     // No stages at all
     return []
-  }, [currentJob?.stages, stages, displayStage])
+  }, [currentJob?.stages, stages])
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
   const [promptResults, setPromptResults] = useState<PromptGeneratorResultsEvent | null>(null)
@@ -242,7 +242,7 @@ export function ProgressTracker({
     setRemainingTime(initialValues.estimatedRemaining)
     setTimerStarted(false)
     setHasStarted(false)
-  }, [jobId])
+  }, [jobId, initialValues.estimatedRemaining])
   
   // Timer effect - starts when job begins and stops when complete/failed
   useEffect(() => {
