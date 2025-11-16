@@ -72,12 +72,6 @@ interface ProgressTrackerProps {
   onError?: (error: string) => void
 }
 
-interface StatusMessage {
-  text: string
-  stage?: string
-  timestamp: Date
-}
-
 export function ProgressTracker({
   jobId,
   onComplete,
@@ -117,7 +111,6 @@ export function ProgressTracker({
   // Use state for values that can be updated by SSE, but prefer memoized values for initial render
   const [progress, setProgress] = useState(initialValues.progress)
   const [currentStage, setCurrentStage] = useState<string | null>(initialValues.currentStage)
-  const [messages, setMessages] = useState<StatusMessage[]>([])
   const [estimatedRemaining, setEstimatedRemaining] = useState<number | null>(initialValues.estimatedRemaining)
   const [cost, setCost] = useState<number | null>(initialValues.cost)
   const [stages, setStages] = useState<
@@ -321,12 +314,6 @@ export function ProgressTracker({
         setEstimatedRemaining(data.estimated_remaining)
       }
     },
-    onMessage: (data: MessageEvent) => {
-      setMessages((prev) => [
-        { text: data.text, stage: data.stage, timestamp: new Date() },
-        ...prev.slice(0, 4), // Keep last 5 messages
-      ])
-    },
     onCostUpdate: (data: CostUpdateEvent) => {
       setCost(data.total)
       updateJob(jobId, { totalCost: data.total })
@@ -387,28 +374,6 @@ export function ProgressTracker({
         stages={displayStages} 
         currentStage={displayStage}
       />
-
-      {messages.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Status Messages</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {messages.map((msg, index) => (
-                <div key={index} className="text-sm">
-                  <p className="font-medium">{msg.text}</p>
-                  {msg.stage && (
-                    <p className="text-xs text-muted-foreground">
-                      {msg.stage}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {sseError && (
         <Alert variant="destructive">

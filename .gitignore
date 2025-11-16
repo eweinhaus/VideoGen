@@ -50,3 +50,6 @@ logs/
 *.log
 # GitHub Actions workflows (local only, not committed)
 .github/workflows/
+
+# Editor settings (personal preferences)
+.vscode/settings.json

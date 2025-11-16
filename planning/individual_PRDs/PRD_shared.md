@@ -565,7 +565,7 @@ async def call_openai_api():
 **Requirements**:
 - Track costs per API call
 - Aggregate costs per stage/job
-- Enforce $20/job budget limit
+- Enforce environment-specific budget limits: $2000/job (production), $50/job (development)
 - Store costs in database
 
 **API**:

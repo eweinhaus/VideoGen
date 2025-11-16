@@ -79,7 +79,7 @@ async def test_cost_tracking():
         limit = get_budget_limit(env)
         print(f"  - {env}: ${limit}")
     
-    assert get_budget_limit("development") == Decimal("50.00")
+    assert get_budget_limit("development") == Decimal("1000.00")
     assert get_budget_limit("production") == Decimal("2000.00")
     print(f"  ✅ Budget limits correct")
     

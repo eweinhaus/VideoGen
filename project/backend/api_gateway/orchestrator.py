@@ -23,7 +23,7 @@ from shared.errors import (
 from shared.logging import get_logger
 from api_gateway.services.event_publisher import publish_event
 from api_gateway.services.sse_manager import broadcast_event
-from api_gateway.services.budget_helpers import get_budget_limit
+from api_gateway.services.budget_helpers import get_budget_limit, get_cost_estimate
 
 logger = get_logger(__name__)
 
@@ -1045,10 +1045,15 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             return
         
         # Check budget before expensive operation (environment-aware)
+        # Estimate video generation cost as ~50% of total budget (most expensive stage)
+        duration_minutes = audio_data.duration / 60.0
+        total_budget_estimate = get_cost_estimate(duration_minutes, settings.environment)
+        video_estimate = Decimal(str(total_budget_estimate * 0.50))  # 50% of total budget
+        
         limit = get_budget_limit(settings.environment)
         can_proceed = await cost_tracker.check_budget(
             job_id=UUID(job_id),
-            new_cost=Decimal("100.00"),  # Estimated cost for video generation
+            new_cost=video_estimate,
             limit=limit
         )
         if not can_proceed:
