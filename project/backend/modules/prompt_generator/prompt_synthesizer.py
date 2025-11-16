@@ -4,8 +4,8 @@ Prompt synthesis helpers for Module 6.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple, Literal
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, Literal, Dict, Any
 
 from shared.logging import get_logger
 
@@ -64,6 +64,7 @@ class ClipContext:
     character_descriptions: List[str]
     primary_scene_id: Optional[str]
     lyrics_context: Optional[str] = None
+    beat_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:

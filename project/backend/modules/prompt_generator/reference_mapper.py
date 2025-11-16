@@ -38,9 +38,13 @@ def build_reference_index(references: Optional[ReferenceImages]) -> ReferenceInd
         if scene_ref.scene_id and scene_ref.scene_id not in scene_urls:
             scene_urls[scene_ref.scene_id] = scene_ref.image_url
 
+    # Build character_urls to support multiple variations per character
+    # character_urls will be a dict of character_id -> list of image URLs
+    # For backward compatibility, we'll use Dict[str, str] but store all variations
     character_urls = {}
     for char_ref in references.character_references:
-        if char_ref.character_id and char_ref.character_id not in character_urls:
+        if char_ref.character_id:
+            # Store all variations (character_id may contain _var0, _var1, etc.)
             character_urls[char_ref.character_id] = char_ref.image_url
 
     return ReferenceIndex(
@@ -53,6 +57,7 @@ def build_reference_index(references: Optional[ReferenceImages]) -> ReferenceInd
 def map_clip_references(
     clip: ClipScript,
     index: ReferenceIndex,
+    clip_index: int = 0,
 ) -> ClipReferenceMapping:
     scene_reference_url = None
     primary_scene_id = clip.scenes[0] if clip.scenes else None
@@ -70,11 +75,39 @@ def map_clip_references(
             }
         )
 
+    # Map character references with rotation through variations
+    # Find all variations for each character and rotate based on clip_index
     character_reference_urls = []
     missing_character_ids = []
+
     for char_id in clip.characters:
-        if char_id in index.character_urls:
-            character_reference_urls.append(index.character_urls[char_id])
+        # Find all variations for this character (char_id, char_id_var1, char_id_var2, etc.)
+        char_variations = []
+        for stored_char_id, url in index.character_urls.items():
+            # Match base character ID or variations
+            if stored_char_id == char_id or stored_char_id.startswith(f"{char_id}_var"):
+                char_variations.append((stored_char_id, url))
+
+        if char_variations:
+            # Sort variations to ensure consistent ordering (var0, var1, var2, etc.)
+            char_variations.sort(key=lambda x: x[0])
+
+            # Rotate through variations based on clip_index
+            variation_index = clip_index % len(char_variations)
+            selected_variation_id, selected_url = char_variations[variation_index]
+
+            character_reference_urls.append(selected_url)
+
+            logger.debug(
+                f"Clip {clip_index}: Using variation {variation_index} for character '{char_id}'",
+                extra={
+                    "clip_index": clip_index,
+                    "character_id": char_id,
+                    "variation_index": variation_index,
+                    "total_variations": len(char_variations),
+                    "selected_variation_id": selected_variation_id
+                }
+            )
         else:
             missing_character_ids.append(char_id)
     
@@ -146,7 +179,7 @@ def map_references(
         # Validate clip references against ScenePlan
         invalid_clip_scenes = [sid for sid in clip.scenes if sid not in valid_scene_ids]
         invalid_clip_chars = [cid for cid in clip.characters if cid not in valid_character_ids]
-        
+
         if invalid_clip_scenes:
             logger.warning(
                 f"Clip {clip.clip_index} references invalid scene IDs: {invalid_clip_scenes}",
@@ -156,7 +189,7 @@ def map_references(
                     "valid_scene_ids": list(valid_scene_ids)
                 }
             )
-        
+
         if invalid_clip_chars:
             logger.warning(
                 f"Clip {clip.clip_index} references invalid character IDs: {invalid_clip_chars}",
@@ -166,8 +199,9 @@ def map_references(
                     "valid_character_ids": list(valid_character_ids)
                 }
             )
-        
-        mapping[clip.clip_index] = map_clip_references(clip, index)
+
+        # Pass clip_index for reference variation rotation
+        mapping[clip.clip_index] = map_clip_references(clip, index, clip.clip_index)
 
     return mapping
 

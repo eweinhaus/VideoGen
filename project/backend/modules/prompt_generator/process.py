@@ -5,7 +5,7 @@ High-level orchestration for prompt generation.
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 from uuid import UUID
 
 from shared.config import settings
@@ -28,6 +28,7 @@ async def process(
     job_id: Union[str, UUID],
     plan: ScenePlan,
     references: Optional[ReferenceImages] = None,
+    beat_timestamps: Optional[List[float]] = None,
 ) -> ClipPrompts:
     job_uuid = _normalize_job_id(job_id)
 
@@ -45,7 +46,7 @@ async def process(
 
     style_keywords = extract_style_keywords(plan.style)
     reference_mapping = map_references(plan, references)
-    clip_contexts = _build_clip_contexts(plan, reference_mapping, style_keywords)
+    clip_contexts = _build_clip_contexts(plan, reference_mapping, style_keywords, beat_timestamps)
 
     base_templates = build_base_prompt_batch(clip_contexts, reference_mapping, style_keywords)
     llm_result = await _maybe_optimize_with_llm(job_uuid, base_templates, style_keywords)
@@ -81,10 +82,51 @@ def _normalize_job_id(job_id: Union[str, UUID]) -> UUID:
         raise ValidationError("Invalid job_id", job_id=None) from exc
 
 
+def extract_clip_beats(clip_start: float, clip_end: float, all_beat_timestamps: List[float]) -> Dict[str, Any]:
+    """
+    Extract beat timestamps within a clip's time range.
+
+    Args:
+        clip_start: Clip start time in seconds
+        clip_end: Clip end time in seconds
+        all_beat_timestamps: All beat timestamps in the audio
+
+    Returns:
+        Dictionary with beat metadata for this clip
+    """
+    if not all_beat_timestamps:
+        return {
+            "beat_timestamps_in_clip": [],
+            "primary_beat_time": None,
+            "beat_count": 0
+        }
+
+    # Extract beats within this clip's time range
+    clip_beats = [
+        beat - clip_start  # Normalize to clip-relative time (0 = clip start)
+        for beat in all_beat_timestamps
+        if clip_start <= beat <= clip_end
+    ]
+
+    # Find primary beat (first beat, or middle if multiple)
+    primary_beat = None
+    if clip_beats:
+        # Use middle beat if we have multiple, otherwise first
+        middle_index = len(clip_beats) // 2
+        primary_beat = clip_beats[middle_index]
+
+    return {
+        "beat_timestamps_in_clip": clip_beats,
+        "primary_beat_time": primary_beat,
+        "beat_count": len(clip_beats)
+    }
+
+
 def _build_clip_contexts(
     plan: ScenePlan,
     reference_mapping,
     style_keywords: List[str],
+    beat_timestamps: Optional[List[float]] = None,
 ) -> List[ClipContext]:
     characters = {char.id: char for char in plan.characters}
     scenes = {scene.id: scene for scene in plan.scenes}
@@ -100,6 +142,13 @@ def _build_clip_contexts(
             for char_id in script.characters
             if char_id in characters
         ]
+
+        # Extract beat timing metadata for this clip
+        beat_metadata = extract_clip_beats(
+            script.start,
+            script.end,
+            beat_timestamps or []
+        )
 
         contexts.append(
             ClipContext(
@@ -122,6 +171,7 @@ def _build_clip_contexts(
                 character_descriptions=char_desc,
                 primary_scene_id=mapping.scene_id if mapping else None,
                 lyrics_context=script.lyrics_context,
+                beat_metadata=beat_metadata,  # Add beat metadata
             )
         )
     return contexts
@@ -158,7 +208,7 @@ def _assemble_clip_prompts(
         prompt = prompt_text.strip() or template.prompt
         word_count = compute_word_count(prompt)
 
-        metadata: Dict[str, Union[str, int, bool, List[str], None]] = {
+        metadata: Dict[str, Union[str, int, bool, List[str], None, Dict[str, Any]]] = {
             "word_count": word_count,
             "style_keywords": list(style_keywords),
             "scene_id": template.payload.get("scene_id"),
@@ -170,6 +220,8 @@ def _assemble_clip_prompts(
         }
         if template.payload.get("lyrics_context"):
             metadata["lyrics_context"] = template.payload["lyrics_context"]
+        if template.payload.get("beat_metadata"):
+            metadata["beat_metadata"] = template.payload["beat_metadata"]
 
         clip_prompts.append(
             ClipPrompt(

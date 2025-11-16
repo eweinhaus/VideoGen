@@ -51,22 +51,50 @@ def validate_prompt(prompt: str, max_length: int = 500) -> str:
     return prompt
 
 
+def get_variation_suffix(variation_index: int) -> str:
+    """
+    Get variation suffix to append to character prompts for diversity.
+
+    Args:
+        variation_index: Index of the variation (0, 1, 2, 3, etc.)
+
+    Returns:
+        Suffix string to add variation to the prompt
+    """
+    variations = [
+        "frontal view, neutral expression, centered composition",
+        "profile view, slight smile, side angle",
+        "three-quarter view, action pose, dynamic composition",
+        "full body shot, dynamic pose, wide angle",
+        "close-up portrait, expressive face, dramatic lighting",
+    ]
+
+    if variation_index < len(variations):
+        return variations[variation_index]
+    else:
+        # Cycle through variations if we have more than 5
+        return variations[variation_index % len(variations)]
+
+
 def synthesize_prompt(
     description: str,
     style: Style,
-    image_type: Literal["scene", "character"]
+    image_type: Literal["scene", "character"],
+    variation_index: int = 0
 ) -> str:
     """
     Synthesize prompt from description and style.
-    
+    Supports character variations for diversity.
+
     Args:
         description: Scene or character description
         style: Style object from ScenePlan
         image_type: "scene" or "character"
-        
+        variation_index: Index of variation for character references (0 = base, 1+ = variations)
+
     Returns:
         Synthesized prompt string
-        
+
     Raises:
         ValidationError: If style is missing required fields or prompt is invalid
     """
@@ -94,11 +122,21 @@ def synthesize_prompt(
     # Build prompt template with explicit style enforcement
     # Use style keywords multiple times to ensure they're strongly emphasized
     # Format: description, in [style] style, [style] aesthetic, color scheme, lighting, etc.
-    prompt = (
-        f"{description}, in {visual_style} style, {visual_style} aesthetic, "
-        f"{color_palette_str} color scheme, {lighting}, {cinematography}, "
-        f"highly detailed, professional quality, 4K"
-    )
+
+    # For character variations, add variation-specific suffix
+    if image_type == "character" and variation_index > 0:
+        variation_suffix = get_variation_suffix(variation_index)
+        prompt = (
+            f"{description}, {variation_suffix}, in {visual_style} style, {visual_style} aesthetic, "
+            f"{color_palette_str} color scheme, {lighting}, {cinematography}, "
+            f"highly detailed, professional quality, 4K"
+        )
+    else:
+        prompt = (
+            f"{description}, in {visual_style} style, {visual_style} aesthetic, "
+            f"{color_palette_str} color scheme, {lighting}, {cinematography}, "
+            f"highly detailed, professional quality, 4K"
+        )
     
     # Validate and truncate if too long (>500 characters)
     try:
