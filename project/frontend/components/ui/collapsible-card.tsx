@@ -23,23 +23,18 @@ export function CollapsibleCard({
 
   return (
     <Card className={cn("mt-6", className)}>
-      <CardHeader className="pb-3">
+      <CardHeader 
+        className="py-4 cursor-pointer hover:bg-muted/50 transition-colors"
+        onClick={() => setIsOpen(!isOpen)}
+      >
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">{title}</CardTitle>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setIsOpen(!isOpen)}
-            className="h-8 w-8"
-            aria-label={isOpen ? "Collapse" : "Expand"}
-          >
+          <CardTitle className="text-lg leading-none">{title}</CardTitle>
             <ChevronDown
               className={cn(
-                "h-4 w-4 transition-transform duration-200",
+              "h-4 w-4 transition-transform duration-200 text-muted-foreground",
                 isOpen && "transform rotate-180"
               )}
             />
-          </Button>
         </div>
       </CardHeader>
       {isOpen && <CardContent>{children}</CardContent>}

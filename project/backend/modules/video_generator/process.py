@@ -12,6 +12,7 @@ from uuid import UUID
 from decimal import Decimal
 
 from shared.models.video import ClipPrompts, Clips, Clip, ClipPrompt
+from shared.models.scene import ScenePlan
 from shared.config import settings
 from shared.cost_tracking import cost_tracker
 from shared.errors import BudgetExceededError, PipelineError, RetryableError
@@ -102,8 +103,9 @@ async def pre_download_images(
 
 async def process(
     job_id: UUID,
-    clip_prompts: ClipPrompts
-) -> Clips:
+    clip_prompts: ClipPrompts,
+    plan: Optional[ScenePlan] = None,
+) -> Tuple[Clips, list[dict]]:
     """
     Generate all video clips in parallel.
     
@@ -154,16 +156,12 @@ async def process(
         extra={"job_id": str(job_id)}
     )
     
-    # Pre-download all unique reference images
-    unique_urls = extract_unique_image_urls(clip_prompts.clip_prompts)
-    image_cache = await pre_download_images(unique_urls, job_id)
+    # Collect events for UI (published by orchestrator)
+    events: list[dict] = []
+    # We intentionally do not build extra scene plan context here.
+    # The prompt generator outputs are considered final and self-contained.
     
-    logger.info(
-        f"Image cache ready: {len(image_cache)} images pre-downloaded",
-        extra={"job_id": str(job_id)}
-    )
-    
-    async def generate_with_retry(clip_prompt: ClipPrompt, image_cache: Dict[str, Optional[Union[str, io.BytesIO]]]) -> Optional[Clip]:
+    async def generate_with_retry(clip_prompt: ClipPrompt) -> Optional[Clip]:
         """
         Generate clip with retry logic.
         
@@ -174,6 +172,15 @@ async def process(
             Clip if successful, None if failed after retries
         """
         async with semaphore:
+            # Emit start event for this clip
+            events.append({
+                "event_type": "video_generation_start",
+                "data": {
+                    "clip_index": clip_prompt.clip_index,
+                    "total_clips": len(clip_prompts.clip_prompts),
+                }
+            })
+            # Download and upload image if available
             # Get image from cache (pre-downloaded)
             # Priority: Character reference images > Scene reference images
             # Character reference images are used for character appearance consistency
@@ -242,7 +249,8 @@ async def process(
                         image_url=image_url,
                         settings=settings_dict,
                         job_id=job_id,
-                        environment=environment
+                        environment=environment,
+                        extra_context=None,
                     )
                     
                     logger.info(
@@ -250,6 +258,16 @@ async def process(
                         extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
                     )
                     
+                    # Emit completion event
+                    events.append({
+                        "event_type": "video_generation_complete",
+                        "data": {
+                            "clip_index": clip_prompt.clip_index,
+                            "video_url": clip.video_url,
+                            "duration": clip.actual_duration,
+                            "cost": float(clip.cost),
+                        }
+                    })
                     return clip
                     
                 except RetryableError as e:
@@ -264,6 +282,16 @@ async def process(
                                 "error": str(e)
                             }
                         )
+                        # Emit retry event
+                        events.append({
+                            "event_type": "video_generation_retry",
+                            "data": {
+                                "clip_index": clip_prompt.clip_index,
+                                "attempt": attempt + 1,
+                                "delay_seconds": delay,
+                                "error": str(e),
+                            }
+                        })
                         await asyncio.sleep(delay)
                         continue
                     else:
@@ -275,6 +303,13 @@ async def process(
                                 "error": str(e)
                             }
                         )
+                        events.append({
+                            "event_type": "video_generation_failed",
+                            "data": {
+                                "clip_index": clip_prompt.clip_index,
+                                "error": str(e),
+                            }
+                        })
                         return None
                 except Exception as e:
                     # Non-retryable error
@@ -286,6 +321,13 @@ async def process(
                             "error": str(e)
                         }
                     )
+                    events.append({
+                        "event_type": "video_generation_failed",
+                        "data": {
+                            "clip_index": clip_prompt.clip_index,
+                            "error": str(e),
+                        }
+                    })
                     return None
             
             return None
@@ -354,5 +396,5 @@ async def process(
         failed_clips=failed,
         total_cost=total_cost,
         total_generation_time=total_generation_time
-    )
+    ), events
 

@@ -1061,7 +1061,14 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         
         try:
             from modules.video_generator.process import process as generate_videos
-            clips = await generate_videos(job_id, clip_prompts)
+            # Pass ScenePlan to video generator for global context inclusion
+            clips, video_events = await generate_videos(job_id, clip_prompts, plan)
+            # Publish per-clip video generation events to SSE
+            try:
+                for event in video_events:
+                    await publish_event(job_id, event.get("event_type", "message"), event.get("data", {}))
+            except Exception as e:
+                logger.warning("Failed to publish some video generation events", exc_info=e, extra={"job_id": job_id})
         except ImportError:
             logger.warning("Video Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import Clips, Clip

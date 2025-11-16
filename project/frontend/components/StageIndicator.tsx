@@ -37,14 +37,27 @@ const STAGE_ORDER = [
 ]
 
 export function StageIndicator({ stages, currentStage, showOnly }: StageIndicatorProps) {
+  // Normalize incoming stage names from backend to canonical keys used in the UI
+  const normalize = (name: string): string => {
+    const n = name.toLowerCase()
+    if (n === "audio_analysis") return "audio_parser"
+    if (n === "scene_planning") return "scene_planner"
+    if (n === "reference_generation") return "reference_generator"
+    if (n === "prompt_generator") return "prompt_generation"
+    if (n === "video_generator") return "video_generation"
+    return n
+  }
+
+  const normalizedStages = stages.map((s) => ({ ...s, name: normalize(s.name) }))
+
   const stagesToShow = showOnly || STAGE_ORDER
   const orderedStages = stagesToShow.map((stageName) => {
-    const stage = stages.find((s) => s.name === stageName)
+    const stage = normalizedStages.find((s) => s.name === stageName)
     return {
       name: stageName,
       displayName: STAGE_DISPLAY_NAMES[stageName] || stageName,
       status: stage?.status || "pending",
-      isCurrent: stageName === currentStage,
+      isCurrent: stageName === normalize(currentStage || ""),
     }
   })
 

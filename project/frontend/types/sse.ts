@@ -123,6 +123,30 @@ export interface PromptGeneratorResultsEvent {
   }>
 }
 
+export interface VideoGenerationStartEvent {
+  clip_index: number
+  total_clips: number
+}
+
+export interface VideoGenerationCompleteEvent {
+  clip_index: number
+  video_url: string
+  duration: number
+  cost: number
+}
+
+export interface VideoGenerationFailedEvent {
+  clip_index: number
+  error: string
+}
+
+export interface VideoGenerationRetryEvent {
+  clip_index: number
+  attempt: number
+  delay_seconds: number
+  error: string
+}
+
 export interface ReferenceGenerationStartEvent {
   image_type: string
   image_id: string
@@ -171,5 +195,9 @@ export interface SSEHandlers {
   onReferenceGenerationComplete?: (data: ReferenceGenerationCompleteEvent) => void
   onReferenceGenerationFailed?: (data: ReferenceGenerationFailedEvent) => void
   onReferenceGenerationRetry?: (data: ReferenceGenerationRetryEvent) => void
+  onVideoGenerationStart?: (data: VideoGenerationStartEvent) => void
+  onVideoGenerationComplete?: (data: VideoGenerationCompleteEvent) => void
+  onVideoGenerationFailed?: (data: VideoGenerationFailedEvent) => void
+  onVideoGenerationRetry?: (data: VideoGenerationRetryEvent) => void
 }
 
