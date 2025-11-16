@@ -184,6 +184,42 @@ export function useSSE(
       }
     })
 
+    eventSource.addEventListener("reference_generation_start", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onReferenceGenerationStart?.(data)
+      } catch (err) {
+        console.error("Failed to parse reference_generation_start event:", err)
+      }
+    })
+
+    eventSource.addEventListener("reference_generation_complete", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onReferenceGenerationComplete?.(data)
+      } catch (err) {
+        console.error("Failed to parse reference_generation_complete event:", err)
+      }
+    })
+
+    eventSource.addEventListener("reference_generation_failed", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onReferenceGenerationFailed?.(data)
+      } catch (err) {
+        console.error("Failed to parse reference_generation_failed event:", err)
+      }
+    })
+
+    eventSource.addEventListener("reference_generation_retry", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onReferenceGenerationRetry?.(data)
+      } catch (err) {
+        console.error("Failed to parse reference_generation_retry event:", err)
+      }
+    })
+
     eventSourceRef.current = eventSource
   }, [jobId, handlers, close])
 

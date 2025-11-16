@@ -35,6 +35,10 @@ htmlcov/
 *.env
 !.env.example
 
+# Editor / IDE settings
+.vscode/settings.json
+.cursor/settings.json
+
 #Add all .md except any readme.md or .md in the planning folder and its subfolders
 *.md
 !README.md

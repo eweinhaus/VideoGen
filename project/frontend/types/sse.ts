@@ -123,6 +123,40 @@ export interface PromptGeneratorResultsEvent {
   }>
 }
 
+export interface ReferenceGenerationStartEvent {
+  image_type: string
+  image_id: string
+  total_images: number
+  current_image: number
+}
+
+export interface ReferenceGenerationCompleteEvent {
+  image_type: string
+  image_id: string
+  image_url: string
+  generation_time: number
+  cost: number
+  retry_count?: number
+  total_images?: number
+  completed_images?: number
+}
+
+export interface ReferenceGenerationFailedEvent {
+  image_type: string
+  image_id: string
+  retry_count?: number
+  reason?: string
+  will_continue?: boolean
+}
+
+export interface ReferenceGenerationRetryEvent {
+  image_type: string
+  image_id: string
+  retry_count: number
+  max_retries?: number
+  reason?: string
+}
+
 export interface SSEHandlers {
   onStageUpdate?: (data: StageUpdateEvent) => void
   onProgress?: (data: ProgressEvent) => void
@@ -133,5 +167,9 @@ export interface SSEHandlers {
   onAudioParserResults?: (data: AudioParserResultsEvent) => void
   onScenePlannerResults?: (data: ScenePlannerResultsEvent) => void
   onPromptGeneratorResults?: (data: PromptGeneratorResultsEvent) => void
+  onReferenceGenerationStart?: (data: ReferenceGenerationStartEvent) => void
+  onReferenceGenerationComplete?: (data: ReferenceGenerationCompleteEvent) => void
+  onReferenceGenerationFailed?: (data: ReferenceGenerationFailedEvent) => void
+  onReferenceGenerationRetry?: (data: ReferenceGenerationRetryEvent) => void
 }
 

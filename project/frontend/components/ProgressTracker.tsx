@@ -1,14 +1,70 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
+import Image from "next/image"
 import { useSSE } from "@/hooks/useSSE"
 import { jobStore } from "@/stores/jobStore"
 import { Progress } from "@/components/ui/progress"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CollapsibleCard } from "@/components/ui/collapsible-card"
 import { StageIndicator } from "@/components/StageIndicator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { AccordionItem } from "@/components/ui/accordion"
-import type { StageUpdateEvent, ProgressEvent, CostUpdateEvent, CompletedEvent, ErrorEvent, AudioParserResultsEvent, ScenePlannerResultsEvent, PromptGeneratorResultsEvent } from "@/types/sse"
+import type {
+  StageUpdateEvent,
+  ProgressEvent,
+  MessageEvent,
+  CostUpdateEvent,
+  CompletedEvent,
+  ErrorEvent,
+  AudioParserResultsEvent,
+  ScenePlannerResultsEvent,
+  PromptGeneratorResultsEvent,
+  ReferenceGenerationStartEvent,
+  ReferenceGenerationCompleteEvent,
+  ReferenceGenerationFailedEvent,
+  ReferenceGenerationRetryEvent,
+} from "@/types/sse"
 import { formatDuration } from "@/lib/utils"
+
+type ReferenceImageStatus = "pending" | "completed" | "failed" | "retrying"
+
+interface ReferenceImageEntry {
+  key: string
+  imageId: string
+  imageType: string
+  status: ReferenceImageStatus
+  imageUrl?: string
+  cost?: number
+  generationTime?: number
+  retryCount?: number
+  reason?: string
+}
+
+interface ReferenceGenerationState {
+  totalImages: number
+  completedImages: number
+  images: Record<string, ReferenceImageEntry>
+}
+
+const initialReferenceState: ReferenceGenerationState = {
+  totalImages: 0,
+  completedImages: 0,
+  images: {},
+}
+
+const referenceStatusClasses: Record<ReferenceImageStatus, string> = {
+  completed: "bg-emerald-100 text-emerald-800",
+  pending: "bg-slate-100 text-slate-600",
+  failed: "bg-rose-100 text-rose-800",
+  retrying: "bg-amber-100 text-amber-800",
+}
+
+const referenceStatusLabels: Record<ReferenceImageStatus, string> = {
+  completed: "Ready",
+  pending: "Generating",
+  failed: "Failed",
+  retrying: "Retrying",
+}
 
 interface ProgressTrackerProps {
   jobId: string
@@ -76,10 +132,10 @@ export function ProgressTracker({
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
   const [promptResults, setPromptResults] = useState<PromptGeneratorResultsEvent | null>(null)
+  const [referenceState, setReferenceState] = useState<ReferenceGenerationState>(initialReferenceState)
 
   const { updateJob } = jobStore()
-  const truncatePrompt = (text: string, limit = 180) =>
-    text.length > limit ? `${text.slice(0, limit)}…` : text
+  // Removed truncatePrompt - show full prompt text as requested
   
   // Sync state when job data updates (for SSE updates to work correctly)
   useEffect(() => {
@@ -110,6 +166,128 @@ export function ProgressTracker({
       }
     }
   }, [currentJob]) // Only depend on currentJob to avoid infinite loops
+
+  useEffect(() => {
+    setReferenceState(initialReferenceState)
+  }, [jobId])
+
+  const referenceKey = (imageType: string, imageId: string) => `${imageType}:${imageId}`
+
+  const handleReferenceStart = (data: ReferenceGenerationStartEvent) => {
+    const key = referenceKey(data.image_type, data.image_id)
+    setReferenceState((prev) => {
+      const existing = prev.images[key]
+      const updatedEntry: ReferenceImageEntry = {
+        key,
+        imageId: data.image_id,
+        imageType: data.image_type,
+        status: existing?.status === "completed" ? "completed" : "pending",
+        imageUrl: existing?.imageUrl,
+        cost: existing?.cost,
+        generationTime: existing?.generationTime,
+        retryCount: existing?.retryCount,
+      }
+
+      const totalImagesCandidate = data.total_images ?? prev.totalImages ?? Object.keys({ ...prev.images, [key]: updatedEntry }).length
+      const totalImages = Math.max(totalImagesCandidate, prev.totalImages)
+
+      return {
+        totalImages,
+        completedImages: prev.completedImages,
+        images: {
+          ...prev.images,
+          [key]: updatedEntry,
+        },
+      }
+    })
+  }
+
+  const handleReferenceComplete = (data: ReferenceGenerationCompleteEvent) => {
+    const key = referenceKey(data.image_type, data.image_id)
+    setReferenceState((prev) => {
+      const previousEntry = prev.images[key]
+      const completedCandidate =
+        data.completed_images ??
+        (previousEntry?.status === "completed" ? prev.completedImages : prev.completedImages + 1)
+      const completedImages = Math.max(completedCandidate, prev.completedImages)
+      const totalImagesCandidate = data.total_images ?? prev.totalImages ?? Object.keys(prev.images).length
+
+      return {
+        totalImages: Math.max(totalImagesCandidate, prev.totalImages),
+        completedImages,
+        images: {
+          ...prev.images,
+          [key]: {
+            key,
+            imageId: data.image_id,
+            imageType: data.image_type,
+            status: "completed",
+            imageUrl: data.image_url,
+            generationTime: data.generation_time,
+            cost: data.cost,
+            retryCount: data.retry_count,
+          },
+        },
+      }
+    })
+  }
+
+  const handleReferenceFailed = (data: ReferenceGenerationFailedEvent) => {
+    const key = referenceKey(data.image_type, data.image_id)
+    setReferenceState((prev) => ({
+      ...prev,
+      images: {
+        ...prev.images,
+        [key]: {
+          key,
+          imageId: data.image_id,
+          imageType: data.image_type,
+          status: "failed",
+          imageUrl: prev.images[key]?.imageUrl,
+          generationTime: prev.images[key]?.generationTime,
+          cost: prev.images[key]?.cost,
+          retryCount: data.retry_count ?? prev.images[key]?.retryCount,
+          reason: data.reason || "Generation failed",
+        },
+      },
+    }))
+  }
+
+  const handleReferenceRetry = (data: ReferenceGenerationRetryEvent) => {
+    const key = referenceKey(data.image_type, data.image_id)
+    setReferenceState((prev) => {
+      const existing = prev.images[key]
+      return {
+        ...prev,
+        images: {
+          ...prev.images,
+          [key]: {
+            key,
+            imageId: data.image_id,
+            imageType: data.image_type,
+            status: "retrying",
+            imageUrl: existing?.imageUrl,
+            generationTime: existing?.generationTime,
+            cost: existing?.cost,
+            retryCount: data.retry_count,
+            reason: data.reason,
+          },
+        },
+      }
+    })
+  }
+
+  const referenceImages = useMemo(() => {
+    return Object.values(referenceState.images).sort((a, b) => {
+      if (a.imageType === b.imageType) {
+        return a.imageId.localeCompare(b.imageId)
+      }
+      return a.imageType.localeCompare(b.imageType)
+    })
+  }, [referenceState.images])
+
+  const referenceProgressValue =
+    referenceState.totalImages > 0 ? (referenceState.completedImages / referenceState.totalImages) * 100 : 0
 
   const { isConnected, error: sseError } = useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
@@ -164,6 +342,10 @@ export function ProgressTracker({
     onPromptGeneratorResults: (data: PromptGeneratorResultsEvent) => {
       setPromptResults(data)
     },
+    onReferenceGenerationStart: handleReferenceStart,
+    onReferenceGenerationComplete: handleReferenceComplete,
+    onReferenceGenerationFailed: handleReferenceFailed,
+    onReferenceGenerationRetry: handleReferenceRetry,
   })
 
   return (
@@ -206,8 +388,8 @@ export function ProgressTracker({
       )}
 
       {audioResults && (
-        <AccordionItem title="Audio Analysis Output" className="mt-6">
-          <div className="space-y-4">
+        <CollapsibleCard title="Audio Analysis Results" defaultOpen={true}>
+            <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">BPM</p>
@@ -333,12 +515,70 @@ export function ProgressTracker({
                 </div>
               )}
             </div>
-          </AccordionItem>
+        </CollapsibleCard>
+      )}
+
+      {referenceImages.length > 0 && (
+        <CollapsibleCard 
+          title="Reference Images" 
+          defaultOpen={true}
+        >
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-muted-foreground mb-2">
+                {referenceState.completedImages}/{referenceState.totalImages || referenceImages.length} images ready
+              </p>
+              <Progress value={referenceProgressValue} className="h-2" />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {referenceImages.map((entry) => (
+                <div key={entry.key} className="space-y-2 rounded-lg border p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="font-semibold capitalize">
+                      {entry.imageType} · {entry.imageId}
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${referenceStatusClasses[entry.status]}`}>
+                      {referenceStatusLabels[entry.status]}
+                    </span>
+                  </div>
+                  {entry.imageUrl ? (
+                    <div className="relative h-40 w-full overflow-hidden rounded-md border bg-muted/30">
+                      <Image
+                        src={entry.imageUrl}
+                        alt={`${entry.imageType} ${entry.imageId}`}
+                        fill
+                        className="object-cover"
+                        loading="lazy"
+                        unoptimized
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex h-40 items-center justify-center rounded-md border border-dashed bg-muted/30 text-xs text-muted-foreground">
+                      {entry.status === "failed" ? "Image unavailable" : "Waiting for image"}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                    {typeof entry.generationTime === "number" && (
+                      <span>{entry.generationTime.toFixed(1)}s</span>
+                    )}
+                    {typeof entry.cost === "number" && <span>${entry.cost.toFixed(3)}</span>}
+                    {entry.retryCount ? <span>Retries: {entry.retryCount}</span> : null}
+                  </div>
+                  {entry.reason && (
+                    <p className="text-xs text-muted-foreground">
+                      {entry.reason}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </CollapsibleCard>
       )}
 
       {scenePlanResults && (
-        <AccordionItem title="Scene Planning Output" className="mt-6">
-          <div className="space-y-4">
+        <CollapsibleCard title="Scene Plan" defaultOpen={false}>
+            <div className="space-y-4">
               <div className="prose prose-sm max-w-none dark:prose-invert">
                 <h3 className="text-lg font-semibold">Video Summary</h3>
                 <p className="text-muted-foreground">{scenePlanResults.video_summary}</p>
@@ -421,22 +661,25 @@ export function ProgressTracker({
                 </div>
               </div>
             </div>
-          </AccordionItem>
+        </CollapsibleCard>
       )}
 
       {promptResults && (
-        <AccordionItem 
-          title={`Clip Prompts ${promptResults.llm_used ? `(Optimized by ${promptResults.llm_model ?? "LLM"})` : "(Template-based)"}`}
-          className="mt-6"
-        >
-          <div className="space-y-3">
+        <CollapsibleCard title="Clip Prompts" defaultOpen={false}>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {promptResults.llm_used
+                ? `Optimized by ${promptResults.llm_model ?? "LLM"}`
+                : "Generated via deterministic template"}
+            </p>
+            <div className="space-y-3">
               {promptResults.clip_prompts.map((clip) => (
                 <div key={clip.clip_index} className="border-l-4 border-primary/70 pl-4 py-2 space-y-1">
                   <div className="flex items-center justify-between text-sm">
                     <span className="font-semibold">Clip {clip.clip_index}</span>
                     <span className="text-muted-foreground">{clip.duration.toFixed(1)}s</span>
                   </div>
-                  <p className="text-sm">{truncatePrompt(clip.prompt)}</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{clip.prompt}</p>
                   <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
                     {clip.metadata?.style_keywords?.length ? (
                       <span>Style: {clip.metadata.style_keywords.slice(0, 3).join(", ")}</span>
@@ -451,7 +694,8 @@ export function ProgressTracker({
                 </div>
               ))}
             </div>
-          </AccordionItem>
+          </div>
+        </CollapsibleCard>
       )}
     </div>
   )
