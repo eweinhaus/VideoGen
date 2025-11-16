@@ -134,6 +134,7 @@ export default function JobProgressPage() {
     })
   }, [jobId, authLoading, jobLoading, job, error])
 
+  // Early returns after all hooks
   if (authLoading || jobLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
