@@ -36,19 +36,26 @@ async def get_job_status(
     Returns:
         Job status with all fields
     """
-    # Verify ownership (this also fetches the job)
-    job = await verify_job_ownership(job_id, current_user)
-    
-    # Check Redis cache first (30s TTL)
+    # Check Redis cache first (30s TTL) - before any database queries
     cache_key = f"job_status:{job_id}"
     try:
         cached = await redis_client.get(cache_key)
         if cached:
             cached_data = json.loads(cached)
-            logger.debug("Job status retrieved from cache", extra={"job_id": job_id})
-            return cached_data
+            # Verify ownership from cached data (quick check)
+            if cached_data.get("user_id") == current_user["user_id"]:
+                logger.debug("Job status retrieved from cache", extra={"job_id": job_id})
+                return cached_data
+            else:
+                # Cache hit but wrong user - clear cache and fetch from DB
+                logger.warning("Cached job belongs to different user, fetching from DB", extra={"job_id": job_id})
+                await redis_client.client.delete(cache_key)
     except Exception as e:
         logger.warning("Failed to get job status from cache", exc_info=e)
+    
+    # Cache miss or ownership mismatch - fetch from database
+    # Verify ownership (this also fetches the job)
+    job = await verify_job_ownership(job_id, current_user)
     
     # Cache result (30s TTL)
     try:

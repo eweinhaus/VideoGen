@@ -213,7 +213,7 @@ You must output a valid JSON object matching this exact structure:
   ],
   "style": {{
     "color_palette": ["#00FFFF", "#FF00FF", "#0000FF"],
-    "visual_style": "Description of overall aesthetic (e.g., 'Neo-noir cyberpunk with rain and neon')",
+    "visual_style": "PRESERVE EXACT STYLE KEYWORDS from user prompt. If user specifies a style (e.g., 'pixar animation style', 'anime style', 'realistic', 'watercolor'), use those EXACT words/phrases. Do not paraphrase. If no specific style mentioned, describe overall aesthetic (e.g., 'Neo-noir cyberpunk with rain and neon')",
     "mood": "Emotional tone description",
     "lighting": "Lighting style description (e.g., 'High-contrast neon with deep shadows')",
     "cinematography": "Camera style description (e.g., 'Handheld, slight shake, tracking shots')"
@@ -253,20 +253,22 @@ You must output a valid JSON object matching this exact structure:
 
 4. **Beat Alignment:** Clip scripts must align to the provided clip boundaries (±0.5s tolerance). Transitions should align with beat intensity (hard cut for high energy, crossfade for medium, fade for low).
 
-5. **Director Knowledge Application:** Be explicit about applying director knowledge:
+5. **Style Preservation (CRITICAL):** If the user specifies a visual style (e.g., "pixar animation style", "anime style", "watercolor", "realistic", "3D CGI"), you MUST preserve those EXACT keywords in the visual_style field. Do NOT paraphrase or interpret. The exact style keywords are essential for accurate image generation.
+
+6. **Director Knowledge Application:** Be explicit about applying director knowledge:
    - If mood is calm → Use muted, desaturated colors from the calm mood palette
    - If energy is high → Use fast cuts, handheld camera, tracking shots
    - If BPM >130 → Use hard cuts on strong beats, quick zooms, low angles
    - If BPM <90 → Use static shots, slow zooms, wide shots, fade transitions
 
-6. **Visual Description Quality:** Each clip script should be detailed enough for video generation:
+7. **Visual Description Quality:** Each clip script should be detailed enough for video generation:
    - Specify what's happening (character actions, scene elements)
    - Specify camera movement (tracking, static, panning, zooming)
    - Specify shot type (wide, medium, close-up, extreme close-up)
    - Specify camera angle (low, eye level, high)
    - Include visual metaphors if relevant to lyrics
 
-7. **Transition Planning:** Generate exactly {len(audio_data.clip_boundaries) - 1} transitions:
+8. **Transition Planning:** Generate exactly {len(audio_data.clip_boundaries) - 1} transitions:
    - Hard cut (0s duration): Strong beats, high energy, chorus transitions
    - Crossfade (0.5s duration): Medium beats, continuous motion, verse transitions
    - Fade (0.5s duration): Soft beats, low energy, intro/outro transitions

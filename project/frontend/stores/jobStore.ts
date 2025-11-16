@@ -16,19 +16,20 @@ interface JobState {
 }
 
 function jobResponseToJob(response: JobResponse): Job {
+  // Handle missing or null fields gracefully
   return {
-    id: response.id,
-    status: response.status,
-    currentStage: response.current_stage,
-    progress: response.progress,
-    videoUrl: response.video_url,
-    errorMessage: response.error_message,
-    createdAt: response.created_at,
-    updatedAt: response.updated_at,
-    estimatedRemaining: response.estimated_remaining,
-    totalCost: response.total_cost,
-    stages: response.stages,
-    audioData: response.audio_data,
+    id: response.id || "",
+    status: response.status || "queued",
+    currentStage: response.current_stage ?? null,
+    progress: response.progress ?? 0,
+    videoUrl: response.video_url ?? null,
+    errorMessage: response.error_message ?? null,
+    createdAt: response.created_at || new Date().toISOString(),
+    updatedAt: response.updated_at || new Date().toISOString(),
+    estimatedRemaining: response.estimated_remaining ?? null,
+    totalCost: response.total_cost ?? null,
+    stages: response.stages ?? {},
+    audioData: response.audio_data ?? null,
   }
 }
 
@@ -56,10 +57,26 @@ export const jobStore = create<JobState>((set, get) => ({
   fetchJob: async (jobId: string) => {
     set({ isLoading: true, error: null })
     try {
+      console.log("🔍 Fetching job:", jobId)
       const response = await getJob(jobId)
+      console.log("✅ Job response received:", response)
+      
+      // Validate response has required fields
+      if (!response || !response.id) {
+        throw new Error("Invalid job response: missing id field")
+      }
+      
       const job = jobResponseToJob(response)
+      console.log("✅ Job converted:", job)
       set({ currentJob: job, isLoading: false })
     } catch (error: any) {
+      console.error("❌ Failed to fetch job:", error)
+      console.error("Error details:", {
+        message: error.message,
+        statusCode: error.statusCode,
+        retryable: error.retryable,
+        stack: error.stack
+      })
       set({
         isLoading: false,
         error: error.message || "Failed to fetch job",

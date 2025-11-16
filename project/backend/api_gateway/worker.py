@@ -18,8 +18,8 @@ logger = get_logger(__name__)
 redis_client = RedisClient()
 db_client = DatabaseClient()
 
-# Max concurrent jobs per worker (PRD: 3 per worker, 2 workers = 6 total)
-MAX_CONCURRENT_JOBS = 3
+# Max concurrent jobs per worker (PRD: 5 per worker, 2 workers = 10 total)
+MAX_CONCURRENT_JOBS = 5
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 

@@ -6,7 +6,8 @@ Orchestrates parallel clip generation with retry logic and budget enforcement.
 import asyncio
 import os
 import time
-from typing import Optional, Tuple
+import io
+from typing import Optional, Dict, List, Union, Tuple
 from uuid import UUID
 from decimal import Decimal
 
@@ -24,6 +25,80 @@ from modules.video_generator.generator import generate_video_clip
 from modules.video_generator.image_handler import download_and_upload_image
 
 logger = get_logger("video_generator.process")
+
+
+def extract_unique_image_urls(clip_prompts: List[ClipPrompt]) -> Dict[str, str]:
+    """
+    Extract unique image URLs from all clip prompts.
+    
+    Args:
+        clip_prompts: List of ClipPrompt objects
+        
+    Returns:
+        Dict mapping: {url: priority_type} where priority_type is "character" or "scene"
+        Character URLs take priority over scene URLs for same clip
+    """
+    unique_urls = {}  # {url: priority_type}
+    
+    for cp in clip_prompts:
+        # Character references take priority
+        if cp.character_reference_urls and len(cp.character_reference_urls) > 0:
+            char_url = cp.character_reference_urls[0]
+            if char_url not in unique_urls:
+                unique_urls[char_url] = "character"
+        
+        # Scene reference (only if no character ref for this clip)
+        if cp.scene_reference_url:
+            if cp.scene_reference_url not in unique_urls:
+                unique_urls[cp.scene_reference_url] = "scene"
+    
+    return unique_urls
+
+
+async def pre_download_images(
+    unique_urls: Dict[str, str],
+    job_id: UUID
+) -> Dict[str, Optional[Union[str, io.BytesIO]]]:
+    """
+    Pre-download all unique images in parallel.
+    
+    Args:
+        unique_urls: Dict mapping URL to priority type
+        job_id: Job ID for logging
+        
+    Returns:
+        Dict mapping original URL to Replicate-ready URL/object
+    """
+    logger.info(
+        f"Pre-downloading {len(unique_urls)} unique reference images",
+        extra={"job_id": str(job_id)}
+    )
+    
+    async def download_one(url: str) -> Tuple[str, Optional[Union[str, io.BytesIO]]]:
+        try:
+            result = await download_and_upload_image(url, job_id)
+            return (url, result)
+        except Exception as e:
+            logger.warning(
+                f"Pre-download failed for {url}: {e}",
+                extra={"job_id": str(job_id), "url": url}
+            )
+            return (url, None)
+    
+    # Download all images in parallel
+    tasks = [download_one(url) for url in unique_urls.keys()]
+    results = await asyncio.gather(*tasks)
+    
+    # Build cache dictionary
+    image_cache = {url: result for url, result in results}
+    
+    successful = sum(1 for r in results if r[1] is not None)
+    logger.info(
+        f"Pre-download complete: {successful}/{len(unique_urls)} images downloaded",
+        extra={"job_id": str(job_id), "successful": successful, "total": len(unique_urls)}
+    )
+    
+    return image_cache
 
 
 async def process(
@@ -68,8 +143,8 @@ async def process(
             f"Current cost: {current_cost}"
         )
     
-    # Get concurrency limit (default: 3 for safety, avoid rate limits)
-    # Replicate allows 600 predictions/min, so 3 concurrent is conservative
+    # Get concurrency limit (default: 5 for optimal throughput)
+    # Replicate allows 600 predictions/min, so 5 concurrent is safe
     concurrency = int(os.getenv("VIDEO_GENERATOR_CONCURRENCY", "5"))
     semaphore = asyncio.Semaphore(concurrency)
     
@@ -110,36 +185,55 @@ async def process(
             # Default to NOT using reference images unless explicitly enabled
             use_references = os.getenv("VIDEO_USE_REFERENCES", "false").lower() in ("1", "true", "yes", "on")
             image_url = None
-            if use_references:
-                # Prioritize character reference images (for character appearance)
-                if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
-                    character_ref_url = clip_prompt.character_reference_urls[0]  # Use first character reference
+            
+            # Prioritize character reference images (for character appearance)
+            if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+                character_ref_url = clip_prompt.character_reference_urls[0]
+                image_url = image_cache.get(character_ref_url)
+                
+                if image_url:
                     logger.debug(
-                        f"Using character reference image for clip {clip_prompt.clip_index}",
-                        extra={"job_id": str(job_id), "character_ref_url": character_ref_url}
-                    )
-                    image_url = await download_and_upload_image(
-                        character_ref_url,
-                        job_id
-                    )
-                    if not image_url and clip_prompt.scene_reference_url:
-                        logger.warning(
-                            f"Character reference download failed; falling back to scene reference for clip {clip_prompt.clip_index}",
-                            extra={"job_id": str(job_id)}
-                        )
-                        image_url = await download_and_upload_image(
-                            clip_prompt.scene_reference_url,
-                            job_id
-                        )
-                elif clip_prompt.scene_reference_url:
-                    logger.debug(
-                        f"Using scene reference image for clip {clip_prompt.clip_index}",
+                        f"Using cached character reference for clip {clip_prompt.clip_index}",
                         extra={"job_id": str(job_id)}
                     )
-                    image_url = await download_and_upload_image(
-                        clip_prompt.scene_reference_url,
-                        job_id
+                else:
+                    # Fallback: try to download now (in case pre-download failed)
+                    logger.warning(
+                        f"Character reference not in cache for clip {clip_prompt.clip_index}, downloading now",
+                        extra={"job_id": str(job_id)}
                     )
+                    image_url = await download_and_upload_image(character_ref_url, job_id)
+                    
+                    if not image_url and clip_prompt.scene_reference_url:
+                        # Try scene reference as fallback
+                        image_url = image_cache.get(clip_prompt.scene_reference_url)
+                        if not image_url:
+                            image_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+            
+            # Use scene reference images if no character reference available
+            elif clip_prompt.scene_reference_url:
+                image_url = image_cache.get(clip_prompt.scene_reference_url)
+                
+                if image_url:
+                    logger.debug(
+                        f"Using cached scene reference for clip {clip_prompt.clip_index}",
+                        extra={"job_id": str(job_id)}
+                    )
+                else:
+                    # Fallback: try to download now
+                    logger.warning(
+                        f"Scene reference not in cache for clip {clip_prompt.clip_index}, downloading now",
+                        extra={"job_id": str(job_id)}
+                    )
+                    image_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+            
+            else:
+                # No references available - text-only generation
+                logger.debug(
+                    f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
+                    extra={"job_id": str(job_id)}
+                )
+                image_url = None
             
             # Retry logic
             for attempt in range(3):
@@ -239,7 +333,7 @@ async def process(
     
     # Generate all clips in parallel
     start_time = time.time()
-    tasks = [generate_with_retry(cp) for cp in clip_prompts.clip_prompts]
+    tasks = [generate_with_retry(cp, image_cache) for cp in clip_prompts.clip_prompts]
     results = await asyncio.gather(*tasks)
     
     # Filter successful clips

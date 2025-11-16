@@ -458,7 +458,7 @@ useEffect(() => {
 
 **BullMQ Configuration**:
 - Workers: 2 workers for job processing
-- Concurrency: Max 3 concurrent jobs per worker (6 total system-wide)
+- Concurrency: Max 5 concurrent jobs per worker (10 total system-wide)
 - Redis connection pooling: 10 connections
 - Job timeout: 15 minutes per job
 - Failed job retention: 7 days for debugging

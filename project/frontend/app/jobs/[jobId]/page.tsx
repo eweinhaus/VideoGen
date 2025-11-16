@@ -37,8 +37,10 @@ export default function JobProgressPage() {
 
   useEffect(() => {
     if (jobId) {
-      fetchJob(jobId).catch(() => {
-        // Error handled by jobStore
+      console.log("🔄 JobProgressPage: Fetching job", jobId)
+      fetchJob(jobId).catch((error) => {
+        console.error("❌ JobProgressPage: Failed to fetch job", error)
+        // Error handled by jobStore, but log it here too
       })
     }
   }, [jobId, fetchJob])
@@ -109,6 +111,19 @@ export default function JobProgressPage() {
     setSseError(error)
   }
 
+  // Debug logging
+  useEffect(() => {
+    console.log("🔍 JobProgressPage state:", {
+      jobId,
+      authLoading,
+      jobLoading,
+      hasJob: !!job,
+      error,
+      jobStatus: job?.status,
+      jobProgress: job?.progress
+    })
+  }, [jobId, authLoading, jobLoading, job, error])
+
   if (authLoading || jobLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -121,7 +136,14 @@ export default function JobProgressPage() {
     return (
       <div className="container mx-auto max-w-3xl px-4 py-8">
         <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription>
+            <div className="space-y-2">
+              <div>Error: {error}</div>
+              <div className="text-sm text-muted-foreground">
+                Job ID: {jobId}
+              </div>
+            </div>
+          </AlertDescription>
         </Alert>
         <Button
           className="mt-4"
@@ -138,7 +160,15 @@ export default function JobProgressPage() {
   if (!job) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <LoadingSpinner size="lg" text="Loading job..." />
+        <div className="text-center space-y-4">
+          <LoadingSpinner size="lg" text="Loading job..." />
+          <div className="text-sm text-muted-foreground">
+            Job ID: {jobId}
+          </div>
+          <div className="text-sm text-muted-foreground">
+            If this persists, the job may not exist or you may not have access to it.
+          </div>
+        </div>
       </div>
     )
   }
