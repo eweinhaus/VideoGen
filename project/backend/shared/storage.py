@@ -44,18 +44,25 @@ class StorageClient:
         except Exception as e:
             raise ConfigError(f"Failed to initialize storage client: {str(e)}") from e
     
-    async def _execute_sync(self, func: Callable[[], Any]) -> Any:
+    async def _execute_sync(self, func: Callable[[], Any], timeout: float = 60.0) -> Any:
         """
-        Execute a synchronous Supabase storage operation in an async context.
+        Execute a synchronous Supabase storage operation in an async context with timeout.
         
         Args:
             func: Synchronous function to execute
+            timeout: Maximum time to wait in seconds (default: 60s)
             
         Returns:
             Function result
+            
+        Raises:
+            asyncio.TimeoutError: If operation exceeds timeout
         """
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, func)
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, func),
+            timeout=timeout
+        )
     
     def _detect_content_type(self, path: str, default: Optional[str] = None) -> str:
         """
@@ -133,9 +140,10 @@ class StorageClient:
                         logger.warning(
                             f"Failed to delete existing file before overwrite (may not exist): {str(delete_error)}",
                             extra={"bucket": bucket, "path": path, "error": str(delete_error)}
-                )
+                        )
             
-            # Upload file (wrap sync operation in executor)
+            # Upload file (wrap sync operation in executor with timeout)
+            # Use longer timeout for upload (120s) since file uploads can take time
             def _upload():
                 return self.storage.from_(bucket).upload(
                     path=path,
@@ -143,10 +151,14 @@ class StorageClient:
                     file_options={"content-type": content_type}
                 )
             
-            response = await self._execute_sync(_upload)
+            try:
+                response = await self._execute_sync(_upload, timeout=120.0)
+            except asyncio.TimeoutError:
+                raise RetryableError(f"Storage upload timed out after 120s for {bucket}/{path}")
             
             # Get URL - use signed URL for private buckets, public URL for public buckets
             # For now, all buckets are private, so use signed URL
+            # Use shorter timeout for URL generation (30s)
             def _get_url():
                 # Try to get signed URL (works for both public and private buckets)
                 signed_url_response = self.storage.from_(bucket).create_signed_url(
@@ -158,13 +170,27 @@ class StorageClient:
                     return signed_url_response.get("signedURL") or signed_url_response.get("signedUrl") or ""
                 return str(signed_url_response) if signed_url_response else ""
             
-            file_url = await self._execute_sync(_get_url)
+            try:
+                file_url = await self._execute_sync(_get_url, timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Signed URL generation timed out for {bucket}/{path}, using fallback",
+                    extra={"bucket": bucket, "path": path}
+                )
+                file_url = None
             
             # Fallback to public URL if signed URL fails (for public buckets)
             if not file_url:
                 def _get_public_url():
                     return self.storage.from_(bucket).get_public_url(path)
-                file_url = await self._execute_sync(_get_public_url)
+                try:
+                    file_url = await self._execute_sync(_get_public_url, timeout=30.0)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"Public URL generation also timed out for {bucket}/{path}",
+                        extra={"bucket": bucket, "path": path}
+                    )
+                    raise RetryableError(f"Failed to generate URL for uploaded file: {bucket}/{path}")
             
             logger.info(
                 f"Uploaded file to {bucket}/{path}",
