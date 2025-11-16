@@ -20,7 +20,7 @@ DEFAULT_BUCKET_LIMITS: Dict[str, int] = {
     "audio-uploads": 10 * 1024 * 1024,  # 10MB
     "reference-images": 5 * 1024 * 1024,  # 5MB
     "video-clips": 50 * 1024 * 1024,  # 50MB
-    "video-outputs": 100 * 1024 * 1024,  # 100MB
+    "video-outputs": 500 * 1024 * 1024,  # 500MB
 }
 
 

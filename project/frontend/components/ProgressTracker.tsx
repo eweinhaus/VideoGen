@@ -362,13 +362,20 @@ export function ProgressTracker({
           pending: "pending",
         }
         const status = statusMap[(data.status || "").toLowerCase()] || "processing"
+        
+        // If stage exists, update it (preserve completed status - don't downgrade)
         if (existing) {
+          // Don't downgrade from completed to processing
+          if (existing.status === "completed" && status === "processing") {
+            return prev // Keep completed status
+          }
           return prev.map((s) =>
             s.name === stage
               ? { ...s, status }
               : s
           )
         }
+        // Add new stage
         return [...prev, { name: stage, status }]
       })
     },

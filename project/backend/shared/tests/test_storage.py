@@ -259,7 +259,7 @@ async def test_storage_bucket_limits(storage_client):
     assert client.bucket_limits["audio-uploads"] == 10 * 1024 * 1024
     assert client.bucket_limits["reference-images"] == 5 * 1024 * 1024
     assert client.bucket_limits["video-clips"] == 50 * 1024 * 1024
-    assert client.bucket_limits["video-outputs"] == 100 * 1024 * 1024
+    assert client.bucket_limits["video-outputs"] == 500 * 1024 * 1024
 
 
 @pytest.mark.asyncio
