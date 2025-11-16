@@ -52,7 +52,7 @@ def _calculate_llm_cost(model: str, input_tokens: int, output_tokens: int) -> De
     )
 
 
-def _build_system_prompt(style_keywords: List[str]) -> str:
+def _build_system_prompt(style_keywords: List[str], clip_count: int) -> str:
     style_phrase = ", ".join(style_keywords[:5]) if style_keywords else "cinematic"
     return f"""You are an elite text-to-video prompt engineer.
 
@@ -65,10 +65,16 @@ Guidelines:
 - Never include actual URLs; reference images are passed separately.
 - Enforce consistent tone using style keywords: {style_phrase}.
 
+CRITICAL: You MUST return exactly {clip_count} prompts, one for each clip_index from 0 to {clip_count - 1}.
+Do not skip any clips. If you cannot generate all prompts, return the base prompts unchanged.
+
 Output JSON with the following shape:
 {{
   "prompts": [
-    {{"clip_index": 0, "prompt": "final optimized prompt"}}
+    {{"clip_index": 0, "prompt": "final optimized prompt"}},
+    {{"clip_index": 1, "prompt": "final optimized prompt"}},
+    ...
+    {{"clip_index": {clip_count - 1}, "prompt": "final optimized prompt"}}
   ]
 }}
 """
@@ -106,7 +112,7 @@ async def optimize_prompts(
         )
         model = "gpt-4o"
 
-    system_prompt = _build_system_prompt(style_keywords)
+    system_prompt = _build_system_prompt(style_keywords, len(base_prompts))
     user_payload = _build_user_payload(base_prompts)
 
     try:
@@ -116,6 +122,11 @@ async def optimize_prompts(
             extra={"job_id": str(job_id), "model": model, "clip_count": len(base_prompts)},
         )
 
+        # Calculate max_tokens based on clip count (roughly 100 tokens per prompt + overhead)
+        # For 30 clips, we need at least 3000 tokens, but add buffer for safety
+        estimated_tokens = max(3000, len(base_prompts) * 100 + 500)
+        max_tokens = min(estimated_tokens, 8000)  # Cap at 8k to avoid hitting model limits
+        
         response = await client.chat.completions.create(
             model=model,
             messages=[
@@ -124,7 +135,7 @@ async def optimize_prompts(
             ],
             response_format={"type": "json_object"},
             temperature=0.7,
-            max_tokens=3000,
+            max_tokens=max_tokens,
             timeout=90.0,
         )
 
@@ -134,9 +145,35 @@ async def optimize_prompts(
 
         payload = json.loads(content)
         prompts = payload.get("prompts")
-        if not isinstance(prompts, list) or len(prompts) != len(base_prompts):
+        
+        # Log what we received for debugging
+        if not isinstance(prompts, list):
+            logger.error(
+                "LLM returned invalid prompts format",
+                extra={
+                    "job_id": str(job_id),
+                    "expected_type": "list",
+                    "actual_type": type(prompts).__name__,
+                    "payload_keys": list(payload.keys()) if isinstance(payload, dict) else None,
+                }
+            )
             raise RetryableError(
+                f"LLM returned invalid prompts format: expected list, got {type(prompts).__name__}",
+                job_id=job_id,
+            )
+        
+        if len(prompts) != len(base_prompts):
+            logger.error(
                 "LLM returned unexpected prompt count",
+                extra={
+                    "job_id": str(job_id),
+                    "expected_count": len(base_prompts),
+                    "actual_count": len(prompts),
+                    "prompts_received": [p.get("clip_index", "unknown") if isinstance(p, dict) else "invalid" for p in prompts[:5]],
+                }
+            )
+            raise RetryableError(
+                f"LLM returned unexpected prompt count: expected {len(base_prompts)}, got {len(prompts)}",
                 job_id=job_id,
             )
 

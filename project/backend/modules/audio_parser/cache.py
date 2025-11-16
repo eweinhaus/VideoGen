@@ -50,7 +50,7 @@ async def store_cached_analysis(file_hash: str, analysis: AudioAnalysis, ttl: in
     try:
         cache_key = f"videogen:cache:audio_cache:{file_hash}"
         cached_data = analysis.model_dump_json()
-        await redis_client.set(cache_key, cached_data, ttl=ttl)
+        await redis_client.set(cache_key, cached_data, ex=ttl)
         logger.info(f"Stored analysis in cache: {file_hash}")
     except Exception as e:
         logger.warning(f"Failed to store cached analysis: {str(e)}")
