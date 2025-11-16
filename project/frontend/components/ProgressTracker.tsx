@@ -362,21 +362,44 @@ export function ProgressTracker({
           pending: "pending",
         }
         const status = statusMap[(data.status || "").toLowerCase()] || "processing"
-        
+
+        // Define stage order for marking previous stages as completed
+        const stageOrder = [
+          "audio_parser",
+          "scene_planner",
+          "reference_generator",
+          "prompt_generation",
+          "video_generation",
+          "composition",
+        ]
+        const currentStageIndex = stageOrder.indexOf(stage)
+
         // If stage exists, update it (preserve completed status - don't downgrade)
         if (existing) {
           // Don't downgrade from completed to processing
           if (existing.status === "completed" && status === "processing") {
             return prev // Keep completed status
           }
-          return prev.map((s) =>
-            s.name === stage
-              ? { ...s, status }
-              : s
-          )
+          return prev.map((s) => {
+            const stageIndex = stageOrder.indexOf(s.name)
+            // Mark all previous stages as completed when a new stage starts
+            if (stageIndex !== -1 && stageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+              return { ...s, status: "completed" }
+            }
+            return s.name === stage ? { ...s, status } : s
+          })
         }
-        // Add new stage
-        return [...prev, { name: stage, status }]
+
+        // Add new stage and mark all previous stages as completed
+        const updatedStages = prev.map((s) => {
+          const stageIndex = stageOrder.indexOf(s.name)
+          if (stageIndex !== -1 && stageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+            return { ...s, status: "completed" }
+          }
+          return s
+        })
+
+        return [...updatedStages, { name: stage, status }]
       })
     },
     onProgress: (data: ProgressEvent) => {

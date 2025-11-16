@@ -62,15 +62,18 @@ export function StageIndicator({ stages, currentStage, showOnly }: StageIndicato
   })
 
   const getStatusIcon = (status: string, isCurrent: boolean) => {
+    // Always show checkmark for completed stages, regardless of isCurrent
     if (status === "completed") {
       return <Check className="h-5 w-5 text-green-600" />
     }
     if (status === "failed") {
       return <X className="h-5 w-5 text-destructive" />
     }
-    if (status === "processing" || isCurrent) {
+    // Only show spinner if processing (and optionally current)
+    if (status === "processing" || (status === "pending" && isCurrent)) {
       return <Loader2 className="h-5 w-5 animate-spin text-primary" />
     }
+    // Pending stages show empty circle
     return <div className="h-5 w-5 rounded-full border-2 border-muted-foreground" />
   }
 

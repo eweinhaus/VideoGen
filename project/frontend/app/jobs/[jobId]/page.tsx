@@ -70,14 +70,43 @@ export default function JobProgressPage() {
       if (!timerOn) setTimerOn(true)
       setStages((prev) => {
         const existing = prev.find((s) => s.name === stage)
+
+        // Define stage order for marking previous stages as completed
+        const stageOrder = [
+          "audio_parser",
+          "scene_planner",
+          "reference_generator",
+          "prompt_generation",
+          "video_generation",
+          "composition",
+        ]
+        const currentStageIndex = stageOrder.indexOf(stage)
+
         if (existing) {
-          return prev.map((s) =>
-            s.name === stage
-              ? { ...s, status }
-              : s
-          )
+          // Don't downgrade from completed to processing
+          if (existing.status === "completed" && status === "processing") {
+            return prev
+          }
+          return prev.map((s) => {
+            const stageIndex = stageOrder.indexOf(s.name)
+            // Mark all previous stages as completed when a new stage starts
+            if (stageIndex !== -1 && stageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+              return { ...s, status: "completed" }
+            }
+            return s.name === stage ? { ...s, status } : s
+          })
         }
-        return [...prev, { name: stage, status }]
+
+        // Add new stage and mark all previous stages as completed
+        const updatedStages = prev.map((s) => {
+          const stageIndex = stageOrder.indexOf(s.name)
+          if (stageIndex !== -1 && stageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+            return { ...s, status: "completed" }
+          }
+          return s
+        })
+
+        return [...updatedStages, { name: stage, status }]
       })
     },
   })
@@ -251,16 +280,7 @@ export default function JobProgressPage() {
                 </AlertDescription>
               </Alert>
             )}
-            {isCompleted && job.videoUrl ? (
-              <div className="space-y-6">
-                <Alert>
-                  <AlertDescription>
-                    Video generation completed successfully!
-                  </AlertDescription>
-                </Alert>
-                <VideoPlayer videoUrl={job.videoUrl} jobId={jobId} />
-              </div>
-            ) : isFailed ? (
+            {isFailed ? (
               <div className="space-y-4">
                 <Alert variant="destructive">
                   <AlertDescription>
@@ -280,11 +300,23 @@ export default function JobProgressPage() {
                 </Button>
               </div>
             ) : (
-              <ProgressTracker
-                jobId={jobId}
-                onComplete={handleComplete}
-                onError={handleError}
-              />
+              <div className="space-y-6">
+                {isCompleted && job.videoUrl && (
+                  <div className="space-y-4">
+                    <Alert>
+                      <AlertDescription>
+                        Video generation completed successfully!
+                      </AlertDescription>
+                    </Alert>
+                    <VideoPlayer videoUrl={job.videoUrl} jobId={jobId} />
+                  </div>
+                )}
+                <ProgressTracker
+                  jobId={jobId}
+                  onComplete={handleComplete}
+                  onError={handleError}
+                />
+              </div>
             )}
           </CardContent>
         </Card>
