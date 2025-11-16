@@ -93,6 +93,16 @@ export default function JobProgressPage() {
     return () => clearInterval(id)
   }, [timerOn, job?.status])
 
+  // Start/stop the header timer based on job status immediately on load
+  useEffect(() => {
+    if (!job) return
+    if (job.status === "queued" || job.status === "processing") {
+      setTimerOn(true)
+    } else if (job.status === "completed" || job.status === "failed") {
+      setTimerOn(false)
+    }
+  }, [job])
+
   const formatElapsed = (s: number) => {
     const h = Math.floor(s / 3600)
     const m = Math.floor((s % 3600) / 60)
@@ -178,17 +188,6 @@ export default function JobProgressPage() {
   // Only show "queued" message if status is queued AND no stage has started yet
   const isQueued = job.status === "queued" && !job.currentStage
   const isProcessing = job.status === "processing"
-
-  // Start/stop the header timer based on job status immediately on load
-  useEffect(() => {
-    if (!job) return
-    if ((job.status === "queued" || job.status === "processing") && !timerOn) {
-      setTimerOn(true)
-    }
-    if ((job.status === "completed" || job.status === "failed") && timerOn) {
-      setTimerOn(false)
-    }
-  }, [job, timerOn])
 
   return (
     <div className="container mx-auto max-w-7xl px-4 py-8">
