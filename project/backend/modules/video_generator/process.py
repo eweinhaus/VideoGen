@@ -19,10 +19,11 @@ from shared.errors import BudgetExceededError, PipelineError, RetryableError
 from shared.logging import get_logger
 from api_gateway.services.budget_helpers import get_budget_limit
 
-from modules.video_generator.config import get_generation_settings
+from modules.video_generator.config import get_generation_settings, get_selected_model, get_model_config
 from modules.video_generator.cost_estimator import estimate_total_cost
 from modules.video_generator.generator import generate_video_clip
 from modules.video_generator.image_handler import download_and_upload_image
+from modules.video_generator.model_validator import validate_model_config
 
 logger = get_logger("video_generator.process")
 
@@ -123,6 +124,32 @@ async def process(
     environment = settings.environment
     settings_dict = get_generation_settings(environment)
     
+    # Validate model configuration before starting
+    try:
+        selected_model_key = get_selected_model()
+        model_config = get_model_config(selected_model_key)
+        is_valid, error_msg = await validate_model_config(selected_model_key, model_config)
+        if not is_valid:
+            logger.error(
+                f"Model validation failed for {selected_model_key}: {error_msg}",
+                extra={"job_id": str(job_id), "model": selected_model_key, "error": error_msg}
+            )
+            raise PipelineError(
+                f"Model configuration invalid: {error_msg}. "
+                f"Please check VIDEO_MODEL environment variable or model configuration."
+            )
+        logger.info(
+            f"Model validation passed for {selected_model_key}",
+            extra={"job_id": str(job_id), "model": selected_model_key}
+        )
+    except Exception as e:
+        logger.warning(
+            f"Model validation error (continuing anyway): {str(e)}",
+            extra={"job_id": str(job_id), "error": str(e)}
+        )
+        # Don't fail the job if validation fails - log warning and continue
+        # This allows for models that might work but validation API is unavailable
+    
     # Budget check before starting
     logger.info(
         f"Estimating costs for {len(clip_prompts.clip_prompts)} clips",
@@ -143,9 +170,11 @@ async def process(
             f"Current cost: {current_cost}"
         )
     
-    # Get concurrency limit (default: 8 for optimal throughput)
-    # Replicate allows 600 predictions/min, so 8-10 concurrent is safe
-    concurrency = int(os.getenv("VIDEO_GENERATOR_CONCURRENCY", "8"))
+    # Get concurrency limit (default: 5 for optimal balance of speed and reliability)
+    # Higher concurrency (8+) can cause Replicate queue delays, making clips slower
+    # Lower concurrency (4-5) reduces queue contention, improving per-clip completion time
+    # Replicate allows 600 predictions/min, but queue delays occur with high concurrent requests
+    concurrency = int(os.getenv("VIDEO_GENERATOR_CONCURRENCY", "5"))
     semaphore = asyncio.Semaphore(concurrency)
     
     # Optional: Add client-side rate limiter for extra safety
@@ -156,8 +185,13 @@ async def process(
         extra={"job_id": str(job_id)}
     )
     
-    # Reference images are always enabled (hardcoded)
-    use_references = True
+    # Reference images enabled/disabled via USE_REFERENCE_IMAGES env var
+    use_references = settings.use_reference_images
+    if not use_references:
+        logger.info(
+            "Reference images disabled (USE_REFERENCE_IMAGES=false), using text-only mode",
+            extra={"job_id": str(job_id)}
+        )
     # Initialize image cache (always defined, even if empty)
     image_cache: Dict[str, Optional[Union[str, io.BytesIO]]] = {}
     if use_references:
@@ -379,11 +413,25 @@ async def process(
     
     # Validate minimum clips (configurable)
     min_clips = int(os.getenv("VIDEO_GENERATOR_MIN_CLIPS", "3"))
-    if len(successful) < min_clips:
-        raise PipelineError(
-            f"Insufficient clips generated: {len(successful)} < {min_clips} (minimum required). "
-            f"Failed clips: {failed}"
-        )
+    require_all_clips = os.getenv("VIDEO_GENERATOR_REQUIRE_ALL_CLIPS", "false").lower() == "true"
+    
+    if require_all_clips:
+        # Require ALL clips to succeed before composition
+        expected_clips = len(clip_prompts.clip_prompts)
+        if len(successful) < expected_clips:
+            raise PipelineError(
+                f"Not all clips generated: {len(successful)}/{expected_clips} successful. "
+                f"All clips must succeed when VIDEO_GENERATOR_REQUIRE_ALL_CLIPS=true. "
+                f"Failed clips: {failed}"
+            )
+    else:
+        # Only require minimum clips (default behavior)
+        if len(successful) < min_clips:
+            raise PipelineError(
+                f"Insufficient clips generated: {len(successful)} < {min_clips} (minimum required). "
+                f"Failed clips: {failed}. "
+                f"Set VIDEO_GENERATOR_REQUIRE_ALL_CLIPS=true to require all clips to succeed."
+            )
     
     # Calculate total cost and check budget
     total_cost = sum(c.cost for c in successful)

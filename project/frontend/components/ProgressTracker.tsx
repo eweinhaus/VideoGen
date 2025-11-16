@@ -304,8 +304,11 @@ export function ProgressTracker({
         retryCount: existing?.retryCount,
       }
 
-      const totalImagesCandidate = data.total_images ?? prev.totalImages ?? Object.keys({ ...prev.images, [key]: updatedEntry }).length
-      const totalImages = Math.max(totalImagesCandidate, prev.totalImages)
+      // Use total_images from event if provided (most accurate), otherwise use current count
+      // Event value is authoritative - always prefer it over calculated values
+      const totalImages = data.total_images !== undefined 
+        ? Math.max(data.total_images, prev.totalImages) 
+        : Math.max(prev.totalImages ?? 0, Object.keys({ ...prev.images, [key]: updatedEntry }).length)
 
       return {
         totalImages,
@@ -322,15 +325,30 @@ export function ProgressTracker({
     const key = referenceKey(data.image_type, data.image_id)
     setReferenceState((prev) => {
       const previousEntry = prev.images[key]
-      const completedCandidate =
-        data.completed_images ??
-        (previousEntry?.status === "completed" ? prev.completedImages : prev.completedImages + 1)
-      const completedImages = Math.max(completedCandidate, prev.completedImages)
-      const totalImagesCandidate = data.total_images ?? prev.totalImages ?? Object.keys(prev.images).length
+      const wasAlreadyCompleted = previousEntry?.status === "completed"
+      
+      // Event's total_images is authoritative - always use it if provided
+      const totalImages = data.total_images !== undefined 
+        ? data.total_images 
+        : Math.max(prev.totalImages ?? 0, Object.keys({ ...prev.images, [key]: {} }).length)
+      
+      // Event's completed_images is authoritative - always use it if provided
+      // Otherwise, only increment if this image wasn't already completed
+      let finalCompletedImages: number
+      if (data.completed_images !== undefined) {
+        // Use event's completed_images (authoritative)
+        finalCompletedImages = Math.min(data.completed_images, totalImages)
+      } else if (wasAlreadyCompleted) {
+        // Already counted, don't increment
+        finalCompletedImages = prev.completedImages
+      } else {
+        // Increment by 1, but cap at totalImages
+        finalCompletedImages = Math.min(prev.completedImages + 1, totalImages)
+      }
 
       return {
-        totalImages: Math.max(totalImagesCandidate, prev.totalImages),
-        completedImages,
+        totalImages: Math.max(totalImages, prev.totalImages ?? 0), // Never decrease total
+        completedImages: Math.max(finalCompletedImages, prev.completedImages), // Never decrease completed
         images: {
           ...prev.images,
           [key]: {
@@ -420,33 +438,106 @@ export function ProgressTracker({
       const stage = normalize(data.stage)
       if (!hasStarted) setHasStarted(true)
       setCurrentStage(stage)
-      updateJob(jobId, { currentStage: stage })
+      
+      const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
+        started: "processing",
+        processing: "processing",
+        completed: "completed",
+        failed: "failed",
+        pending: "pending",
+      }
+      const status = statusMap[(data.status || "").toLowerCase()] || "processing"
+      
+      // Debug logging for prompt_generator completion
+      if (stage === "prompt_generation" && status === "completed") {
+        console.log("✅ Prompt generator completed:", { stage, status, data })
+      }
       
       setStages((prev) => {
-        const existing = prev.find((s) => s.name === stage)
-        const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
-          started: "processing",
-          processing: "processing",
-          completed: "completed",
-          failed: "failed",
-          pending: "pending",
+        // Normalize all existing stage names for consistent comparison
+        const normalizeStageName = (name: string): string => {
+          const n = name.toLowerCase()
+          if (n === "audio_analysis") return "audio_parser"
+          if (n === "scene_planning") return "scene_planner"
+          if (n === "reference_generation") return "reference_generator"
+          if (n === "prompt_generator") return "prompt_generation"
+          if (n === "video_generator") return "video_generation"
+          return n
         }
-        const status = statusMap[(data.status || "").toLowerCase()] || "processing"
+        // Find existing stage using normalized names
+        const existing = prev.find((s) => normalizeStageName(s.name) === stage)
+
+        // Define stage order for marking previous stages as completed
+        const stageOrder = [
+          "audio_parser",
+          "scene_planner",
+          "reference_generator",
+          "prompt_generation",
+          "video_generation",
+          "composition",
+        ]
         
-        // If stage exists, update it (preserve completed status - don't downgrade)
-        if (existing) {
-          // Don't downgrade from completed to processing
-          if (existing.status === "completed" && status === "processing") {
-            return prev // Keep completed status
+        // Stage is already normalized from the normalize() function above
+        const normalizedStage = stage
+        const currentStageIndex = stageOrder.indexOf(normalizedStage)
+
+        // Mark all previous stages as completed when a stage completes OR when a new stage starts (and it's a later stage)
+        const shouldMarkPreviousCompleted = status === "completed" || (currentStageIndex !== -1 && currentStageIndex > 0)
+        
+        // Update or add stage
+        let updatedStages = prev.map((s) => {
+          const normalizedSName = normalizeStageName(s.name)
+          const sStageIndex = stageOrder.indexOf(normalizedSName)
+          
+          // If this is the stage being updated, update its status (compare normalized names)
+          if (normalizedSName === normalizedStage) {
+            // Don't downgrade from completed to processing
+            if (s.status === "completed" && status === "processing") {
+              return s // Keep completed status
+            }
+            // Always mark as completed if status is "completed"
+            if (status === "completed") {
+              return { ...s, status: "completed" as const }
+            }
+            return { ...s, status: status as "pending" | "processing" | "completed" | "failed" }
           }
-          return prev.map((s) =>
-            s.name === stage
-              ? { ...s, status }
-              : s
-          )
+          
+          // Mark previous stages as completed when current stage completes or new stage starts
+          if (shouldMarkPreviousCompleted && sStageIndex !== -1 && sStageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+            return { ...s, status: "completed" as const }
+          }
+          
+          return s
+        })
+        
+        // If stage doesn't exist yet, add it
+        if (!existing) {
+          // Ensure we mark all previous stages as completed before adding the new one
+          if (shouldMarkPreviousCompleted) {
+            updatedStages = updatedStages.map((s) => {
+              const normalizedSName = normalizeStageName(s.name)
+              const sStageIndex = stageOrder.indexOf(normalizedSName)
+              if (sStageIndex !== -1 && sStageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+                return { ...s, status: "completed" as const }
+              }
+              return s
+            })
+          }
+          const finalStatus = status === "completed" ? "completed" as const : (status as "pending" | "processing" | "completed" | "failed")
+          updatedStages = [...updatedStages, { name: normalizedStage, status: finalStatus }]
         }
-        // Add new stage
-        return [...prev, { name: stage, status }]
+        
+        // Persist stages to job store for persistence (only update if changed to prevent unnecessary re-renders)
+        const stagesRecord = updatedStages.reduce((acc, s) => {
+          acc[s.name] = { status: s.status }
+          return acc
+        }, {} as Record<string, { status: string }>)
+        // Use setTimeout to debounce job store updates and prevent cascading re-renders
+        setTimeout(() => {
+          updateJob(jobId, { currentStage: normalizedStage, stages: stagesRecord })
+        }, 0)
+        
+        return updatedStages
       })
     },
     onProgress: (data: ProgressEvent) => {
@@ -468,6 +559,15 @@ export function ProgressTracker({
         status: "completed",
         videoUrl: data.video_url,
         progress: 100,
+      })
+      // Mark all stages as completed when job completes
+      setStages((prev) => {
+        return prev.map((s) => {
+          if (s.status !== "failed") {
+            return { ...s, status: "completed" as const }
+          }
+          return s
+        })
       })
       onComplete?.(data.video_url)
     },
@@ -804,7 +904,7 @@ export function ProgressTracker({
           <div className="space-y-4">
             <div>
               <p className="text-sm text-muted-foreground mb-2">
-                {referenceState.completedImages}/{referenceState.totalImages || referenceImages.length} images ready
+                {referenceImages.filter(img => img.status === "completed").length}/{Math.max(referenceState.totalImages, referenceImages.length)} images ready
               </p>
               <Progress value={referenceProgressValue} className="h-2" />
             </div>
