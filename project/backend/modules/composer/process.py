@@ -1,0 +1,373 @@
+"""
+Main entry point for composer module.
+
+Orchestrates video composition: downloads, normalizes, handles durations,
+applies transitions, syncs audio, encodes, and uploads final video.
+"""
+import asyncio
+import time
+import tempfile
+import shutil
+from contextlib import asynccontextmanager
+from pathlib import Path
+from uuid import UUID
+from typing import List, Optional
+from decimal import Decimal
+
+from shared.errors import CompositionError, RetryableError
+from shared.logging import get_logger
+from shared.storage import StorageClient
+from shared.models.video import VideoOutput, Clips, Clip
+from shared.models.scene import Transition
+from api_gateway.services.event_publisher import publish_event
+
+from .config import VIDEO_OUTPUTS_BUCKET
+from .utils import check_ffmpeg_available, get_video_duration
+from .downloader import download_all_clips, download_audio
+from .normalizer import normalize_clip
+from .duration_handler import handle_clip_duration
+from .transition_applier import apply_transitions
+from .audio_syncer import sync_audio
+from .encoder import encode_final_video
+
+logger = get_logger("composer.process")
+
+
+@asynccontextmanager
+async def temp_directory(prefix: str):
+    """
+    Context manager for temporary directory with automatic cleanup.
+    
+    Args:
+        prefix: Prefix for temp directory name
+        
+    Yields:
+        Path to temporary directory
+    """
+    temp_dir = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        yield temp_dir
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+async def publish_progress(job_id: UUID, message: str) -> None:
+    """
+    Publish progress event via SSE.
+    
+    Args:
+        job_id: Job ID
+        message: Progress message
+    """
+    await publish_event(
+        str(job_id),
+        "message",
+        {
+            "text": message,
+            "stage": "composer"
+        }
+    )
+
+
+async def process(
+    job_id: str,
+    clips: Clips,
+    audio_url: str,
+    transitions: List[Transition],
+    beat_timestamps: Optional[List[float]] = None
+) -> VideoOutput:
+    """
+    Main composition function.
+    
+    Args:
+        job_id: Job identifier (string from orchestrator, converted to UUID internally)
+        clips: Collection of generated video clips from Video Generator
+        audio_url: Original audio file URL
+        transitions: Transition definitions from Scene Planner (ignored in MVP)
+        beat_timestamps: Beat timestamps from Audio Parser (optional, not used in MVP)
+        
+    Returns:
+        VideoOutput with final video URL and metadata
+        
+    Raises:
+        CompositionError: For permanent failures (validation, FFmpeg errors)
+        RetryableError: For transient failures (network, timeouts)
+    """
+    # Convert job_id to UUID for internal use
+    job_id_uuid = UUID(job_id) if isinstance(job_id, str) else job_id
+    start_time = time.time()
+    
+    # Initialize timing tracking
+    timings = {
+        "download_clips": 0.0,
+        "normalize_clips": 0.0,
+        "handle_durations": 0.0,
+        "apply_transitions": 0.0,
+        "sync_audio": 0.0,
+        "encode_final": 0.0,
+        "upload_final": 0.0,
+        "total": 0.0
+    }
+    
+    try:
+        # Step 1: Input validation
+        if not check_ffmpeg_available():
+            raise CompositionError(
+                "FFmpeg not found. Please install FFmpeg:\n"
+                "  macOS: brew install ffmpeg\n"
+                "  Linux: apt-get install ffmpeg or yum install ffmpeg\n"
+                "  Windows: Download from https://ffmpeg.org/"
+            )
+        
+        if len(clips.clips) < 3:
+            raise CompositionError("Minimum 3 clips required for composition")
+        
+        for clip in clips.clips:
+            if not clip.video_url:
+                raise CompositionError(f"Clip {clip.clip_index} missing video_url")
+            if clip.status != "success":
+                raise CompositionError(
+                    f"Clip {clip.clip_index} has status '{clip.status}', expected 'success'"
+                )
+        
+        if not audio_url:
+            raise CompositionError("Audio URL required for composition")
+        
+        # Sort clips by clip_index (guarantee correct order)
+        sorted_clips = sorted(clips.clips, key=lambda c: c.clip_index)
+        
+        # Validate sequential indices
+        for i, clip in enumerate(sorted_clips):
+            if clip.clip_index != i:
+                raise CompositionError(
+                    f"Clip indices must be sequential starting from 0. "
+                    f"Found index {clip.clip_index} at position {i}"
+                )
+        
+        # Check disk space (optional, non-blocking warning)
+        try:
+            disk_usage = shutil.disk_usage("/")
+            available_gb = disk_usage.free / (1024 ** 3)
+            if available_gb < 0.5:  # Less than 500MB available
+                logger.warning(
+                    f"Low disk space: {available_gb:.2f} GB available (recommended: >0.5 GB)",
+                    extra={"job_id": str(job_id_uuid), "available_gb": available_gb}
+                )
+        except Exception as e:
+            # Non-blocking: log warning but continue
+            logger.warning(
+                f"Could not check disk space: {e}",
+                extra={"job_id": str(job_id_uuid)}
+            )
+        
+        # Steps 2-8: Processing with temp directory context manager
+        async with temp_directory(f"composer_{job_id_uuid}_") as temp_dir:
+            # Step 2: Download clips and audio (parallel)
+            await publish_progress(job_id_uuid, f"Downloading clips ({len(sorted_clips)} clips)...")
+            step_start = time.time()
+            clip_bytes_list = await download_all_clips(sorted_clips, job_id_uuid)
+            audio_bytes = await download_audio(audio_url, job_id_uuid)
+            timings["download_clips"] = time.time() - step_start
+            
+            # Log download metrics
+            total_download_size = sum(len(b) for b in clip_bytes_list) + len(audio_bytes)
+            logger.info(
+                f"Downloaded {len(clip_bytes_list)} clips and audio ({total_download_size / 1024 / 1024:.2f} MB) in {timings['download_clips']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "clips_count": len(clip_bytes_list),
+                    "download_size_mb": total_download_size / 1024 / 1024,
+                    "download_time": timings["download_clips"]
+                }
+            )
+            
+            # Step 3: Normalize all clips
+            await publish_progress(job_id_uuid, "Normalizing clips to 1080p, 30fps...")
+            step_start = time.time()
+            normalized_paths = []
+            for clip_bytes, clip in zip(clip_bytes_list, sorted_clips):
+                normalized_path = await normalize_clip(
+                    clip_bytes, clip.clip_index, temp_dir, job_id_uuid
+                )
+                normalized_paths.append(normalized_path)
+            timings["normalize_clips"] = time.time() - step_start
+            
+            logger.info(
+                f"Normalized {len(normalized_paths)} clips in {timings['normalize_clips']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "clips_count": len(normalized_paths),
+                    "normalize_time": timings["normalize_clips"]
+                }
+            )
+            
+            # Step 4: Handle duration mismatches
+            await publish_progress(job_id_uuid, "Handling duration mismatches...")
+            step_start = time.time()
+            duration_handled_paths = []
+            clips_trimmed = 0
+            clips_looped = 0
+            for normalized_path, clip in zip(normalized_paths, sorted_clips):
+                result_path, was_trimmed, was_looped = await handle_clip_duration(
+                    normalized_path, clip, temp_dir, job_id_uuid
+                )
+                duration_handled_paths.append(result_path)
+                if was_trimmed:
+                    clips_trimmed += 1
+                if was_looped:
+                    clips_looped += 1
+            timings["handle_durations"] = time.time() - step_start
+            
+            logger.info(
+                f"Handled durations: {clips_trimmed} trimmed, {clips_looped} looped in {timings['handle_durations']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "clips_trimmed": clips_trimmed,
+                    "clips_looped": clips_looped,
+                    "duration_handling_time": timings["handle_durations"]
+                }
+            )
+            
+            # Step 5: Apply transitions
+            await publish_progress(job_id_uuid, "Applying transitions...")
+            step_start = time.time()
+            concatenated_path = await apply_transitions(
+                duration_handled_paths, transitions, temp_dir, job_id_uuid
+            )
+            timings["apply_transitions"] = time.time() - step_start
+            
+            logger.info(
+                f"Applied transitions in {timings['apply_transitions']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "transitions_time": timings["apply_transitions"]
+                }
+            )
+            
+            # Step 6: Sync audio
+            await publish_progress(job_id_uuid, "Syncing audio with video...")
+            step_start = time.time()
+            video_with_audio_path, sync_drift = await sync_audio(
+                concatenated_path, audio_bytes, temp_dir, job_id_uuid
+            )
+            timings["sync_audio"] = time.time() - step_start
+            
+            logger.info(
+                f"Synced audio (drift: {sync_drift:.3f}s) in {timings['sync_audio']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "sync_drift": sync_drift,
+                    "sync_time": timings["sync_audio"]
+                }
+            )
+            
+            # Step 7: Encode final video
+            await publish_progress(job_id_uuid, "Encoding final video...")
+            step_start = time.time()
+            final_video_path = await encode_final_video(
+                video_with_audio_path, temp_dir, job_id_uuid
+            )
+            timings["encode_final"] = time.time() - step_start
+            
+            logger.info(
+                f"Encoded final video in {timings['encode_final']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "encode_time": timings["encode_final"]
+                }
+            )
+            
+            # Step 8: Upload final video
+            await publish_progress(job_id_uuid, "Uploading final video...")
+            step_start = time.time()
+            storage = StorageClient()
+            final_video_bytes = final_video_path.read_bytes()
+            storage_path = f"{job_id_uuid}/final_video.mp4"
+            video_url = await storage.upload_file(
+                bucket=VIDEO_OUTPUTS_BUCKET,
+                path=storage_path,
+                file_data=final_video_bytes,
+                content_type="video/mp4"
+            )
+            timings["upload_final"] = time.time() - step_start
+            
+            logger.info(
+                f"Uploaded final video to {video_url} in {timings['upload_final']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "url": video_url,
+                    "upload_time": timings["upload_final"]
+                }
+            )
+            
+            # Calculate metrics before temp directory cleanup
+            composition_time = time.time() - start_time
+            timings["total"] = composition_time
+            final_video_duration = await get_video_duration(final_video_path)
+            file_size_mb = final_video_path.stat().st_size / 1024 / 1024
+            
+            # Get audio duration from original audio if available (or calculate from clips)
+            # For MVP, use sum of target durations as approximation
+            audio_duration = sum(clip.target_duration for clip in sorted_clips)
+        
+        # Create VideoOutput after temp directory cleanup
+        video_output = VideoOutput(
+            job_id=job_id_uuid,
+            video_url=video_url,
+            duration=final_video_duration,
+            audio_duration=audio_duration,
+            sync_drift=sync_drift,
+            clips_used=len(sorted_clips),
+            clips_trimmed=clips_trimmed,
+            clips_looped=clips_looped,
+            transitions_applied=len(sorted_clips) - 1,  # N clips = N-1 transitions
+            file_size_mb=file_size_mb,
+            composition_time=composition_time,
+            cost=Decimal("0.00"),  # No API calls, compute only
+            status="success"
+        )
+        
+        # Log comprehensive metrics
+        logger.info(
+            f"Composition complete: {file_size_mb:.2f} MB, {composition_time:.2f}s",
+            extra={
+                "job_id": str(job_id_uuid),
+                "file_size_mb": file_size_mb,
+                "composition_time": composition_time,
+                "clips_used": len(sorted_clips),
+                "clips_trimmed": clips_trimmed,
+                "clips_looped": clips_looped,
+                "sync_drift": sync_drift,
+                "video_duration": final_video_duration,
+                "audio_duration": audio_duration,
+                "timings": timings
+            }
+        )
+        
+        return video_output
+        
+    except CompositionError:
+        # Permanent failure - log and re-raise
+        logger.error(
+            f"Composition failed",
+            exc_info=True,
+            extra={"job_id": str(job_id_uuid)}
+        )
+        raise
+    except RetryableError:
+        # Transient failure - log and re-raise (orchestrator will retry)
+        logger.warning(
+            f"Composition retryable error",
+            exc_info=True,
+            extra={"job_id": str(job_id_uuid)}
+        )
+        raise
+    except Exception as e:
+        # Unexpected error - wrap in CompositionError
+        logger.error(
+            f"Unexpected composition error: {e}",
+            exc_info=True,
+            extra={"job_id": str(job_id_uuid)}
+        )
+        raise CompositionError(f"Unexpected error during composition: {e}") from e
+

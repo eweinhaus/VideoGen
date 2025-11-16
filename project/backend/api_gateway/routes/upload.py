@@ -6,13 +6,14 @@ Handles audio file upload and job creation.
 
 import uuid
 import re
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from mutagen import File as MutagenFile
 from shared.storage import StorageClient
 from shared.database import DatabaseClient
 from shared.validation import validate_audio_file, validate_prompt
-from shared.errors import ValidationError, BudgetExceededError
+from shared.errors import ValidationError, BudgetExceededError, RetryableError
 from shared.logging import get_logger
 from shared.config import settings
 from api_gateway.dependencies import get_current_user
@@ -136,12 +137,37 @@ async def upload_audio(
                 "original_content_type": audio_file.content_type
             }
         )
-        audio_url = await storage_client.upload_file(
-            bucket="audio-uploads",
-            path=storage_path,
-            file_data=file_data,
-            content_type=content_type
-        )
+        
+        # Upload audio file with timeout (150s total timeout for upload + URL generation)
+        try:
+            audio_url = await asyncio.wait_for(
+                storage_client.upload_file(
+                    bucket="audio-uploads",
+                    path=storage_path,
+                    file_data=file_data,
+                    content_type=content_type
+                ),
+                timeout=150.0  # 150s total timeout (120s upload + 30s URL generation)
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Storage upload timed out",
+                extra={"job_id": job_id, "storage_path": storage_path, "file_size": len(file_data)}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="File upload timed out. Please try again."
+            )
+        except RetryableError as e:
+            logger.error(
+                "Storage upload failed after retries",
+                exc_info=e,
+                extra={"job_id": job_id, "storage_path": storage_path}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Storage service temporarily unavailable. Please try again."
+            )
         
         # Validate stop_at_stage if provided
         valid_stages = ["audio_parser", "scene_planner", "reference_generator", "prompt_generator", "video_generator", "composer"]

@@ -48,7 +48,7 @@ Frontend → API Gateway (FastAPI)
 
 **Components:**
 - **FastAPI Application**: REST endpoints, middleware, SSE handler, Redis pub/sub subscriber
-- **BullMQ Queue**: Background job processing (2 workers, 3 concurrent each)
+- **BullMQ Queue**: Background job processing (2 workers, 5 concurrent each)
 - **Pipeline Orchestrator**: Executes modules sequentially with progress tracking
 - **SSE Manager**: Manages multiple connections per job, broadcasts events via Redis pub/sub
 - **Rate Limiter**: Redis-based sliding window with sorted set (5 jobs/hour/user)
@@ -524,7 +524,7 @@ data: {"error": "Budget limit exceeded", "code": "BUDGET_EXCEEDED", "retryable":
 **Configuration**:
 - Queue name: `video_generation`
 - Workers: 2 (separate processes/containers)
-- Concurrency: 3 jobs per worker (6 total system-wide)
+- Concurrency: 5 jobs per worker (10 total system-wide)
 - Timeout: 15 minutes per job
 - Retry: 3 attempts with exponential backoff (2s, 4s, 8s)
 
@@ -542,14 +542,14 @@ data: {"error": "Budget limit exceeded", "code": "BUDGET_EXCEEDED", "retryable":
 **Worker Process**:
 - Separate process/container from FastAPI app
 - Connects to same Redis instance
-- Processes jobs from queue (max 3 concurrent per worker)
+- Processes jobs from queue (max 5 concurrent per worker)
 - Calls orchestrator to execute pipeline
 - Updates job status in database
 - **SSE Event Distribution**: Publishes events to Redis pub/sub channel `job_events:{job_id}`
 - FastAPI SSE manager subscribes to Redis channels and broadcasts to connections
 
 **Concurrency Enforcement**:
-- BullMQ worker configured with `concurrency: 3` (3 jobs per worker)
+- BullMQ worker configured with `concurrency: 5` (5 jobs per worker)
 - BullMQ handles job locking automatically (prevents duplicate processing)
 - If worker crashes: BullMQ automatically retries job (up to 3 attempts)
 - Worker health: Monitor worker heartbeat (every 30s), restart if no heartbeat for 2 minutes

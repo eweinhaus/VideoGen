@@ -1,0 +1,4 @@
+"""
+Composer module tests.
+"""
+
