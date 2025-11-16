@@ -261,14 +261,23 @@ You must output a valid JSON object matching this exact structure:
    - If BPM >130 → Use hard cuts on strong beats, quick zooms, low angles
    - If BPM <90 → Use static shots, slow zooms, wide shots, fade transitions
 
-7. **Visual Description Quality:** Each clip script should be detailed enough for video generation:
+7. **Anatomical Safety Requirements (CRITICAL):** All human characters must be described with correct anatomy to prevent generation errors:
+   - Humans have exactly 2 arms, 2 legs, 1 head
+   - When describing full-body shots: "full body visible showing two legs and two arms"
+   - When describing upper-body shots: "upper body shot showing two arms"
+   - For dance/action sequences: "anatomically correct human with proper proportions performing [action]"
+   - Avoid ambiguous descriptions that could result in extra/missing limbs
+   - Example: "Person jumping with both arms raised overhead and both feet off ground"
+
+8. **Visual Description Quality:** Each clip script should be detailed enough for video generation:
    - Specify what's happening (character actions, scene elements)
    - Specify camera movement (tracking, static, panning, zooming)
    - Specify shot type (wide, medium, close-up, extreme close-up)
    - Specify camera angle (low, eye level, high)
    - Include visual metaphors if relevant to lyrics
+   - Include anatomical details for human characters
 
-8. **Transition Planning:** Generate exactly {len(audio_data.clip_boundaries) - 1} transitions:
+9. **Transition Planning:** Generate exactly {len(audio_data.clip_boundaries) - 1} transitions:
    - Hard cut (0s duration): Strong beats, high energy, chorus transitions
    - Crossfade (0.5s duration): Medium beats, continuous motion, verse transitions
    - Fade (0.5s duration): Soft beats, low energy, intro/outro transitions

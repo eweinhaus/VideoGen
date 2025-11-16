@@ -10,6 +10,43 @@
 
 **Core Principle:** The editing tempo and shot duration must align with musical structure to create rhythmic harmony.
 
+### Beat-Matched Motion Choreography
+
+**Core Principle:** Character movements and actions should synchronize with musical beats for maximum impact and perceived audio-visual sync.
+
+**HIGH Beat Intensity (Chorus, Drops, High Energy - BPM >130):**
+- **Fast, energetic actions:** Jumping, spinning, rapid dance moves
+- **Quick gestures:** Arms raised overhead, quick turns, dynamic poses
+- **Synchronized movements:** Actions timed to downbeats (main beats)
+- **High-energy choreography:** Full-body dancing, energetic gestures, rapid movement
+- **Beat-matched actions:** Jump on beat 1, arms up on beat 2, spin on beat 3
+- **Camera movements:** Fast tracking, whip pans, quick zooms synchronized to beats
+- **Motion blur:** Acceptable for emphasizing speed and energy
+- **Examples:** "Person jumping energetically on the beat", "Arms raised overhead with rhythmic movement", "Spinning rapidly synchronized to drum hits"
+
+**MEDIUM Beat Intensity (Verses, Builds - BPM 90-130):**
+- **Moderate movements:** Walking, casual dancing, smooth gestures
+- **Controlled choreography:** Hip swaying, arm movements, head bobs
+- **Steady pacing:** Continuous motion matching medium tempo
+- **Natural actions:** Walking in rhythm, casual arm movements, moderate dance
+- **Camera movements:** Smooth pans, steady tracking, controlled motion
+- **Examples:** "Person walking confidently with rhythmic stride", "Swaying hips to moderate beat", "Smooth arm gestures matching tempo"
+
+**LOW Beat Intensity (Intro, Bridge, Breakdown - BPM <90):**
+- **Minimal movement:** Standing, slow walks, contemplative poses
+- **Subtle gestures:** Slight head movements, gentle arm raises, slow turns
+- **Static poses:** Holding positions, minimal motion
+- **Contemplative actions:** Looking into distance, slow breathing, minimal choreography
+- **Camera movements:** Static shots, very slow zooms, gentle pans
+- **Examples:** "Person standing still with subtle breathing", "Slow walk with contemplative expression", "Gentle head turn to camera"
+
+**Anatomical Safety Requirements:**
+- Always specify correct anatomy: "exactly two arms", "two legs on ground", "one head"
+- When showing full body: "full body visible showing two legs and two arms"
+- When showing upper body: "upper body shot showing two arms and torso"
+- Avoid partial occlusions that could be misinterpreted: "both legs clearly visible", "arms visible from shoulders to hands"
+- For dance/action sequences: "anatomically correct human with proper proportions performing [action]"
+
 **Verse Sections (Slower Tempo):**
 - Use longer shots (5-10 seconds minimum) to establish character, story, or environment
 - Slower cuts allow viewers to absorb narrative details

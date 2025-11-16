@@ -36,6 +36,13 @@ async def process(
 
     start_time = time.monotonic()
 
+    # Check if text-only mode is enabled (disables reference images)
+    # ENV: USE_REFERENCE_IMAGES=true/false (default: true for backward compatibility)
+    use_reference_images = settings.use_reference_images
+    if not use_reference_images:
+        logger.info(f"Text-only mode enabled (USE_REFERENCE_IMAGES=false), ignoring reference images")
+        references = None
+
     style_keywords = extract_style_keywords(plan.style)
     reference_mapping = map_references(plan, references)
     clip_contexts = _build_clip_contexts(plan, reference_mapping, style_keywords)
