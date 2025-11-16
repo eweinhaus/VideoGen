@@ -212,35 +212,53 @@ async def generate_video_clip(
         GenerationError: If generation fails permanently
         TimeoutError: If generation times out (>120s)
     """
-    # Calculate number of frames from target duration
-    num_frames = calculate_num_frames(clip_prompt.duration, settings["fps"])
-    
-    # Prepare input
+    # Prepare input for Kling v2.1 model
+    # Model uses: start_image (optional), prompt (required), duration (5 or 10s), resolution (720p or 1080p)
+    # Kling has better prompt adherence and can better ignore backgrounds from character reference images
     input_data = {
         "prompt": clip_prompt.prompt,
-        "negative_prompt": clip_prompt.negative_prompt,
-        "num_frames": num_frames,  # Frame-based generation
-        **{k: v for k, v in settings.items() if k not in ["fps", "max_duration"]}  # Exclude fps and max_duration
     }
     
-    # Add image if available (can be URL, file object, or file path)
-    if image_url:
-        input_data["image"] = image_url
+    # Kling supports 5 or 10 seconds duration - map to closest supported value
+    target_duration = clip_prompt.duration
+    if target_duration <= 7.5:
+        input_data["duration"] = 5  # 5 seconds
+    else:
+        input_data["duration"] = 10  # 10 seconds
     
-    # Determine model (try SVD first, fallback to CogVideoX)
-    model_version = SVD_MODEL  # Full model version string like "stability-ai/stable-video-diffusion:3f0457f4613a"
+    # Map resolution from "1024x576" format to Kling format ("720p" or "1080p")
+    resolution = settings.get("resolution", "1024x576")
+    if "1080" in resolution or resolution == "1080p":
+        input_data["resolution"] = "1080p"
+    elif "720" in resolution or resolution == "720p":
+        input_data["resolution"] = "720p"
+    else:
+        # Default to 1080p for production, 720p for development
+        input_data["resolution"] = "1080p" if environment == "production" else "720p"
+    
+    # Add image if available (Kling uses "start_image" parameter)
+    if image_url:
+        input_data["start_image"] = image_url
+    
+    # Determine model (use Kling for better prompt adherence with character references)
+    # Replicate API expects just the version hash, not the full model:version string
+    from modules.video_generator.config import KLING_MODEL_VERSION, SVD_MODEL_VERSION, COGVIDEOX_MODEL_VERSION
+    model_version = KLING_MODEL_VERSION  # Use Kling model for better character reference handling
     use_fallback = False
     
     try:
         # Start prediction
         logger.info(
             f"Starting video generation for clip {clip_prompt.clip_index}",
-            extra={"job_id": str(job_id), "target_duration": clip_prompt.duration, "num_frames": num_frames}
+            extra={"job_id": str(job_id), "target_duration": clip_prompt.duration, "resolution": input_data.get("resolution")}
         )
         
-        # Create prediction (model_version is string like "stability-ai/stable-video-diffusion:3f0457f4613a")
+        # Create prediction - Replicate API
+        # Use Kling model with the version hash from config
+        from modules.video_generator.config import KLING_MODEL_VERSION, SVD_MODEL_VERSION
+        # Use the version hash directly (no need to check for "latest" anymore)
         prediction = replicate.predictions.create(
-            version=model_version,  # Full model version string
+            version=model_version,  # Version hash from config
             input=input_data
         )
         
@@ -252,7 +270,9 @@ async def generate_video_clip(
             await asyncio.sleep(poll_interval)
             
             elapsed = time.time() - start_time
-            if elapsed > 120:  # 120s timeout
+            # Kling model can take longer than seedance - increase timeout to 180s (3 minutes)
+            timeout_seconds = 180
+            if elapsed > timeout_seconds:
                 raise TimeoutError(f"Clip generation timeout after {elapsed:.1f}s")
             
             # Reload to get latest status
@@ -299,6 +319,17 @@ async def generate_video_clip(
             storage = StorageClient()
             clip_path = f"{job_id}/clip_{clip_prompt.clip_index}.mp4"
             
+            # Delete existing file if it exists (handles retry scenarios)
+            try:
+                await storage.delete_file("video-clips", clip_path)
+                logger.debug(
+                    f"Deleted existing clip file before upload",
+                    extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                )
+            except Exception:
+                # File doesn't exist or delete failed - that's okay, continue with upload
+                pass
+            
             logger.info(
                 f"Uploading video to Supabase Storage",
                 extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
@@ -330,7 +361,7 @@ async def generate_video_clip(
             await cost_tracker.track_cost(
                 job_id=job_id,
                 stage_name="video_generator",
-                api_name="svd" if not use_fallback else "cogvideox",
+                api_name="kling" if not use_fallback else "cogvideox",
                 cost=cost
             )
             
@@ -362,11 +393,11 @@ async def generate_video_clip(
             # Check if we should try fallback model
             if not use_fallback and "unavailable" in str(prediction.error).lower():
                 logger.warning(
-                    f"SVD unavailable, trying fallback model",
+                    f"Kling unavailable, trying fallback model",
                     extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
                 )
                 use_fallback = True
-                model_version = COGVIDEOX_MODEL
+                model_version = SVD_MODEL_VERSION  # Fallback to seedance
                 # Retry with fallback (would need to be called from retry logic)
                 raise RetryableError(f"Model unavailable, try fallback: {prediction.error}")
             

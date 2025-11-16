@@ -125,18 +125,33 @@ class StorageClient:
             
             response = await self._execute_sync(_upload)
             
-            # Get public URL
+            # Get URL - use signed URL for private buckets, public URL for public buckets
+            # For now, all buckets are private, so use signed URL
             def _get_url():
-                return self.storage.from_(bucket).get_public_url(path)
+                # Try to get signed URL (works for both public and private buckets)
+                signed_url_response = self.storage.from_(bucket).create_signed_url(
+                    path=path,
+                    expires_in=31536000  # 1 year expiration for uploaded files
+                )
+                # Return signed URL if available
+                if isinstance(signed_url_response, dict):
+                    return signed_url_response.get("signedURL") or signed_url_response.get("signedUrl") or ""
+                return str(signed_url_response) if signed_url_response else ""
             
-            public_url = await self._execute_sync(_get_url)
+            file_url = await self._execute_sync(_get_url)
+            
+            # Fallback to public URL if signed URL fails (for public buckets)
+            if not file_url:
+                def _get_public_url():
+                    return self.storage.from_(bucket).get_public_url(path)
+                file_url = await self._execute_sync(_get_public_url)
             
             logger.info(
                 f"Uploaded file to {bucket}/{path}",
                 extra={"bucket": bucket, "path": path, "size": len(file_data)}
             )
             
-            return public_url
+            return file_url
             
         except ValidationError:
             raise

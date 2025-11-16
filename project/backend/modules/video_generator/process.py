@@ -91,10 +91,46 @@ async def process(
         """
         async with semaphore:
             # Download and upload image if available
+            # Priority: Character reference images > Scene reference images
+            # Character reference images are used for character appearance consistency
+            # Scene reference images are used for scene/background consistency
             image_url = None
-            if clip_prompt.scene_reference_url:
+            
+            # Prioritize character reference images (for character appearance)
+            if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+                character_ref_url = clip_prompt.character_reference_urls[0]  # Use first character reference
                 logger.debug(
-                    f"Preparing image for clip {clip_prompt.clip_index}",
+                    f"Using character reference image for clip {clip_prompt.clip_index}",
+                    extra={"job_id": str(job_id), "character_ref_url": character_ref_url}
+                )
+                image_url = await download_and_upload_image(
+                    character_ref_url,
+                    job_id
+                )
+                if not image_url:
+                    logger.warning(
+                        f"Character reference image download failed for clip {clip_prompt.clip_index}, falling back to scene reference",
+                        extra={"job_id": str(job_id)}
+                    )
+                    # Fall through to scene reference if character reference download fails
+                    if clip_prompt.scene_reference_url:
+                        logger.debug(
+                            f"Using scene reference image for clip {clip_prompt.clip_index}",
+                            extra={"job_id": str(job_id)}
+                        )
+                        image_url = await download_and_upload_image(
+                            clip_prompt.scene_reference_url,
+                            job_id
+                        )
+                        if not image_url:
+                            logger.warning(
+                                f"Scene reference image download failed for clip {clip_prompt.clip_index}, proceeding text-only",
+                                extra={"job_id": str(job_id)}
+                            )
+            # Use scene reference images if no character reference available
+            elif clip_prompt.scene_reference_url:
+                logger.debug(
+                    f"Using scene reference image for clip {clip_prompt.clip_index}",
                     extra={"job_id": str(job_id)}
                 )
                 image_url = await download_and_upload_image(
@@ -103,9 +139,16 @@ async def process(
                 )
                 if not image_url:
                     logger.warning(
-                        f"Image download failed for clip {clip_prompt.clip_index}, proceeding text-only",
+                        f"Scene reference image download failed for clip {clip_prompt.clip_index}, proceeding text-only",
                         extra={"job_id": str(job_id)}
                     )
+            else:
+                # No references available - text-only generation
+                logger.debug(
+                    f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
+                    extra={"job_id": str(job_id)}
+                )
+                image_url = None
             
             # Retry logic
             for attempt in range(3):
