@@ -143,9 +143,9 @@ async def process(
             f"Current cost: {current_cost}"
         )
     
-    # Get concurrency limit (default: 5 for optimal throughput)
-    # Replicate allows 600 predictions/min, so 5 concurrent is safe
-    concurrency = int(os.getenv("VIDEO_GENERATOR_CONCURRENCY", "5"))
+    # Get concurrency limit (default: 8 for optimal throughput)
+    # Replicate allows 600 predictions/min, so 8-10 concurrent is safe
+    concurrency = int(os.getenv("VIDEO_GENERATOR_CONCURRENCY", "8"))
     semaphore = asyncio.Semaphore(concurrency)
     
     # Optional: Add client-side rate limiter for extra safety

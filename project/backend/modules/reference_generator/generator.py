@@ -294,9 +294,9 @@ async def generate_all_references(
     from shared.cost_tracking import cost_tracker
     # Decimal is already imported at module level, no need to import again
     
-    # Get concurrency limit from environment (default: 6)
+    # Get concurrency limit from environment (default: 8 for faster generation)
     import os
-    concurrency = int(os.getenv("REFERENCE_GEN_CONCURRENCY", "6"))
+    concurrency = int(os.getenv("REFERENCE_GEN_CONCURRENCY", "8"))
     semaphore = asyncio.Semaphore(concurrency)
     
     # Track rate limit occurrences for adaptive concurrency reduction

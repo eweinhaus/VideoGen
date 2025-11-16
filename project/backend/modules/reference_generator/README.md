@@ -48,7 +48,7 @@ else:
 
 - `REPLICATE_API_TOKEN` (required): Replicate API token (starts with `r8_`)
 - `REFERENCE_MODEL_DEV` (optional): Override model version for development
-- `REFERENCE_GEN_CONCURRENCY` (optional): Concurrency limit (default: 6)
+- `REFERENCE_GEN_CONCURRENCY` (optional): Concurrency limit (default: 8)
 - `ENVIRONMENT`: "development" | "production" (affects model selection)
 
 ### Model Selection
@@ -95,7 +95,7 @@ If all three conditions pass, returns `ReferenceImages` object with status:
 
 - **Generation Time**: <60s total for 4 images (parallel)
 - **Per Image**: <15s average (including API call + upload)
-- **Concurrency**: 6 concurrent (configurable via `REFERENCE_GEN_CONCURRENCY`)
+- **Concurrency**: 8 concurrent (configurable via `REFERENCE_GEN_CONCURRENCY`, default: 8)
 
 ## Testing
 
