@@ -23,11 +23,19 @@ from shared.storage import StorageClient
 from shared.cost_tracking import cost_tracker
 from shared.errors import RetryableError, GenerationError
 from shared.logging import get_logger
+from shared.config import settings
 from modules.video_generator.config import SVD_MODEL, COGVIDEOX_MODEL, get_generation_settings
 from modules.video_generator.cost_estimator import estimate_clip_cost
 from replicate.exceptions import ModelError
 
 logger = get_logger("video_generator.generator")
+
+# Initialize Replicate client
+try:
+    client = replicate.Client(api_token=settings.replicate_api_token)
+except Exception as e:
+    logger.error(f"Failed to initialize Replicate client: {str(e)}")
+    raise
 
 
 def parse_retry_after_header(headers: dict) -> Optional[float]:
@@ -257,7 +265,7 @@ async def generate_video_clip(
         # Use Kling model with the version hash from config
         from modules.video_generator.config import KLING_MODEL_VERSION, SVD_MODEL_VERSION
         # Use the version hash directly (no need to check for "latest" anymore)
-        prediction = replicate.predictions.create(
+        prediction = client.predictions.create(
             version=model_version,  # Version hash from config
             input=input_data
         )
