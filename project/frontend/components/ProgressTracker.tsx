@@ -433,6 +433,7 @@ export function ProgressTracker({
         if (n === "reference_generation") return "reference_generator"
         if (n === "prompt_generator") return "prompt_generation"
         if (n === "video_generator") return "video_generation"
+        if (n === "composer") return "composition"
         return n
       }
       const stage = normalize(data.stage)
@@ -448,9 +449,12 @@ export function ProgressTracker({
       }
       const status = statusMap[(data.status || "").toLowerCase()] || "processing"
       
-      // Debug logging for prompt_generator completion
+      // Debug logging for stage completions
       if (stage === "prompt_generation" && status === "completed") {
         console.log("✅ Prompt generator completed:", { stage, status, data })
+      }
+      if (stage === "composition" && status === "completed") {
+        console.log("✅ Composer completed:", { stage, status, data })
       }
       
       setStages((prev) => {
@@ -462,6 +466,7 @@ export function ProgressTracker({
           if (n === "reference_generation") return "reference_generator"
           if (n === "prompt_generator") return "prompt_generation"
           if (n === "video_generator") return "video_generation"
+          if (n === "composer") return "composition"
           return n
         }
         // Find existing stage using normalized names

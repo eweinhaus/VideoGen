@@ -31,11 +31,6 @@ export default function JobProgressPage() {
   useEffect(() => {
     if (jobId) {
       console.log("🔄 JobProgressPage: Fetching job", jobId)
-      // Reset uploadStore's isSubmitting state when job progress page loads
-      // This ensures the loading modal on the upload page is hidden once we're here
-      import("@/stores/uploadStore").then(({ uploadStore }) => {
-        uploadStore.getState().reset()
-      })
       // Only fetch once on mount - don't refetch on every job update
       // SSE will handle real-time updates, and updateJob won't trigger refetches
       fetchJob(jobId).catch((error) => {
@@ -46,7 +41,7 @@ export default function JobProgressPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]) // Only depend on jobId, not fetchJob to prevent unnecessary refetches
 
-  // Track stages for StageIndicator
+  // Track stages for StageIndicator and handle uploadStore reset
   useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
       const normalize = (name: string) => {
@@ -56,6 +51,7 @@ export default function JobProgressPage() {
         if (n === "reference_generation") return "reference_generator"
         if (n === "prompt_generator") return "prompt_generation"
         if (n === "video_generator") return "video_generation"
+        if (n === "composer") return "composition"
         return n
       }
       const stage = normalize(data.stage)
@@ -67,6 +63,18 @@ export default function JobProgressPage() {
         pending: "pending",
       }
       const status = statusMap[(data.status || "").toLowerCase()] || "processing"
+      
+      // Hide loading modal when audio_parser starts (means job progress page is ready and processing has started)
+      // This ensures the loading modal persists until the job progress page is fully loaded and audio analysis is running
+      if (stage === "audio_parser" && (status === "processing" || status === "completed")) {
+        import("@/stores/uploadStore").then(({ uploadStore }) => {
+          if (uploadStore.getState().isSubmitting) {
+            console.log("✅ Audio parser started, hiding loading modal")
+            uploadStore.getState().reset()
+          }
+        })
+      }
+      
       setCurrentStage(stage)
       if (!timerOn) setTimerOn(true)
       setStages((prev) => {
@@ -153,8 +161,58 @@ export default function JobProgressPage() {
 
   // Removed debug logging to prevent excessive re-renders
 
+  // Check if cross-page loading modal should be shown
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  
+  useEffect(() => {
+    // Check uploadStore for isSubmitting state (for cross-page modal)
+    // The modal persists until audio_parser stage starts, then uploadStore.reset() is called
+    import("@/stores/uploadStore").then(({ uploadStore }) => {
+      setIsSubmitting(uploadStore.getState().isSubmitting)
+      
+      // Poll uploadStore periodically until it's reset (when audio_parser starts)
+      const interval = setInterval(() => {
+        const current = uploadStore.getState().isSubmitting
+        setIsSubmitting(current)
+        if (!current) {
+          clearInterval(interval)
+        }
+      }, 100) // Check every 100ms
+      
+      return () => clearInterval(interval)
+    })
+  }, [])
+  
   // Early returns after all hooks
-  if (authLoading || jobLoading) {
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <LoadingSpinner size="lg" text="Loading..." />
+      </div>
+    )
+  }
+  
+  // If job is loading, show cross-page modal if isSubmitting, otherwise show spinner
+  if (jobLoading) {
+    if (isSubmitting) {
+      // Show cross-page loading modal (matches upload page modal)
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="w-[400px] rounded-lg bg-card p-6 shadow-lg border">
+            <div className="flex flex-col items-center justify-center space-y-4">
+              <LoadingSpinner size="lg" />
+              <div className="text-center">
+                <p className="text-lg font-semibold">Creating your video...</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  This may take a moment. Please wait while we process your request.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
+    // Fallback: show spinner if modal isn't active
     return (
       <div className="flex min-h-screen items-center justify-center">
         <LoadingSpinner size="lg" text="Loading job..." />
@@ -210,7 +268,24 @@ export default function JobProgressPage() {
   const isProcessing = job.status === "processing"
 
   return (
-    <div className="container mx-auto max-w-7xl px-4 py-8">
+    <>
+      {/* Cross-page loading modal - persists until audio_parser starts */}
+      {isSubmitting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="w-[400px] rounded-lg bg-card p-6 shadow-lg border">
+            <div className="flex flex-col items-center justify-center space-y-4">
+              <LoadingSpinner size="lg" />
+              <div className="text-center">
+                <p className="text-lg font-semibold">Creating your video...</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  This may take a moment. Please wait while we process your request.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="container mx-auto max-w-7xl px-4 py-8">
       <div className="mb-6">
         <Button
           variant="ghost"
@@ -308,6 +383,7 @@ export default function JobProgressPage() {
         </Card>
       </div>
     </div>
+    </>
   )
 }
 

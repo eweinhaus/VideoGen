@@ -1530,6 +1530,12 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         await redis_client.client.delete(cache_key)
         
         await update_progress(job_id, 100, "composer", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
+        
+        # Publish composer completion before completed event
+        await publish_event(job_id, "stage_update", {
+            "stage": "composer",
+            "status": "completed"
+        })
         await publish_event(job_id, "completed", {
             "video_url": video_output.video_url,
             "total_cost": float(total_cost)
