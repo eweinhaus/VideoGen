@@ -38,12 +38,20 @@ export default function JobProgressPage() {
   useEffect(() => {
     if (jobId) {
       console.log("🔄 JobProgressPage: Fetching job", jobId)
+      // Reset uploadStore's isSubmitting state when job progress page loads
+      // This ensures the loading modal on the upload page is hidden once we're here
+      import("@/stores/uploadStore").then(({ uploadStore }) => {
+        uploadStore.getState().reset()
+      })
+      // Only fetch once on mount - don't refetch on every job update
+      // SSE will handle real-time updates, and updateJob won't trigger refetches
       fetchJob(jobId).catch((error) => {
         console.error("❌ JobProgressPage: Failed to fetch job", error)
         // Error handled by jobStore, but log it here too
       })
     }
-  }, [jobId, fetchJob])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]) // Only depend on jobId, not fetchJob to prevent unnecessary refetches
 
   // Track stages for StageIndicator
   useSSE(jobId, {

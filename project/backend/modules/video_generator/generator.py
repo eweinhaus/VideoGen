@@ -28,6 +28,7 @@ from modules.video_generator.config import (
     SVD_MODEL, COGVIDEOX_MODEL, get_generation_settings,
     get_selected_model, get_model_config, get_model_replicate_string
 )
+from modules.video_generator.model_validator import get_latest_version_hash, validate_model_config
 from modules.video_generator.cost_estimator import estimate_clip_cost
 from replicate.exceptions import ModelError
 
@@ -227,10 +228,19 @@ async def generate_video_clip(
     # Get selected model and its configuration
     selected_model_key = get_selected_model()
     model_config = get_model_config(selected_model_key)
-
+    
+    # Log model configuration for debugging
+    replicate_string = model_config.get("replicate_string", "unknown")
+    model_version = model_config.get("version", "unknown")
     logger.info(
-        f"Using video model: {selected_model_key}",
-        extra={"job_id": str(job_id), "model": selected_model_key, "clip_index": clip_prompt.clip_index}
+        f"Using video model: {selected_model_key} (replicate: {replicate_string}, version: {model_version[:20] if isinstance(model_version, str) and len(model_version) > 20 else model_version})",
+        extra={
+            "job_id": str(job_id),
+            "model": selected_model_key,
+            "replicate_string": replicate_string,
+            "version": model_version[:20] if isinstance(model_version, str) and len(model_version) > 20 else model_version,
+            "clip_index": clip_prompt.clip_index
+        }
     )
 
     # Prepare input data based on model configuration
@@ -279,9 +289,13 @@ async def generate_video_clip(
         input_data["start_image"] = image_url
 
     # Get model version string for Replicate
-    # Extract version from model config
-    from modules.video_generator.config import KLING_MODEL_VERSION, SVD_MODEL_VERSION, COGVIDEOX_MODEL_VERSION
-    model_version = model_config.get("version", KLING_MODEL_VERSION)
+    # Extract version from model config - don't use default fallback to avoid wrong model version
+    model_version = model_config.get("version")
+    if not model_version:
+        raise GenerationError(
+            f"No version specified for model {selected_model_key}. "
+            f"Please check VIDEO_MODEL configuration."
+        )
     use_fallback = False
     
     try:
@@ -292,13 +306,66 @@ async def generate_video_clip(
         )
         
         # Create prediction - Replicate API
-        # Use Kling model with the version hash from config
-        from modules.video_generator.config import KLING_MODEL_VERSION, SVD_MODEL_VERSION
-        # Use the version hash directly (no need to check for "latest" anymore)
-        prediction = client.predictions.create(
-            version=model_version,  # Version hash from config
-            input=input_data
-        )
+        # For models with "latest" version, dynamically retrieve latest hash or use model= parameter
+        # For models with pinned version hashes, use version parameter
+        if model_version == "latest":
+            # For models with "latest" version, try to get the latest version hash dynamically
+            replicate_string = model_config.get("replicate_string", "kwaivgi/kling-v2.1")
+            try:
+                # Try to get latest version hash dynamically
+                latest_hash = await get_latest_version_hash(replicate_string)
+                if latest_hash:
+                    # Use version parameter with dynamically retrieved hash
+                    logger.info(
+                        f"Using dynamically retrieved latest version hash for {replicate_string}: {latest_hash}",
+                        extra={"job_id": str(job_id), "model": selected_model_key, "version_hash": latest_hash}
+                    )
+                    prediction = client.predictions.create(
+                        version=latest_hash,
+                        input=input_data
+                    )
+                else:
+                    # Fallback: Use model= parameter (Replicate will use latest)
+                    logger.warning(
+                        f"Could not retrieve latest version hash for {replicate_string}, using model= parameter",
+                        extra={"job_id": str(job_id), "model": selected_model_key}
+                    )
+                    prediction = client.predictions.create(
+                        model=replicate_string,
+                        input=input_data
+                    )
+            except Exception as e:
+                # Fallback to model= parameter if dynamic retrieval fails
+                logger.warning(
+                    f"Error retrieving latest version hash for {replicate_string}, falling back to model=: {str(e)}",
+                    extra={"job_id": str(job_id), "model": selected_model_key, "error": str(e)}
+                )
+                prediction = client.predictions.create(
+                    model=replicate_string,
+                    input=input_data
+                )
+        else:
+            # For models with pinned version hashes, use version parameter
+            # Note: Version hash must match the model's replicate_string
+            logger.info(
+                f"Using pinned version hash for {selected_model_key}: {model_version[:8]}...",
+                extra={"job_id": str(job_id), "model": selected_model_key, "version_hash": model_version}
+            )
+            try:
+                prediction = client.predictions.create(
+                    version=model_version,  # Version hash from config
+                    input=input_data
+                )
+            except Exception as e:
+                error_str = str(e).lower()
+                if "invalid version" in error_str or "not permitted" in error_str or "422" in error_str:
+                    # Version hash might be invalid/expired, raise clearer error
+                    replicate_string = model_config.get("replicate_string", "unknown")
+                    raise GenerationError(
+                        f"Invalid model version or permission denied: {replicate_string}:{model_version[:16]}... "
+                        f"Error: {str(e)}. Please check your model version configuration or API token permissions."
+                    ) from e
+                raise
         
         # Poll for completion (fixed 3-second interval)
         start_time = time.time()
@@ -308,10 +375,12 @@ async def generate_video_clip(
             await asyncio.sleep(poll_interval)
             
             elapsed = time.time() - start_time
-            # Kling model can take longer than seedance - increase timeout to 180s (3 minutes)
-            timeout_seconds = 180
+            # Kling model can take longer - increase timeout to 240s (4 minutes) for reliable generation
+            # Some clips may take 150-200s, so 240s provides buffer
+            timeout_seconds = int(os.getenv("VIDEO_GENERATION_TIMEOUT_SECONDS", "240"))
             if elapsed > timeout_seconds:
-                raise TimeoutError(f"Clip generation timeout after {elapsed:.1f}s")
+                # Wrap TimeoutError as RetryableError so it can be retried
+                raise RetryableError(f"Clip generation timeout after {elapsed:.1f}s")
             
             # Reload to get latest status
             prediction.reload()
@@ -443,8 +512,6 @@ async def generate_video_clip(
             
             raise GenerationError(f"Clip generation failed: {prediction.error}")
             
-    except TimeoutError:
-        raise
     except RetryableError:
         raise
     except ModelError as e:

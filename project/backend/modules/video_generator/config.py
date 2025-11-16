@@ -124,14 +124,23 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
 def get_selected_model() -> str:
     """
     Get the currently selected video model from settings.
-
+    
     Returns:
         Model key (e.g., "kling_v21", "hailuo_23")
-
+    
     Raises:
         ValueError: If VIDEO_MODEL env var is invalid
+    
+    Note:
+        Changes to VIDEO_MODEL env var require backend/worker restart to take effect.
+        Settings are loaded at startup and cached.
     """
     model_key = settings.video_model
+    
+    logger.info(
+        f"Video model selection: VIDEO_MODEL env var = '{model_key}'",
+        extra={"requested_model": model_key, "available_models": list(MODEL_CONFIGS.keys())}
+    )
 
     if model_key not in MODEL_CONFIGS:
         logger.warning(
@@ -140,6 +149,10 @@ def get_selected_model() -> str:
         )
         return "kling_v21"
 
+    logger.info(
+        f"Using video model: {model_key}",
+        extra={"model": model_key}
+    )
     return model_key
 
 

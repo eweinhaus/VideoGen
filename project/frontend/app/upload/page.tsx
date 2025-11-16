@@ -53,8 +53,7 @@ export default function UploadPage() {
       const jobId = await submit()
       console.log("✅ Upload successful, jobId:", jobId)
       
-      // Ensure isSubmitting is reset before navigation
-      // Use window.location for more reliable navigation
+      // Keep modal visible during navigation
       if (jobId) {
         // Pre-fetch the job to ensure it's in the store before navigation
         try {
@@ -62,11 +61,17 @@ export default function UploadPage() {
         } catch (err) {
           console.warn("⚠️ Failed to pre-fetch job, but continuing with navigation:", err)
         }
-        // Use window.location for more reliable navigation
-        window.location.href = `/jobs/${jobId}`
+        // Use router.push for client-side navigation so modal stays visible during transition
+        // Keep isSubmitting true to maintain modal during navigation
+        router.push(`/jobs/${jobId}`)
+        
+        // Don't reset isSubmitting immediately - let it stay visible
+        // The modal will be hidden by the job progress page when it's ready
+        // Use a small delay to ensure navigation starts before potentially hiding modal
+        await new Promise(resolve => setTimeout(resolve, 100))
       } else {
         console.error("❌ No jobId returned from submit")
-        // Reset submitting state manually
+        // Reset submitting state manually only if no jobId
         uploadStore.getState().reset()
       }
     } catch (error: any) {
@@ -99,6 +104,25 @@ export default function UploadPage() {
 
   return (
     <div className="container mx-auto max-w-3xl px-4 py-8">
+      {/* Loading overlay when submitting */}
+      {isSubmitting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <Card className="w-[400px]">
+            <CardContent className="p-6">
+              <div className="flex flex-col items-center justify-center space-y-4">
+                <LoadingSpinner size="lg" />
+                <div className="text-center">
+                  <p className="text-lg font-semibold">Creating your video...</p>
+                  <p className="text-sm text-muted-foreground mt-2">
+                    This may take a moment. Please wait while we process your request.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+      
       <Card>
         <CardHeader>
           <CardTitle className="text-2xl">Create Music Video</CardTitle>

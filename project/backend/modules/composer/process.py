@@ -136,13 +136,28 @@ async def process(
         # Sort clips by clip_index (guarantee correct order)
         sorted_clips = sorted(clips.clips, key=lambda c: c.clip_index)
         
-        # Validate sequential indices
+        # Reindex clips to be sequential (handle missing clips from failures)
+        # This allows composition to proceed even if some clips failed
+        # For example, if clips 0, 1, 2, 3 exist but clip 0 failed, we'll reindex 1,2,3 to 0,1,2
+        reindexed_clips = []
         for i, clip in enumerate(sorted_clips):
-            if clip.clip_index != i:
-                raise CompositionError(
-                    f"Clip indices must be sequential starting from 0. "
-                    f"Found index {clip.clip_index} at position {i}"
-                )
+            # Create a copy with sequential index for composition
+            # Use Pydantic model_copy() if available, otherwise create new instance
+            if hasattr(clip, 'model_copy'):
+                reindexed_clip = clip.model_copy(update={'clip_index': i})
+            else:
+                # Fallback for older Pydantic versions
+                from copy import deepcopy
+                reindexed_clip = deepcopy(clip)
+                reindexed_clip.clip_index = i
+            reindexed_clips.append(reindexed_clip)
+            logger.info(
+                f"Reindexed clip: original index {clip.clip_index} -> composition index {i}",
+                extra={"job_id": str(job_id), "original_index": clip.clip_index, "new_index": i}
+            )
+        
+        # Use reindexed clips for composition
+        sorted_clips = reindexed_clips
         
         # Check disk space (optional, non-blocking warning)
         try:
