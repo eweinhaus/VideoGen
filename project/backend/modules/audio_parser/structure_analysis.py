@@ -54,6 +54,67 @@ def _calculate_segment_energy(y_segment: np.ndarray, sr: int, max_rms: float = N
     return float(energy)
 
 
+def calculate_segment_beat_intensity(
+    segment: SongStructure,
+    beat_timestamps: List[float],
+    audio: np.ndarray,
+    sr: int
+) -> str:
+    """
+    Calculate beat intensity (high/medium/low) for a segment.
+    
+    Uses beat density (beats per second) + energy level.
+    
+    Args:
+        segment: SongStructure segment
+        beat_timestamps: All beat timestamps
+        audio: Full audio signal
+        sr: Sample rate
+        
+    Returns:
+        'high', 'medium', or 'low'
+    """
+    # Find beats within segment
+    beats_in_segment = [
+        b for b in beat_timestamps 
+        if segment.start <= b <= segment.end
+    ]
+    
+    if not beats_in_segment:
+        return "low"
+    
+    # Calculate beat density
+    segment_duration = segment.end - segment.start
+    if segment_duration <= 0:
+        return "low"
+    
+    beats_per_second = len(beats_in_segment) / segment_duration
+    bpm_equivalent = beats_per_second * 60
+    
+    # Calculate energy for segment
+    start_frame = int(segment.start * sr)
+    end_frame = int(segment.end * sr)
+    if end_frame > len(audio):
+        end_frame = len(audio)
+    if start_frame >= end_frame:
+        return "low"
+    
+    segment_audio = audio[start_frame:end_frame]
+    energy = _calculate_segment_energy(segment_audio, sr)
+    
+    # Classification rules
+    if bpm_equivalent > 120 and energy > 0.7:
+        return "high"
+    elif bpm_equivalent < 90 and energy < 0.4:
+        return "low"
+    elif bpm_equivalent > 120 or energy > 0.7:
+        return "high"  # Either condition met
+    elif bpm_equivalent < 90 or energy < 0.4:
+        return "low"  # Either condition met
+    else:
+        return "medium"
+
+
 def _labels_to_segments(
     labels: np.ndarray,
     sr: int,
@@ -626,7 +687,8 @@ def analyze_structure_from_clips(
     y: np.ndarray,
     sr: int,
     clip_boundaries: List[ClipBoundary],
-    duration: float
+    duration: float,
+    beat_timestamps: List[float] = None
 ) -> Tuple[List[SongStructure], bool]:
     """
     Analyze song structure using clip boundaries as the base segments.
@@ -719,17 +781,31 @@ def analyze_structure_from_clips(
             else:
                 energy_level = "medium"
             
-            logger.debug(
-                f"Clip {i+1}/{n_clips}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
-                f"energy={energy:.3f} ({energy_level}), type={seg_type}"
-            )
-            
-            song_structure.append(SongStructure(
+            # Calculate beat intensity for this segment
+            segment_obj = SongStructure(
                 type=seg_type,
                 start=start,
                 end=end,
                 energy=energy_level
-            ))
+            )
+            
+            # Calculate beat intensity if beat_timestamps are provided
+            if beat_timestamps:
+                beat_intensity = calculate_segment_beat_intensity(
+                    segment_obj, beat_timestamps, y, sr
+                )
+                segment_obj.beat_intensity = beat_intensity
+                logger.debug(
+                    f"Clip {i+1}/{n_clips}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
+                    f"energy={energy:.3f} ({energy_level}), type={seg_type}, beat_intensity={beat_intensity}"
+                )
+            else:
+                logger.debug(
+                    f"Clip {i+1}/{n_clips}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
+                    f"energy={energy:.3f} ({energy_level}), type={seg_type}"
+                )
+            
+            song_structure.append(segment_obj)
         
         logger.info(
             f"Structure analysis complete: {len(song_structure)} segments "
@@ -755,11 +831,20 @@ def analyze_structure_from_clips(
             elif i == len(clip_boundaries) - 1:
                 seg_type = "outro"
             
-            song_structure.append(SongStructure(
+            segment_obj = SongStructure(
                 type=seg_type,
                 start=clip.start,
                 end=clip.end,
                 energy="medium"
-            ))
+            )
+            
+            # Calculate beat intensity if beat_timestamps are provided
+            if beat_timestamps:
+                beat_intensity = calculate_segment_beat_intensity(
+                    segment_obj, beat_timestamps, y, sr
+                )
+                segment_obj.beat_intensity = beat_intensity
+            
+            song_structure.append(segment_obj)
         return (song_structure, True)
 

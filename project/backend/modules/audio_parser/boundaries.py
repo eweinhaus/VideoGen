@@ -244,28 +244,20 @@ def generate_boundaries(
         else:
             return _create_equal_segments(total_duration, min(3, int(total_duration / 4.0)))
     
-    # Trim last clip to end if needed (flexible - can extend up to reasonable length)
+    # Trim last clip to end if needed - ALWAYS extend to total_duration
+    # This ensures we cover the full audio duration
     if boundaries[-1].end < total_duration:
         new_end = total_duration
         new_duration = new_end - boundaries[-1].start
-        # Allow extending if it's reasonable (up to 25s)
-        if new_duration <= 25.0:
-            # Create new boundary with extended end
-            prev_boundary = boundaries[-1]
-            boundaries[-1] = ClipBoundary(
-                start=prev_boundary.start,
-                end=new_end,
-                duration=new_duration
-            )
-        else:
-            # If extending would exceed 25s, create additional clip if there's enough time
-            remaining_time = total_duration - boundaries[-1].end
-            if remaining_time >= 4.0 and len(boundaries) < max_clips:
-                boundaries.append(ClipBoundary(
-                    start=boundaries[-1].end,
-                    end=total_duration,
-                    duration=remaining_time
-                ))
+        # Always extend the last boundary to cover full duration
+        # Even if it exceeds 25s, we need to cover the entire audio
+        prev_boundary = boundaries[-1]
+        boundaries[-1] = ClipBoundary(
+            start=prev_boundary.start,
+            end=new_end,
+            duration=new_duration
+        )
+        logger.info(f"Extended last boundary to cover full duration: {prev_boundary.end:.1f}s -> {new_end:.1f}s (duration: {new_duration:.1f}s)")
     
     # Final validation: ensure all boundaries have duration >= 4.0
     # Filter out any boundaries that don't meet the minimum and merge/skip as needed

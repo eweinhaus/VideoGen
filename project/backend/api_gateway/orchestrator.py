@@ -485,12 +485,15 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 "duration": audio_data.duration,
                 "beat_timestamps": audio_data.beat_timestamps,
                 "beat_count": len(audio_data.beat_timestamps),
+                "beat_subdivisions": audio_data.beat_subdivisions if hasattr(audio_data, 'beat_subdivisions') else {"eighth_notes": [], "sixteenth_notes": []},
+                "beat_strength": audio_data.beat_strength if hasattr(audio_data, 'beat_strength') else [],
                 "song_structure": [
                     {
                         "type": seg.type,
                         "start": seg.start,
                         "end": seg.end,
-                        "energy": seg.energy
+                        "energy": seg.energy,
+                        "beat_intensity": getattr(seg, 'beat_intensity', None)
                     }
                     for seg in audio_data.song_structure
                 ],
@@ -554,12 +557,18 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "duration": audio_data.duration,
             "beat_timestamps": audio_data.beat_timestamps[:20],  # First 20 beats
             "beat_count": len(audio_data.beat_timestamps),
+            "beat_subdivisions": {
+                "eighth_notes_count": len(audio_data.beat_subdivisions.get("eighth_notes", [])),
+                "sixteenth_notes_count": len(audio_data.beat_subdivisions.get("sixteenth_notes", []))
+            },
+            "beat_strength": audio_data.beat_strength[:20] if len(audio_data.beat_strength) > 0 else [],  # First 20
             "song_structure": [
                 {
                     "type": seg.type,
                     "start": seg.start,
                     "end": seg.end,
-                    "energy": seg.energy
+                    "energy": seg.energy,
+                    "beat_intensity": getattr(seg, 'beat_intensity', None)
                 }
                 for seg in audio_data.song_structure
             ],
@@ -582,6 +591,9 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 "cache_hit": metadata.get("cache_hit", False),
                 "fallback_used": metadata.get("fallbacks_used", []),
                 "beat_detection_confidence": metadata.get("beat_detection_confidence"),
+                "subdivision_count": metadata.get("subdivision_count", 0),
+                "downbeat_count": metadata.get("downbeat_count", 0),
+                "intensity_distribution": metadata.get("intensity_distribution", {}),
                 "structure_confidence": metadata.get("structure_confidence"),
                 "mood_confidence": metadata.get("mood_confidence"),
                 "processing_time": metadata.get("processing_time")
@@ -1318,8 +1330,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         
         try:
             from modules.video_generator.process import process as generate_videos
-            # Pass ScenePlan to video generator for global context inclusion
-            clips, video_events = await generate_videos(job_id, clip_prompts, plan)
             
             # Track progress as clips complete (for more frequent updates)
             video_progress_tracker = {
@@ -1328,37 +1338,46 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 "clip_progress": {}  # Track sub-progress for each clip
             }
             
-            # Publish per-clip video generation events to SSE and track progress
-            try:
-                for event in video_events:
-                    event_type = event.get("event_type", "message")
-                    event_data = event.get("data", {})
+            # Create event publisher callback for real-time progress updates
+            async def real_time_event_publisher(event_type: str, event_data: dict) -> None:
+                """Publish events immediately and update progress in real-time."""
+                try:
+                    # Update tracker state
+                    if event_type == "video_generation_start":
+                        if "total_clips" in event_data:
+                            video_progress_tracker["total"] = max(
+                                video_progress_tracker["total"] or 0,
+                                event_data["total_clips"]
+                            )
                     
-                    # Update total if provided in event
-                    if "total_clips" in event_data and event_data["total_clips"]:
-                        video_progress_tracker["total"] = max(
-                            video_progress_tracker["total"] or 0,
-                            event_data["total_clips"]
-                        )
-                    
-                    # Update progress during polling (heartbeat + sub-progress)
-                    if event_type == "video_generation_progress":
+                    # Handle progress updates in real-time
+                    elif event_type == "video_generation_progress":
                         clip_index = event_data.get("clip_index")
                         sub_progress = event_data.get("sub_progress", 0.0)
                         
                         if clip_index is not None and video_progress_tracker["total"]:
-                            # Calculate progress: base progress for completed clips + sub-progress for current clip
+                            # Update tracker with latest sub-progress for this clip
+                            video_progress_tracker["clip_progress"][clip_index] = sub_progress
+                            
+                            # Calculate overall progress: average of all active clips + completed clips
                             # Each clip represents ~4.5% of video generator stage (40-85% range, 45% total)
                             clip_progress_range = 45.0 / video_progress_tracker["total"]  # % per clip
                             
-                            # Base progress from completed clips
+                            # Base progress from completed clips (each completed clip = 100% of its range)
                             base_progress = 40 + (video_progress_tracker["completed"] * clip_progress_range)
                             
-                            # Add sub-progress for current clip
-                            current_clip_progress = base_progress + (sub_progress * clip_progress_range)
+                            # Add average progress from all active clips (clips currently generating)
+                            # When multiple clips are generating in parallel, we average their progress
+                            active_clips_average_progress = 0.0
+                            if video_progress_tracker["clip_progress"]:
+                                # Calculate average progress across all active clips
+                                active_clips_average_progress = sum(video_progress_tracker["clip_progress"].values()) / len(video_progress_tracker["clip_progress"])
                             
-                            # Update tracker
-                            video_progress_tracker["clip_progress"][clip_index] = sub_progress
+                            # Calculate total progress: base + active clips contribution
+                            # Active clips contribute their average progress * number of active clips * clip_progress_range
+                            num_active_clips = len(video_progress_tracker["clip_progress"])
+                            active_contribution = active_clips_average_progress * num_active_clips * clip_progress_range
+                            current_clip_progress = base_progress + active_contribution
                             
                             # Update overall progress (clamp to stage range)
                             progress = max(40, min(int(current_clip_progress), 85))
@@ -1369,7 +1388,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                                 num_clips=video_progress_tracker["total"]
                             )
                     
-                    # Update progress when clips complete (40-85% range)
+                    # Handle clip completion
                     elif event_type == "video_generation_complete":
                         video_progress_tracker["completed"] += 1
                         clip_index = event_data.get("clip_index")
@@ -1392,8 +1411,30 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                                 num_clips=video_progress_tracker["total"]
                             )
                     
-                    # Publish the event
+                    # Publish the event to SSE
                     await publish_event(job_id, event_type, event_data)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to handle real-time event: {e}",
+                        exc_info=e,
+                        extra={"job_id": job_id, "event_type": event_type}
+                    )
+            
+            # Pass ScenePlan and event publisher to video generator for real-time updates
+            clips, video_events = await generate_videos(job_id, clip_prompts, plan, real_time_event_publisher)
+            
+            # Publish any remaining events that weren't published in real-time (backward compatibility)
+            # Note: Most events are already published in real-time, but we still process the list
+            # to ensure all events are published even if real-time publishing failed
+            try:
+                for event in video_events:
+                    event_type = event.get("event_type", "message")
+                    event_data = event.get("data", {})
+                    
+                    # Skip progress updates - these are already handled in real-time
+                    # Only publish non-progress events that might have been missed
+                    if event_type not in ["video_generation_progress"]:
+                        await publish_event(job_id, event_type, event_data)
             except Exception as e:
                 logger.warning("Failed to publish some video generation events", exc_info=e, extra={"job_id": job_id})
         except ImportError:

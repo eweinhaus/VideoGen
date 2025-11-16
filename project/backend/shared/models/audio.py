@@ -32,6 +32,10 @@ class SongStructure(BaseModel):
     start: float = Field(..., ge=0, description="Start time in seconds")
     end: float = Field(..., gt=0, description="End time in seconds")
     energy: EnergyLevel
+    beat_intensity: Optional[str] = Field(
+        None,
+        description="Beat intensity for this segment: 'high', 'medium', or 'low'"
+    )
 
 
 class Lyric(BaseModel):
@@ -61,6 +65,14 @@ class AudioAnalysis(BaseModel):
     bpm: float = Field(..., ge=60, le=200, description="Beats per minute")
     duration: float = Field(..., gt=0, description="Audio duration in seconds")
     beat_timestamps: List[float] = Field(..., description="Beat timestamps in seconds")
+    beat_subdivisions: dict = Field(
+        default_factory=lambda: {"eighth_notes": [], "sixteenth_notes": []},
+        description="Beat subdivisions (eighth and sixteenth notes)"
+    )
+    beat_strength: List[str] = Field(
+        default_factory=list,
+        description="Beat strength classification ('downbeat' or 'upbeat')"
+    )
     song_structure: List[SongStructure] = Field(..., min_length=1, description="Song sections")
     lyrics: List[Lyric] = Field(default_factory=list, description="Lyrics with timestamps")
     mood: Mood

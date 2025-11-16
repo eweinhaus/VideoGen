@@ -7,7 +7,7 @@ import asyncio
 import os
 import time
 import io
-from typing import Optional, Dict, List, Union, Tuple
+from typing import Optional, Dict, List, Union, Tuple, Callable, Any
 from uuid import UUID
 from decimal import Decimal
 
@@ -59,7 +59,7 @@ def extract_unique_image_urls(clip_prompts: List[ClipPrompt]) -> Dict[str, str]:
 async def pre_download_images(
     unique_urls: Dict[str, str],
     job_id: UUID
-) -> Dict[str, Optional[Union[str, io.BytesIO]]]:
+) -> Dict[str, Optional[str]]:
     """
     Pre-download all unique images in parallel.
     
@@ -75,7 +75,7 @@ async def pre_download_images(
         extra={"job_id": str(job_id)}
     )
     
-    async def download_one(url: str) -> Tuple[str, Optional[Union[str, io.BytesIO]]]:
+    async def download_one(url: str) -> Tuple[str, Optional[str]]:
         try:
             result = await download_and_upload_image(url, job_id)
             return (url, result)
@@ -106,6 +106,7 @@ async def process(
     job_id: UUID,
     clip_prompts: ClipPrompts,
     plan: Optional[ScenePlan] = None,
+    event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> Tuple[Clips, list[dict]]:
     """
     Generate all video clips in parallel.
@@ -113,6 +114,8 @@ async def process(
     Args:
         job_id: Job ID
         clip_prompts: ClipPrompts from Prompt Generator
+        plan: Optional ScenePlan for context
+        event_publisher: Optional async callback(event_type, data) to publish events in real-time
         
     Returns:
         Clips model with all generated clips
@@ -193,7 +196,7 @@ async def process(
             extra={"job_id": str(job_id)}
         )
     # Initialize image cache (always defined, even if empty)
-    image_cache: Dict[str, Optional[Union[str, io.BytesIO]]] = {}
+    image_cache: Dict[str, Optional[str]] = {}
     if use_references:
         try:
             unique_urls = extract_unique_image_urls(clip_prompts.clip_prompts)
@@ -216,7 +219,7 @@ async def process(
     
     async def generate_with_retry(
         clip_prompt: ClipPrompt,
-        image_cache_param: Dict[str, Optional[Union[str, io.BytesIO]]]
+        image_cache_param: Dict[str, Optional[str]]
     ) -> Optional[Clip]:
         """
         Generate clip with retry logic.
@@ -230,13 +233,20 @@ async def process(
         """
         async with semaphore:
             # Emit start event for this clip
-            events.append({
+            start_event = {
                 "event_type": "video_generation_start",
                 "data": {
                     "clip_index": clip_prompt.clip_index,
                     "total_clips": len(clip_prompts.clip_prompts),
                 }
-            })
+            }
+            events.append(start_event)
+            # Publish immediately if event publisher is provided
+            if event_publisher:
+                try:
+                    await event_publisher("video_generation_start", start_event["data"])
+                except Exception as e:
+                    logger.warning(f"Failed to publish start event: {e}", extra={"job_id": str(job_id)})
             # Download and upload image if available (optional via env)
             # Priority: Character reference images > Scene reference images
             image_url = None
@@ -290,8 +300,16 @@ async def process(
                 image_url = None
             
             # Progress callback to emit events during polling (defined outside retry loop)
-            def progress_callback(progress_event):
+            async def progress_callback(progress_event):
                 events.append(progress_event)
+                # Publish immediately if event publisher is provided
+                if event_publisher:
+                    try:
+                        event_type = progress_event.get("event_type", "message")
+                        event_data = progress_event.get("data", {})
+                        await event_publisher(event_type, event_data)
+                    except Exception as e:
+                        logger.warning(f"Failed to publish progress event: {e}", extra={"job_id": str(job_id)})
             
             # Retry logic
             for attempt in range(3):
@@ -317,7 +335,7 @@ async def process(
                     )
                     
                     # Emit completion event
-                    events.append({
+                    complete_event = {
                         "event_type": "video_generation_complete",
                         "data": {
                             "clip_index": clip_prompt.clip_index,
@@ -325,7 +343,14 @@ async def process(
                             "duration": clip.actual_duration,
                             "cost": float(clip.cost),
                         }
-                    })
+                    }
+                    events.append(complete_event)
+                    # Publish immediately if event publisher is provided
+                    if event_publisher:
+                        try:
+                            await event_publisher("video_generation_complete", complete_event["data"])
+                        except Exception as e:
+                            logger.warning(f"Failed to publish complete event: {e}", extra={"job_id": str(job_id)})
                     return clip
                     
                 except RetryableError as e:
@@ -341,7 +366,7 @@ async def process(
                             }
                         )
                         # Emit retry event
-                        events.append({
+                        retry_event = {
                             "event_type": "video_generation_retry",
                             "data": {
                                 "clip_index": clip_prompt.clip_index,
@@ -349,7 +374,14 @@ async def process(
                                 "delay_seconds": delay,
                                 "error": str(e),
                             }
-                        })
+                        }
+                        events.append(retry_event)
+                        # Publish immediately if event publisher is provided
+                        if event_publisher:
+                            try:
+                                await event_publisher("video_generation_retry", retry_event["data"])
+                            except Exception as e:
+                                logger.warning(f"Failed to publish retry event: {e}", extra={"job_id": str(job_id)})
                         await asyncio.sleep(delay)
                         continue
                     else:
@@ -361,13 +393,20 @@ async def process(
                                 "error": str(e)
                             }
                         )
-                        events.append({
+                        failed_event = {
                             "event_type": "video_generation_failed",
                             "data": {
                                 "clip_index": clip_prompt.clip_index,
                                 "error": str(e),
                             }
-                        })
+                        }
+                        events.append(failed_event)
+                        # Publish immediately if event publisher is provided
+                        if event_publisher:
+                            try:
+                                await event_publisher("video_generation_failed", failed_event["data"])
+                            except Exception as e:
+                                logger.warning(f"Failed to publish failed event: {e}", extra={"job_id": str(job_id)})
                         return None
                 except Exception as e:
                     # Non-retryable error
@@ -379,13 +418,20 @@ async def process(
                             "error": str(e)
                         }
                     )
-                    events.append({
+                    failed_event = {
                         "event_type": "video_generation_failed",
                         "data": {
                             "clip_index": clip_prompt.clip_index,
                             "error": str(e),
                         }
-                    })
+                    }
+                    events.append(failed_event)
+                    # Publish immediately if event publisher is provided
+                    if event_publisher:
+                        try:
+                            await event_publisher("video_generation_failed", failed_event["data"])
+                        except Exception as e:
+                            logger.warning(f"Failed to publish failed event: {e}", extra={"job_id": str(job_id)})
                     return None
             
             return None
