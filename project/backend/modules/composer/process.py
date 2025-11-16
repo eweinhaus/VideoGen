@@ -20,6 +20,9 @@ from shared.storage import StorageClient
 from shared.models.video import VideoOutput, Clips, Clip
 from shared.models.scene import Transition
 from api_gateway.services.event_publisher import publish_event
+from api_gateway.services.sse_manager import broadcast_event
+from shared.database import DatabaseClient
+from shared.redis_client import RedisClient
 
 from .config import VIDEO_OUTPUTS_BUCKET
 from .utils import check_ffmpeg_available, get_video_duration
@@ -31,6 +34,9 @@ from .audio_syncer import sync_audio
 from .encoder import encode_final_video
 
 logger = get_logger("composer.process")
+
+db_client = DatabaseClient()
+redis_client = RedisClient()
 
 
 @asynccontextmanager
@@ -51,13 +57,14 @@ async def temp_directory(prefix: str):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-async def publish_progress(job_id: UUID, message: str) -> None:
+async def publish_progress(job_id: UUID, message: str, progress: Optional[int] = None) -> None:
     """
     Publish progress event via SSE.
     
     Args:
         job_id: Job ID
         message: Progress message
+        progress: Optional progress percentage (85-100 for composer)
     """
     await publish_event(
         str(job_id),
@@ -67,6 +74,29 @@ async def publish_progress(job_id: UUID, message: str) -> None:
             "stage": "composer"
         }
     )
+    
+    # Also publish progress update if provided
+    if progress is not None:
+        progress_data = {
+            "progress": progress,
+            "stage": "composer"
+        }
+        await publish_event(str(job_id), "progress", progress_data)
+        await broadcast_event(str(job_id), "progress", progress_data)
+        
+        # Also update database for persistence
+        try:
+            await db_client.table("jobs").update({
+                "progress": progress,
+                "current_stage": "composer",
+                "updated_at": "now()"
+            }).eq("id", str(job_id)).execute()
+            
+            # Invalidate cache (job_id is UUID, convert to string)
+            cache_key = f"job_status:{str(job_id)}"
+            await redis_client.client.delete(cache_key)
+        except Exception as e:
+            logger.warning(f"Failed to update progress in database: {e}", extra={"job_id": str(job_id)})
 
 
 async def process(
@@ -175,14 +205,18 @@ async def process(
                 extra={"job_id": str(job_id_uuid)}
             )
         
+        # Set initial progress for composer stage (85% - start of stage)
+        await publish_progress(job_id_uuid, "Starting composition...", 85)
+        
         # Steps 2-8: Processing with temp directory context manager
         async with temp_directory(f"composer_{job_id_uuid}_") as temp_dir:
-            # Step 2: Download clips and audio (parallel)
-            await publish_progress(job_id_uuid, f"Downloading clips ({len(sorted_clips)} clips)...")
+            # Step 2: Download clips and audio (parallel) - 85-88%
+            await publish_progress(job_id_uuid, f"Downloading clips ({len(sorted_clips)} clips)...", 85)
             step_start = time.time()
             clip_bytes_list = await download_all_clips(sorted_clips, job_id_uuid)
             audio_bytes = await download_audio(audio_url, job_id_uuid)
             timings["download_clips"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Clips downloaded", 88)
             
             # Log download metrics
             total_download_size = sum(len(b) for b in clip_bytes_list) + len(audio_bytes)
@@ -196,8 +230,8 @@ async def process(
                 }
             )
             
-            # Step 3: Normalize all clips
-            await publish_progress(job_id_uuid, "Normalizing clips to 1080p, 30fps...")
+            # Step 3: Normalize all clips - 88-91%
+            await publish_progress(job_id_uuid, "Normalizing clips to 1080p, 30fps...", 88)
             step_start = time.time()
             normalized_paths = []
             for clip_bytes, clip in zip(clip_bytes_list, sorted_clips):
@@ -206,6 +240,7 @@ async def process(
                 )
                 normalized_paths.append(normalized_path)
             timings["normalize_clips"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Clips normalized", 91)
             
             logger.info(
                 f"Normalized {len(normalized_paths)} clips in {timings['normalize_clips']:.2f}s",
@@ -216,8 +251,8 @@ async def process(
                 }
             )
             
-            # Step 4: Handle duration mismatches
-            await publish_progress(job_id_uuid, "Handling duration mismatches...")
+            # Step 4: Handle duration mismatches - 91-94%
+            await publish_progress(job_id_uuid, "Handling duration mismatches...", 91)
             step_start = time.time()
             duration_handled_paths = []
             clips_trimmed = 0
@@ -232,6 +267,7 @@ async def process(
                 if was_looped:
                     clips_looped += 1
             timings["handle_durations"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Durations handled", 94)
             
             logger.info(
                 f"Handled durations: {clips_trimmed} trimmed, {clips_looped} looped in {timings['handle_durations']:.2f}s",
@@ -250,6 +286,7 @@ async def process(
                 duration_handled_paths, transitions, temp_dir, job_id_uuid, beat_timestamps
             )
             timings["apply_transitions"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Transitions applied", 97)
             
             logger.info(
                 f"Applied transitions in {timings['apply_transitions']:.2f}s",
@@ -259,13 +296,14 @@ async def process(
                 }
             )
             
-            # Step 6: Sync audio
-            await publish_progress(job_id_uuid, "Syncing audio with video...")
+            # Step 6: Sync audio - 97-99%
+            await publish_progress(job_id_uuid, "Syncing audio with video...", 97)
             step_start = time.time()
             video_with_audio_path, sync_drift = await sync_audio(
                 concatenated_path, audio_bytes, temp_dir, job_id_uuid
             )
             timings["sync_audio"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Audio synced", 99)
             
             logger.info(
                 f"Synced audio (drift: {sync_drift:.3f}s) in {timings['sync_audio']:.2f}s",
@@ -276,13 +314,14 @@ async def process(
                 }
             )
             
-            # Step 7: Encode final video
-            await publish_progress(job_id_uuid, "Encoding final video...")
+            # Step 7: Encode final video - 99-99.5%
+            await publish_progress(job_id_uuid, "Encoding final video...", 99)
             step_start = time.time()
             final_video_path = await encode_final_video(
                 video_with_audio_path, temp_dir, job_id_uuid
             )
             timings["encode_final"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Video encoded", 99)
             
             logger.info(
                 f"Encoded final video in {timings['encode_final']:.2f}s",
@@ -292,8 +331,8 @@ async def process(
                 }
             )
             
-            # Step 8: Upload final video
-            await publish_progress(job_id_uuid, "Uploading final video...")
+            # Step 8: Upload final video - 99-100%
+            await publish_progress(job_id_uuid, "Uploading final video...", 99)
             step_start = time.time()
             storage = StorageClient()
             final_video_bytes = final_video_path.read_bytes()
@@ -305,6 +344,7 @@ async def process(
                 content_type="video/mp4"
             )
             timings["upload_final"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Upload complete", 100)
             
             logger.info(
                 f"Uploaded final video to {video_url} in {timings['upload_final']:.2f}s",

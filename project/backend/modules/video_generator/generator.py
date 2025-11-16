@@ -9,7 +9,7 @@ import time
 import subprocess
 import tempfile
 import os
-from typing import Optional
+from typing import Optional, Callable, Dict, Any
 from uuid import UUID
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
@@ -206,6 +206,7 @@ async def generate_video_clip(
     job_id: UUID,
     environment: str = "production",
     extra_context: Optional[str] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Clip:
     """
     Generate single video clip via Replicate.
@@ -370,6 +371,8 @@ async def generate_video_clip(
         # Poll for completion (fixed 3-second interval)
         start_time = time.time()
         poll_interval = 3  # Fixed 3-second polling
+        estimated_clip_time = 45  # Average time per clip (seconds) - can be adjusted based on environment
+        last_heartbeat_second = -1  # Track last heartbeat second to avoid duplicates
         
         while prediction.status not in ["succeeded", "failed", "canceled"]:
             await asyncio.sleep(poll_interval)
@@ -385,8 +388,25 @@ async def generate_video_clip(
             # Reload to get latest status
             prediction.reload()
             
-            # Optional: Publish progress update (for UX)
-            # await publish_clip_progress(job_id, clip_prompt.clip_index, elapsed)
+            # Emit progress updates during polling (heartbeat + sub-progress)
+            if progress_callback:
+                # Calculate sub-progress: estimate completion based on elapsed time
+                sub_progress_ratio = min(1.0, elapsed / estimated_clip_time)
+                
+                # Emit heartbeat every 10 seconds to show activity
+                # Check if we've crossed a 10-second boundary (more reliable than modulo)
+                current_heartbeat_second = elapsed_seconds // 10
+                if current_heartbeat_second > last_heartbeat_second:
+                    last_heartbeat_second = current_heartbeat_second
+                    progress_callback({
+                        "event_type": "video_generation_progress",
+                        "data": {
+                            "clip_index": clip_prompt.clip_index,
+                            "elapsed_seconds": elapsed_seconds,
+                            "estimated_remaining": max(0, int(estimated_clip_time - elapsed)),
+                            "sub_progress": sub_progress_ratio,
+                        }
+                    })
         
         # Handle result
         if prediction.status == "succeeded":

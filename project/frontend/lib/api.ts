@@ -96,7 +96,14 @@ async function request<T>(
         retryable = true
       } else if (response.status === 400) {
         const data = await response.json().catch(() => ({}))
-        errorMessage = data.message || "Validation error"
+        errorMessage = data.error || data.message || "Validation error"
+        // Log validation errors for debugging
+        console.error("❌ Validation error:", {
+          error: data.error,
+          code: data.code,
+          message: data.message,
+          fullResponse: data
+        })
         retryable = false
       } else if (response.status >= 500) {
         errorMessage = "Server error. Please try again later"

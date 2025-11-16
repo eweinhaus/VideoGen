@@ -6,6 +6,7 @@ Executes modules 3-8 sequentially with progress tracking and error handling.
 
 import json
 import time
+from datetime import datetime
 from uuid import UUID
 from typing import Optional
 from decimal import Decimal
@@ -24,6 +25,7 @@ from shared.logging import get_logger
 from api_gateway.services.event_publisher import publish_event
 from api_gateway.services.sse_manager import broadcast_event
 from api_gateway.services.budget_helpers import get_budget_limit, get_cost_estimate
+from api_gateway.services.time_estimator import calculate_estimated_remaining
 
 logger = get_logger(__name__)
 
@@ -93,7 +95,43 @@ async def stop_pipeline_gracefully(job_id: str, stage_name: str, progress: int) 
     )
 
 
-async def update_progress(job_id: str, progress: int, stage_name: str) -> None:
+def calculate_stage_progress(
+    completed_items: int,
+    total_items: int,
+    stage_start_progress: int,
+    stage_end_progress: int
+) -> int:
+    """
+    Calculate progress percentage within a stage based on completed items.
+    
+    Args:
+        completed_items: Number of items completed
+        total_items: Total number of items in stage
+        stage_start_progress: Starting progress percentage for this stage
+        stage_end_progress: Ending progress percentage for this stage
+        
+    Returns:
+        Progress percentage (0-100), clamped to stage range
+    """
+    if total_items == 0:
+        return stage_start_progress
+    
+    stage_range = stage_end_progress - stage_start_progress
+    completion_ratio = completed_items / total_items
+    progress = stage_start_progress + int(completion_ratio * stage_range)
+    
+    # Clamp to stage range
+    return max(stage_start_progress, min(progress, stage_end_progress))
+
+
+async def update_progress(
+    job_id: str,
+    progress: int,
+    stage_name: str,
+    audio_duration: Optional[float] = None,
+    num_clips: Optional[int] = None,
+    num_images: Optional[int] = None
+) -> None:
     """
     Update job progress in database and publish progress event.
     
@@ -101,14 +139,43 @@ async def update_progress(job_id: str, progress: int, stage_name: str) -> None:
         job_id: Job ID
         progress: Progress percentage (0-100)
         stage_name: Current stage name
+        audio_duration: Audio duration in seconds (optional, for estimation)
+        num_clips: Number of video clips (optional, for video_generator stage)
+        num_images: Number of reference images (optional, for reference_generator stage)
     """
     try:
+        # Try to get audio_duration from Redis if not provided
+        if audio_duration is None:
+            try:
+                duration_str = await redis_client.get(f"job:{job_id}:audio_duration")
+                if duration_str:
+                    audio_duration = float(duration_str)
+            except Exception:
+                pass  # Gracefully handle if Redis unavailable or key doesn't exist
+        
+        # Calculate estimated remaining time
+        estimated_remaining = None
+        if audio_duration is not None:
+            estimated_remaining = await calculate_estimated_remaining(
+                job_id=job_id,
+                current_stage=stage_name,
+                progress=progress,
+                audio_duration=audio_duration,
+                environment=settings.environment,
+                num_clips=num_clips,
+                num_images=num_images
+            )
+        
         # Update database
-        await db_client.table("jobs").update({
+        update_data = {
             "progress": progress,
             "current_stage": stage_name,
             "updated_at": "now()"
-        }).eq("id", job_id).execute()
+        }
+        if estimated_remaining is not None:
+            update_data["estimated_remaining"] = estimated_remaining
+        
+        await db_client.table("jobs").update(update_data).eq("id", job_id).execute()
         
         # Invalidate cache
         cache_key = f"job_status:{job_id}"
@@ -117,7 +184,7 @@ async def update_progress(job_id: str, progress: int, stage_name: str) -> None:
         # Publish progress event (both Redis pub/sub and direct SSE broadcast)
         progress_data = {
             "progress": progress,
-            "estimated_remaining": None,  # TODO: Calculate based on stage
+            "estimated_remaining": estimated_remaining,
             "stage": stage_name
         }
         await publish_event(job_id, "progress", progress_data)
@@ -125,7 +192,12 @@ async def update_progress(job_id: str, progress: int, stage_name: str) -> None:
         
         logger.info(
             "Progress updated",
-            extra={"job_id": job_id, "progress": progress, "stage": stage_name}
+            extra={
+                "job_id": job_id,
+                "progress": progress,
+                "stage": stage_name,
+                "estimated_remaining": estimated_remaining
+            }
         )
         
     except Exception as e:
@@ -227,6 +299,28 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "status": "started"
         })
         
+        # Track stage start time
+        try:
+            from api_gateway.services.db_helpers import update_job_stage
+            # Check if stage exists
+            existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "audio_parser").execute()
+            if existing.data and len(existing.data) > 0:
+                # Update existing
+                await db_client.table("job_stages").update({
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).eq("job_id", job_id).eq("stage_name", "audio_parser").execute()
+            else:
+                # Insert new
+                await db_client.table("job_stages").insert({
+                    "job_id": job_id,
+                    "stage_name": "audio_parser",
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.warning("Failed to track audio parser start time", exc_info=e, extra={"job_id": job_id})
+        
         # Update job status to processing
         await db_client.table("jobs").update({
             "status": "processing",
@@ -264,6 +358,16 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 f"beats={len(audio_data.beat_timestamps)}",
                 extra={"job_id": job_id}
             )
+            
+            # Store audio duration in Redis for time estimation
+            try:
+                await redis_client.set(
+                    f"job:{job_id}:audio_duration",
+                    str(audio_data.duration),
+                    ex=3600  # 1 hour TTL
+                )
+            except Exception as e:
+                logger.warning("Failed to store audio duration in Redis", exc_info=e, extra={"job_id": job_id})
         except ImportError as e:
             # Module not implemented yet - use stub
             logger.warning("Audio Parser module not found, using stub", extra={"job_id": job_id})
@@ -349,7 +453,17 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 clip_boundaries=clip_boundaries
             )
         
-        await update_progress(job_id, 10, "audio_parser")  # Audio parser is 10% of total job
+        # Store audio duration in Redis for time estimation (for both real and stub)
+        try:
+            await redis_client.set(
+                f"job:{job_id}:audio_duration",
+                str(audio_data.duration),
+                ex=3600  # 1 hour TTL
+            )
+        except Exception as e:
+            logger.warning("Failed to store audio duration in Redis", exc_info=e, extra={"job_id": job_id})
+        
+        await update_progress(job_id, 10, "audio_parser", audio_duration=audio_data.duration)  # Audio parser is 10% of total job
         await publish_event(job_id, "message", {
             "text": "Audio analysis complete!",
             "stage": "audio_parser"
@@ -484,6 +598,25 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "scene_planner",
             "status": "started"
         })
+        
+        # Track stage start time
+        try:
+            existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "scene_planner").execute()
+            if existing.data and len(existing.data) > 0:
+                await db_client.table("job_stages").update({
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).eq("job_id", job_id).eq("stage_name", "scene_planner").execute()
+            else:
+                await db_client.table("job_stages").insert({
+                    "job_id": job_id,
+                    "stage_name": "scene_planner",
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.warning("Failed to track scene planner start time", exc_info=e, extra={"job_id": job_id})
+        
         await publish_event(job_id, "message", {
             "text": "Starting scene planning...",
             "stage": "scene_planner"
@@ -581,7 +714,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 transitions=transitions
             )
         
-        await update_progress(job_id, 20, "scene_planner")
+        await update_progress(job_id, 20, "scene_planner", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
         await publish_event(job_id, "stage_update", {
             "stage": "scene_planner",
             "status": "completed"
@@ -730,11 +863,37 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "reference_generator",
             "status": "started"
         })
+        
+        # Track stage start time
+        try:
+            existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "reference_generator").execute()
+            if existing.data and len(existing.data) > 0:
+                await db_client.table("job_stages").update({
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).eq("job_id", job_id).eq("stage_name", "reference_generator").execute()
+            else:
+                await db_client.table("job_stages").insert({
+                    "job_id": job_id,
+                    "stage_name": "reference_generator",
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.warning("Failed to track reference generator start time", exc_info=e, extra={"job_id": job_id})
+        
         await publish_event(job_id, "message", {
             "text": "Starting reference image generation...",
             "stage": "reference_generator"
         })
-        await update_progress(job_id, 25, "reference_generator")
+        
+        # Calculate number of images to generate
+        num_images = None
+        if plan and hasattr(plan, 'scenes') and hasattr(plan, 'characters'):
+            num_images = len(plan.scenes) + len(plan.characters)
+        
+        # Set initial progress for reference generator stage (25% - start of stage)
+        await update_progress(job_id, 25, "reference_generator", num_images=num_images)
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
@@ -874,9 +1033,50 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 extra={"job_id": job_id, "event_types": event_types}
             )
             
-            # Publish all events from reference generator (includes "started" and "completed" events)
+            # Track progress as images complete (for more frequent updates)
+            reference_progress_tracker = {
+                "completed": 0,
+                "total": num_images or 4  # Default to 4 if not known yet
+            }
+            
+            # Publish all events from reference generator and track progress
             for event in reference_events:
-                await publish_event(job_id, event.get("event_type", "message"), event.get("data", {}))
+                event_type = event.get("event_type", "message")
+                event_data = event.get("data", {})
+                
+                # Update progress when images complete
+                if event_type == "reference_generation_complete":
+                    # Update total if provided in event
+                    if "total_images" in event_data:
+                        reference_progress_tracker["total"] = max(
+                            reference_progress_tracker["total"],
+                            event_data["total_images"]
+                        )
+                    # Update completed count
+                    if "completed_images" in event_data:
+                        reference_progress_tracker["completed"] = max(
+                            reference_progress_tracker["completed"],
+                            event_data["completed_images"]
+                        )
+                    else:
+                        reference_progress_tracker["completed"] += 1
+                    
+                    # Calculate and update progress (25-30% range)
+                    progress = calculate_stage_progress(
+                        reference_progress_tracker["completed"],
+                        reference_progress_tracker["total"],
+                        25,  # stage start
+                        30   # stage end
+                    )
+                    await update_progress(
+                        job_id,
+                        progress,
+                        "reference_generator",
+                        num_images=reference_progress_tracker["total"]
+                    )
+                
+                # Publish the event
+                await publish_event(job_id, event_type, event_data)
             
             if references is None:
                 logger.error(
@@ -895,8 +1095,16 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                     logger.warning("Failed to record reference generator failure metadata", exc_info=stage_err)
                 raise PipelineError("Reference generator did not produce any references")
             
-            # Update progress after reference generation completes (events already published)
-            await update_progress(job_id, 30, "reference_generator")
+            # Final progress update (should already be at 30% from incremental updates, but ensure it's set)
+            num_images_actual = None
+            if references:
+                num_images_actual = references.total_references if hasattr(references, 'total_references') else None
+            # Only update if we didn't track progress incrementally (fallback)
+            if num_images_actual or num_images:
+                final_total = num_images_actual or num_images
+                # Check if we already updated to 30% via incremental tracking
+                # If not, set it now
+                await update_progress(job_id, 30, "reference_generator", num_images=final_total)
         except ImportError:
             logger.warning("Reference Generator module not found, using stub", extra={"job_id": job_id})
             # Publish failed event for stub case
@@ -936,6 +1144,24 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "prompt_generator",
             "status": "started"
         })
+        
+        # Track stage start time
+        try:
+            existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "prompt_generator").execute()
+            if existing.data and len(existing.data) > 0:
+                await db_client.table("job_stages").update({
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).eq("job_id", job_id).eq("stage_name", "prompt_generator").execute()
+            else:
+                await db_client.table("job_stages").insert({
+                    "job_id": job_id,
+                    "stage_name": "prompt_generator",
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.warning("Failed to track prompt generator start time", exc_info=e, extra={"job_id": job_id})
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
@@ -1032,7 +1258,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         except Exception as e:
             logger.error("Failed to publish prompt generator results", exc_info=e, extra={"job_id": job_id})
         
-        await update_progress(job_id, 40, "prompt_generator")
+        await update_progress(job_id, 40, "prompt_generator", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
         await publish_event(job_id, "stage_update", {
             "stage": "prompt_generator",
             "status": "completed"
@@ -1043,15 +1269,37 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             await stop_pipeline_gracefully(job_id, "prompt_generator", 40)
             return
         
-        # Stage 5: Video Generator (85% progress)
+        # Stage 5: Video Generator (40-85% progress)
         await publish_event(job_id, "stage_update", {
             "stage": "video_generator",
             "status": "started"
         })
         
+        # Track stage start time
+        try:
+            existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "video_generator").execute()
+            if existing.data and len(existing.data) > 0:
+                await db_client.table("job_stages").update({
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).eq("job_id", job_id).eq("stage_name", "video_generator").execute()
+            else:
+                await db_client.table("job_stages").insert({
+                    "job_id": job_id,
+                    "stage_name": "video_generator",
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.warning("Failed to track video generator start time", exc_info=e, extra={"job_id": job_id})
+        
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
+        
+        # Set initial progress for video generator stage (40% - start of stage)
+        num_clips_initial = len(clip_prompts.clip_prompts) if hasattr(clip_prompts, 'clip_prompts') else None
+        await update_progress(job_id, 40, "video_generator", num_clips=num_clips_initial)
         
         # Check budget before expensive operation (environment-aware)
         # Estimate video generation cost as ~50% of total budget (most expensive stage)
@@ -1072,10 +1320,80 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             from modules.video_generator.process import process as generate_videos
             # Pass ScenePlan to video generator for global context inclusion
             clips, video_events = await generate_videos(job_id, clip_prompts, plan)
-            # Publish per-clip video generation events to SSE
+            
+            # Track progress as clips complete (for more frequent updates)
+            video_progress_tracker = {
+                "completed": 0,
+                "total": len(clip_prompts.clip_prompts) if hasattr(clip_prompts, 'clip_prompts') else None,
+                "clip_progress": {}  # Track sub-progress for each clip
+            }
+            
+            # Publish per-clip video generation events to SSE and track progress
             try:
                 for event in video_events:
-                    await publish_event(job_id, event.get("event_type", "message"), event.get("data", {}))
+                    event_type = event.get("event_type", "message")
+                    event_data = event.get("data", {})
+                    
+                    # Update total if provided in event
+                    if "total_clips" in event_data and event_data["total_clips"]:
+                        video_progress_tracker["total"] = max(
+                            video_progress_tracker["total"] or 0,
+                            event_data["total_clips"]
+                        )
+                    
+                    # Update progress during polling (heartbeat + sub-progress)
+                    if event_type == "video_generation_progress":
+                        clip_index = event_data.get("clip_index")
+                        sub_progress = event_data.get("sub_progress", 0.0)
+                        
+                        if clip_index is not None and video_progress_tracker["total"]:
+                            # Calculate progress: base progress for completed clips + sub-progress for current clip
+                            # Each clip represents ~4.5% of video generator stage (40-85% range, 45% total)
+                            clip_progress_range = 45.0 / video_progress_tracker["total"]  # % per clip
+                            
+                            # Base progress from completed clips
+                            base_progress = 40 + (video_progress_tracker["completed"] * clip_progress_range)
+                            
+                            # Add sub-progress for current clip
+                            current_clip_progress = base_progress + (sub_progress * clip_progress_range)
+                            
+                            # Update tracker
+                            video_progress_tracker["clip_progress"][clip_index] = sub_progress
+                            
+                            # Update overall progress (clamp to stage range)
+                            progress = max(40, min(int(current_clip_progress), 85))
+                            await update_progress(
+                                job_id,
+                                progress,
+                                "video_generator",
+                                num_clips=video_progress_tracker["total"]
+                            )
+                    
+                    # Update progress when clips complete (40-85% range)
+                    elif event_type == "video_generation_complete":
+                        video_progress_tracker["completed"] += 1
+                        clip_index = event_data.get("clip_index")
+                        if clip_index is not None:
+                            # Remove sub-progress tracking for completed clip
+                            video_progress_tracker["clip_progress"].pop(clip_index, None)
+                        
+                        # Only update progress if we know the total
+                        if video_progress_tracker["total"]:
+                            progress = calculate_stage_progress(
+                                video_progress_tracker["completed"],
+                                video_progress_tracker["total"],
+                                40,  # stage start (prompt_generator ends at 40%)
+                                85   # stage end
+                            )
+                            await update_progress(
+                                job_id,
+                                progress,
+                                "video_generator",
+                                num_clips=video_progress_tracker["total"]
+                            )
+                    
+                    # Publish the event
+                    await publish_event(job_id, event_type, event_data)
             except Exception as e:
                 logger.warning("Failed to publish some video generation events", exc_info=e, extra={"job_id": job_id})
         except ImportError:
@@ -1110,7 +1428,11 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         if len(clips.clips) < 3:
             raise PipelineError("Insufficient clips generated (minimum 3 required)")
         
-        await update_progress(job_id, 85, "video_generator")
+        # Final progress update (should already be at 85% from incremental updates, but ensure it's set)
+        num_clips = len(clips.clips) if hasattr(clips, 'clips') else None
+        # Only update if we didn't track progress incrementally (fallback)
+        if num_clips:
+            await update_progress(job_id, 85, "video_generator", num_clips=num_clips)
         await publish_event(job_id, "stage_update", {
             "stage": "video_generator",
             "status": "completed"
@@ -1124,15 +1446,37 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         # Enforce budget after video generator (costs were tracked)
         await enforce_budget(job_id)
         
-        # Stage 6: Composer (100% progress)
+        # Stage 6: Composer (85-100% progress)
         await publish_event(job_id, "stage_update", {
             "stage": "composer",
             "status": "started"
         })
         
+        # Track stage start time
+        try:
+            existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "composer").execute()
+            if existing.data and len(existing.data) > 0:
+                await db_client.table("job_stages").update({
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).eq("job_id", job_id).eq("stage_name", "composer").execute()
+            else:
+                await db_client.table("job_stages").insert({
+                    "job_id": job_id,
+                    "stage_name": "composer",
+                    "status": "processing",
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+        except Exception as e:
+            logger.warning("Failed to track composer start time", exc_info=e, extra={"job_id": job_id})
+        
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
+        
+        # Set initial progress for composer stage (85% - start of stage)
+        # Note: Composer will also set this, but we set it here for consistency
+        await update_progress(job_id, 85, "composer", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
         
         # Extract transitions and beats
         transitions = plan.transitions if hasattr(plan, "transitions") else []
@@ -1185,7 +1529,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         cache_key = f"job_status:{job_id}"
         await redis_client.client.delete(cache_key)
         
-        await update_progress(job_id, 100, "composer")
+        await update_progress(job_id, 100, "composer", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
         await publish_event(job_id, "completed", {
             "video_url": video_output.video_url,
             "total_cost": float(total_cost)

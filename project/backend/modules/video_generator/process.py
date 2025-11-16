@@ -289,6 +289,10 @@ async def process(
                 )
                 image_url = None
             
+            # Progress callback to emit events during polling (defined outside retry loop)
+            def progress_callback(progress_event):
+                events.append(progress_event)
+            
             # Retry logic
             for attempt in range(3):
                 try:
@@ -304,6 +308,7 @@ async def process(
                         job_id=job_id,
                         environment=environment,
                         extra_context=None,
+                        progress_callback=progress_callback,
                     )
                     
                     logger.info(

@@ -11,9 +11,8 @@ import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
-import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft } from "lucide-react"
-import type { StageUpdateEvent } from "@/types/sse"
+import { jobStore } from "@/stores/jobStore"
 
 export default function JobProgressPage() {
   const params = useParams()
@@ -22,12 +21,6 @@ export default function JobProgressPage() {
   const jobId = params.jobId as string
   const { job, isLoading: jobLoading, error, fetchJob } = useJob(jobId)
   const [sseError, setSseError] = useState<string | null>(null)
-  const [stages, setStages] = useState<
-    Array<{ name: string; status: "pending" | "processing" | "completed" | "failed" }>
-  >([])
-  const [currentStage, setCurrentStage] = useState<string | null>(null)
-  const [elapsed, setElapsed] = useState<number>(0)
-  const [timerOn, setTimerOn] = useState<boolean>(false)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -158,18 +151,7 @@ export default function JobProgressPage() {
     setSseError(error)
   }
 
-  // Debug logging
-  useEffect(() => {
-    console.log("🔍 JobProgressPage state:", {
-      jobId,
-      authLoading,
-      jobLoading,
-      hasJob: !!job,
-      error,
-      jobStatus: job?.status,
-      jobProgress: job?.progress
-    })
-  }, [jobId, authLoading, jobLoading, job, error])
+  // Removed debug logging to prevent excessive re-renders
 
   // Early returns after all hooks
   if (authLoading || jobLoading) {
@@ -245,14 +227,10 @@ export default function JobProgressPage() {
                 <CardTitle>Job Progress</CardTitle>
                 <CardDescription>Job ID: {jobId}</CardDescription>
               </div>
-              {/* Timer aligned to the right of the title */}
-              {(isProcessing || timerOn) && (
-                <div className="text-sm font-mono text-muted-foreground self-center inline-flex items-center gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-                    Live
-                  </span>
-                  <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+              {/* Timer aligned to the right of the title - get from job store */}
+              {job?.estimatedRemaining != null && (isProcessing || isQueued) && (
+                <div className="text-sm font-mono text-muted-foreground self-center">
+                  <span className="tabular-nums">{formatRemaining(job.estimatedRemaining)}</span>
                 </div>
               )}
             </div>

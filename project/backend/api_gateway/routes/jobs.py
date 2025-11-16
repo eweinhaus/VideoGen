@@ -44,6 +44,26 @@ async def get_job_status(
             cached_data = json.loads(cached)
             # Verify ownership from cached data (quick check)
             if cached_data.get("user_id") == current_user["user_id"]:
+                # If cached data doesn't have stages, fetch them (for backward compatibility with old cache)
+                if "stages" not in cached_data:
+                    try:
+                        stages_result = await db_client.table("job_stages").select("*").eq("job_id", job_id).execute()
+                        stages = {}
+                        if stages_result.data:
+                            for stage in stages_result.data:
+                                stage_name = stage.get("stage_name")
+                                if stage_name:
+                                    stages[stage_name] = {
+                                        "status": stage.get("status", "pending"),
+                                        "duration": stage.get("duration_seconds"),
+                                        "progress": None,
+                                    }
+                        cached_data["stages"] = stages
+                        # Update cache with stages included
+                        await redis_client.set(cache_key, json.dumps(cached_data), ex=30)
+                    except Exception as e:
+                        logger.warning("Failed to fetch stages for cached job", exc_info=e, extra={"job_id": job_id})
+                        cached_data["stages"] = {}
                 logger.debug("Job status retrieved from cache", extra={"job_id": job_id})
                 return cached_data
             else:
@@ -56,6 +76,25 @@ async def get_job_status(
     # Cache miss or ownership mismatch - fetch from database
     # Verify ownership (this also fetches the job)
     job = await verify_job_ownership(job_id, current_user)
+    
+    # Fetch stages from job_stages table
+    try:
+        stages_result = await db_client.table("job_stages").select("*").eq("job_id", job_id).execute()
+        stages = {}
+        if stages_result.data:
+            for stage in stages_result.data:
+                stage_name = stage.get("stage_name")
+                if stage_name:
+                    stages[stage_name] = {
+                        "status": stage.get("status", "pending"),
+                        "duration": stage.get("duration_seconds"),
+                        "progress": None,  # Not stored in job_stages table
+                    }
+        job["stages"] = stages
+    except Exception as e:
+        logger.warning("Failed to fetch job stages", exc_info=e, extra={"job_id": job_id})
+        # If stages fetch fails, set empty dict to avoid breaking frontend
+        job["stages"] = {}
     
     # Cache result (30s TTL)
     try:
