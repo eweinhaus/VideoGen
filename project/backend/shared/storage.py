@@ -80,7 +80,8 @@ class StorageClient:
         path: str,
         file_data: bytes,
         content_type: Optional[str] = None,
-        max_size: Optional[int] = None
+        max_size: Optional[int] = None,
+        overwrite: bool = False
     ) -> str:
         """
         Upload a file to Supabase Storage.
@@ -91,6 +92,7 @@ class StorageClient:
             file_data: File data as bytes
             content_type: Content type (auto-detected if not provided)
             max_size: Maximum file size in bytes (uses bucket default if not provided)
+            overwrite: If True, delete existing file before uploading (default: False)
             
         Returns:
             Public URL of uploaded file
@@ -115,6 +117,24 @@ class StorageClient:
                     f"File size ({file_size_mb:.2f} MB) exceeds maximum of {max_size_mb:.2f} MB for bucket {bucket}"
                 )
             
+            # Delete existing file if overwrite is requested
+            if overwrite:
+                try:
+                    await self.delete_file(bucket, path)
+                    logger.debug(
+                        f"Deleted existing file at {bucket}/{path} before overwrite",
+                        extra={"bucket": bucket, "path": path}
+                    )
+                except Exception as delete_error:
+                    # If file doesn't exist, that's fine - we'll upload it anyway
+                    error_str = str(delete_error).lower()
+                    if "not found" not in error_str and "404" not in error_str:
+                        # Only log if it's a real error (not just "file doesn't exist")
+                        logger.warning(
+                            f"Failed to delete existing file before overwrite (may not exist): {str(delete_error)}",
+                            extra={"bucket": bucket, "path": path, "error": str(delete_error)}
+                )
+            
             # Upload file (wrap sync operation in executor)
             def _upload():
                 return self.storage.from_(bucket).upload(
@@ -133,7 +153,7 @@ class StorageClient:
             
             logger.info(
                 f"Uploaded file to {bucket}/{path}",
-                extra={"bucket": bucket, "path": path, "size": len(file_data)}
+                extra={"bucket": bucket, "path": path, "size": len(file_data), "overwrite": overwrite}
             )
             
             return public_url

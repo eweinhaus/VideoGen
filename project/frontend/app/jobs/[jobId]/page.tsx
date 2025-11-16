@@ -105,7 +105,8 @@ export default function JobProgressPage() {
 
   const isCompleted = job.status === "completed" && job.videoUrl
   const isFailed = job.status === "failed"
-  const isQueued = job.status === "queued"
+  // Only show "queued" message if status is queued AND no stage has started yet
+  const isQueued = job.status === "queued" && !job.currentStage
   const isProcessing = job.status === "processing"
 
   return (

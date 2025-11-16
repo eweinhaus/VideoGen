@@ -149,9 +149,22 @@ async def worker_loop():
                 logger.info(f"Job popped from queue: {queue_key}")
                 # job_json is a tuple: (queue_key, job_data)
                 job_data_str = job_json[1]
-                job_data = json.loads(job_data_str)
+                try:
+                    job_data = json.loads(job_data_str)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse job data JSON: {e}", extra={"job_data_str": job_data_str[:200]})
+                    continue
                 
                 job_id = job_data.get("job_id")
+                logger.info(
+                    f"Parsed job data for job {job_id}",
+                    extra={
+                        "job_id": job_id,
+                        "has_audio_url": bool(job_data.get("audio_url")),
+                        "has_user_prompt": bool(job_data.get("user_prompt")),
+                        "stop_at_stage": job_data.get("stop_at_stage")
+                    }
+                )
                 
                 # Publish message that worker picked up the job
                 from api_gateway.services.event_publisher import publish_event

@@ -5,6 +5,7 @@ Executes modules 3-8 sequentially with progress tracking and error handling.
 """
 
 import json
+import time
 from uuid import UUID
 from typing import Optional
 from decimal import Decimal
@@ -209,6 +210,15 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         user_prompt: User's creative prompt
         stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
     """
+    logger.info(
+        f"execute_pipeline called for job {job_id}",
+        extra={
+            "job_id": job_id,
+            "audio_url": audio_url,
+            "user_prompt_length": len(user_prompt) if user_prompt else 0,
+            "stop_at_stage": stop_at_stage
+        }
+    )
     try:
         # Stage 1: Audio Parser (10% progress)
         # Publish stage update FIRST before status change to avoid flickering
@@ -349,6 +359,63 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "status": "completed",
             "duration": audio_data.duration if hasattr(audio_data, 'duration') else (audio_data.beat_timestamps[-1] if audio_data.beat_timestamps else 0)
         })
+        
+        # Save audio parser results to database for persistence and testing
+        try:
+            from api_gateway.services.db_helpers import update_job_stage
+            
+            # Convert AudioAnalysis to dict for storage
+            audio_analysis_dict = {
+                "job_id": str(audio_data.job_id),
+                "bpm": audio_data.bpm,
+                "duration": audio_data.duration,
+                "beat_timestamps": audio_data.beat_timestamps,
+                "beat_count": len(audio_data.beat_timestamps),
+                "song_structure": [
+                    {
+                        "type": seg.type,
+                        "start": seg.start,
+                        "end": seg.end,
+                        "energy": seg.energy
+                    }
+                    for seg in audio_data.song_structure
+                ],
+                "mood": {
+                    "primary": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
+                    "secondary": audio_data.mood.secondary if hasattr(audio_data.mood, 'secondary') else None,
+                    "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None,
+                    "confidence": audio_data.mood.confidence if hasattr(audio_data.mood, 'confidence') else None
+                },
+                "lyrics": [
+                    {
+                        "text": lyric.text,
+                        "timestamp": lyric.timestamp
+                    }
+                    for lyric in audio_data.lyrics
+                ],
+                "lyrics_count": len(audio_data.lyrics),
+                "clip_boundaries": [
+                    {
+                        "start": boundary.start,
+                        "end": boundary.end,
+                        "duration": boundary.duration
+                    }
+                    for boundary in audio_data.clip_boundaries
+                ],
+                "clip_boundaries_count": len(audio_data.clip_boundaries),
+                "metadata": audio_data.metadata if hasattr(audio_data, 'metadata') and audio_data.metadata else {}
+            }
+            
+            await update_job_stage(
+                job_id=job_id,
+                stage_name="audio_parser",
+                status="completed",
+                metadata={"audio_analysis": audio_analysis_dict}
+            )
+            logger.info("Audio analysis saved to database", extra={"job_id": job_id})
+        except Exception as e:
+            logger.error("Failed to save audio analysis to database", exc_info=e, extra={"job_id": job_id})
+            # Don't fail the pipeline, but log the error
         
         # Log audio parser results
         logger.info(
@@ -520,6 +587,76 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "status": "completed"
         })
         
+        # Save scene plan to database for persistence and testing
+        # This allows the reference generator to access it even if pipeline restarts
+        try:
+            from api_gateway.services.db_helpers import update_job_stage
+            
+            # Convert ScenePlan to dict for storage
+            scene_plan_dict = {
+                "job_id": str(plan.job_id),
+                "video_summary": plan.video_summary,
+                "characters": [
+                    {
+                        "id": char.id,
+                        "description": char.description,
+                        "role": char.role
+                    }
+                    for char in plan.characters
+                ],
+                "scenes": [
+                    {
+                        "id": scene.id,
+                        "description": scene.description,
+                        "time_of_day": scene.time_of_day
+                    }
+                    for scene in plan.scenes
+                ],
+                "style": {
+                    "color_palette": plan.style.color_palette,
+                    "visual_style": plan.style.visual_style,
+                    "mood": plan.style.mood,
+                    "lighting": plan.style.lighting,
+                    "cinematography": plan.style.cinematography
+                },
+                "clip_scripts": [
+                    {
+                        "clip_index": clip.clip_index,
+                        "start": clip.start,
+                        "end": clip.end,
+                        "visual_description": clip.visual_description,
+                        "motion": clip.motion,
+                        "camera_angle": clip.camera_angle,
+                        "characters": clip.characters,
+                        "scenes": clip.scenes,
+                        "lyrics_context": clip.lyrics_context,
+                        "beat_intensity": clip.beat_intensity
+                    }
+                    for clip in plan.clip_scripts
+                ],
+                "transitions": [
+                    {
+                        "from_clip": trans.from_clip,
+                        "to_clip": trans.to_clip,
+                        "type": trans.type,
+                        "duration": trans.duration,
+                        "rationale": trans.rationale
+                    }
+                    for trans in plan.transitions
+                ]
+            }
+            
+            await update_job_stage(
+                job_id=job_id,
+                stage_name="scene_planner",
+                status="completed",
+                metadata={"scene_plan": scene_plan_dict}
+            )
+            logger.info("Scene plan saved to database", extra={"job_id": job_id})
+        except Exception as e:
+            logger.error("Failed to save scene plan to database", exc_info=e, extra={"job_id": job_id})
+            # Don't fail the pipeline, but log the error
+        
         # Publish scene planner results for frontend display (before checking stop)
         try:
             logger.info("Publishing scene planner results", extra={"job_id": job_id, "plan_has_clips": len(plan.clip_scripts) if plan else 0})
@@ -587,35 +724,180 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         
         # Note: If stop_at_stage is not set or is beyond scene_planner, continue to next stage
         
-        # Stage 3: Reference Generator (30% progress) - DISABLED FOR NOW
-        await publish_event(job_id, "stage_update", {
-            "stage": "reference_generator",
-            "status": "started"
-        })
+        # Stage 3: Reference Generator (30% progress)
+        # Note: Reference generator publishes its own "started" event, so we don't duplicate it here
         
         if await check_cancellation(job_id):
             await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
             return
         
-        # Check budget before expensive operation (environment-aware)
-        limit = get_budget_limit(settings.environment)
-        can_proceed = await cost_tracker.check_budget(
-            job_id=UUID(job_id),
-            new_cost=Decimal("50.00"),  # Estimated cost for reference generation
-            limit=limit
-        )
-        if not can_proceed:
-            raise BudgetExceededError("Would exceed budget limit before reference generation")
+        # Load scene plan from database if not available in memory (fallback for pipeline restarts)
+        if not plan:
+            logger.warning(
+                f"Scene plan not in memory for job {job_id}, loading from database...",
+                extra={"job_id": job_id}
+            )
+            from api_gateway.services.db_helpers import get_job_stage
+            from shared.models.scene import ScenePlan, Character, Scene, Style, ClipScript, Transition
+            
+            stage_data = await get_job_stage(job_id, "scene_planner")
+            if stage_data and stage_data.get("metadata"):
+                metadata = stage_data["metadata"]
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                
+                if isinstance(metadata, dict) and "scene_plan" in metadata:
+                    scene_plan_data = metadata["scene_plan"]
+                    plan = ScenePlan(
+                        job_id=UUID(job_id),
+                        video_summary=scene_plan_data.get("video_summary", ""),
+                        characters=[
+                            Character(**char) for char in scene_plan_data.get("characters", [])
+                        ],
+                        scenes=[
+                            Scene(**scene) for scene in scene_plan_data.get("scenes", [])
+                        ],
+                        style=Style(**scene_plan_data.get("style", {})),
+                        clip_scripts=[
+                            ClipScript(**clip) for clip in scene_plan_data.get("clip_scripts", [])
+                        ],
+                        transitions=[
+                            Transition(**trans) for trans in scene_plan_data.get("transitions", [])
+                        ]
+                    )
+                    logger.info(
+                        f"Scene plan loaded from database for job {job_id}",
+                        extra={
+                            "job_id": job_id,
+                            "scenes_count": len(plan.scenes),
+                            "characters_count": len(plan.characters)
+                        }
+                    )
+                else:
+                    logger.error(
+                        f"Scene plan metadata missing 'scene_plan' key for job {job_id}",
+                        extra={"job_id": job_id, "metadata_keys": list(metadata.keys()) if isinstance(metadata, dict) else "not a dict"}
+                    )
+            else:
+                logger.error(
+                    f"No scene planner stage data found in database for job {job_id}",
+                    extra={"job_id": job_id}
+                )
         
+        # Budget check removed for reference generator - actual cost is minimal (~$0.01-0.02 for 2-4 images)
+        # The check was causing false positives. Budget is still enforced at the job level.
         references = None
+        reference_events = []
         try:
+            # Validate plan before calling reference generator
+            if not plan:
+                logger.error(
+                    f"Scene plan is None for job {job_id} after attempting to load from database",
+                    extra={"job_id": job_id}
+                )
+                raise PipelineError("Scene plan is None - cannot generate references")
+            
+            if not plan.scenes or len(plan.scenes) == 0:
+                logger.error(
+                    f"Scene plan has no scenes for job {job_id}",
+                    extra={"job_id": job_id}
+                )
+                raise PipelineError("Scene plan has no scenes - cannot generate references")
+            
+            if not plan.characters or len(plan.characters) == 0:
+                logger.error(
+                    f"Scene plan has no characters for job {job_id}",
+                    extra={"job_id": job_id}
+                )
+                raise PipelineError("Scene plan has no characters - cannot generate references")
+            
+            logger.info(
+                f"Starting reference generator for job {job_id}",
+                extra={
+                    "job_id": job_id,
+                    "plan_has_scenes": len(plan.scenes),
+                    "plan_has_characters": len(plan.characters),
+                    "scene_ids": [s.id for s in plan.scenes],
+                    "character_ids": [c.id for c in plan.characters]
+                }
+            )
             from modules.reference_generator.process import process as generate_references
-            references = await generate_references(job_id, plan)
+            # Convert job_id to UUID and pass duration_seconds for budget checks
+            job_id_uuid = UUID(job_id)
+            duration_seconds = audio_data.duration if hasattr(audio_data, 'duration') else None
+            logger.info(
+                f"Calling generate_references for job {job_id}",
+                extra={
+                    "job_id": job_id,
+                    "job_id_uuid": str(job_id_uuid),
+                    "duration_seconds": duration_seconds,
+                    "scenes_count": len(plan.scenes),
+                    "characters_count": len(plan.characters),
+                    "total_images_to_generate": len(plan.scenes) + len(plan.characters)
+                }
+            )
+            # Reference generator returns tuple: (Optional[ReferenceImages], List[Dict[str, Any]])
+            start_time = time.time()
+            references, reference_events = await generate_references(job_id_uuid, plan, duration_seconds)
+            elapsed_time = time.time() - start_time
+            
+            logger.info(
+                f"Reference generator returned for job {job_id}",
+                extra={
+                    "job_id": job_id,
+                    "references_is_none": references is None,
+                    "events_count": len(reference_events),
+                    "has_references": references is not None,
+                    "elapsed_seconds": elapsed_time,
+                    "scene_refs_count": len(references.scene_references) if references else 0,
+                    "character_refs_count": len(references.character_references) if references else 0,
+                    "total_refs": references.total_references if references else 0
+                }
+            )
+            
+            # Log event types for debugging
+            event_types = {}
+            for event in reference_events:
+                event_type = event.get("event_type", "unknown")
+                event_types[event_type] = event_types.get(event_type, 0) + 1
+            logger.info(
+                f"Reference generator events for job {job_id}",
+                extra={"job_id": job_id, "event_types": event_types}
+            )
+            
+            # Publish all events from reference generator (includes "started" and "completed" events)
+            for event in reference_events:
+                await publish_event(job_id, event.get("event_type", "message"), event.get("data", {}))
+            
+            if references is None:
+                logger.error(
+                    "Reference generator returned no references",
+                    extra={"job_id": job_id}
+                )
+                failure_metadata = {"fallback_mode": True, "fallback_reason": "reference_generator_returned_none"}
+                try:
+                    await db_client.table("job_stages").insert({
+                        "job_id": job_id,
+                        "stage_name": "reference_generator",
+                        "status": "failed",
+                        "metadata": json.dumps(failure_metadata)
+                    }).execute()
+                except Exception as stage_err:
+                    logger.warning("Failed to record reference generator failure metadata", exc_info=stage_err)
+                raise PipelineError("Reference generator did not produce any references")
+            
+            # Update progress after reference generation completes (events already published)
+            await update_progress(job_id, 30, "reference_generator")
         except ImportError:
             logger.warning("Reference Generator module not found, using stub", extra={"job_id": job_id})
+            # Publish failed event for stub case
+            await publish_event(job_id, "stage_update", {
+                "stage": "reference_generator",
+                "status": "failed"
+            })
         except Exception as e:
             # Set fallback flag
-            logger.warning("Reference Generator failed, setting fallback mode", exc_info=e, extra={"job_id": job_id})
+            logger.error("Reference Generator failed, setting fallback mode", exc_info=e, extra={"job_id": job_id})
             await db_client.table("job_stages").insert({
                 "job_id": job_id,
                 "stage_name": "reference_generator",
@@ -625,13 +907,12 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                     "fallback_reason": str(e)
                 })
             }).execute()
+            # Publish failed event
+            await publish_event(job_id, "stage_update", {
+                "stage": "reference_generator",
+                "status": "failed"
+            })
             references = None
-        
-        await update_progress(job_id, 30, "reference_generator")
-        await publish_event(job_id, "stage_update", {
-            "stage": "reference_generator",
-            "status": "completed"
-        })
         
         # Check if should stop after reference generator
         if await should_stop_after_stage("reference_generator", stop_at_stage):
@@ -701,7 +982,10 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                     if maybe:
                         llm_model = maybe
                         break
-            await publish_event(job_id, "prompt_generator_results", {
+            
+            # Convert ClipPrompts to dict for storage
+            clip_prompts_dict = {
+                "job_id": str(clip_prompts.job_id),
                 "total_clips": clip_prompts.total_clips,
                 "generation_time": clip_prompts.generation_time,
                 "llm_used": llm_used,
@@ -714,11 +998,28 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                         "duration": prompt.duration,
                         "scene_reference_url": prompt.scene_reference_url,
                         "character_reference_urls": prompt.character_reference_urls,
-                        "metadata": prompt.metadata,
+                        "metadata": prompt.metadata or {},
                     }
                     for prompt in clip_prompts.clip_prompts
                 ]
-            })
+            }
+            
+            # Save prompt generator results to database for persistence and testing
+            try:
+                from api_gateway.services.db_helpers import update_job_stage
+                
+                await update_job_stage(
+                    job_id=job_id,
+                    stage_name="prompt_generator",
+                    status="completed",
+                    metadata={"clip_prompts": clip_prompts_dict}
+                )
+                logger.info("Clip prompts saved to database", extra={"job_id": job_id})
+            except Exception as e:
+                logger.error("Failed to save clip prompts to database", exc_info=e, extra={"job_id": job_id})
+                # Don't fail the pipeline, but log the error
+            
+            await publish_event(job_id, "prompt_generator_results", clip_prompts_dict)
         except Exception as e:
             logger.error("Failed to publish prompt generator results", exc_info=e, extra={"job_id": job_id})
         
@@ -759,7 +1060,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         except ImportError:
             logger.warning("Video Generator module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import Clips, Clip
-            from decimal import Decimal
             # Create stub clips (minimum 3 required)
             stub_clips = [
                 Clip(
@@ -829,7 +1129,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         except ImportError:
             logger.warning("Composer module not found, using stub", extra={"job_id": job_id})
             from shared.models.video import VideoOutput
-            from decimal import Decimal
             video_output = VideoOutput(
                 job_id=UUID(job_id),
                 video_url="stub_final_video_url",
