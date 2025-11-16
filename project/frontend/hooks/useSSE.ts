@@ -183,6 +183,38 @@ export function useSSE(
         console.error("Failed to parse prompt_generator_results event:", err)
       }
     })
+    eventSource.addEventListener("video_generation_start", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onVideoGenerationStart?.(data)
+      } catch (err) {
+        console.error("Failed to parse video_generation_start event:", err)
+      }
+    })
+    eventSource.addEventListener("video_generation_complete", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onVideoGenerationComplete?.(data)
+      } catch (err) {
+        console.error("Failed to parse video_generation_complete event:", err)
+      }
+    })
+    eventSource.addEventListener("video_generation_failed", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onVideoGenerationFailed?.(data)
+      } catch (err) {
+        console.error("Failed to parse video_generation_failed event:", err)
+      }
+    })
+    eventSource.addEventListener("video_generation_retry", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlers.onVideoGenerationRetry?.(data)
+      } catch (err) {
+        console.error("Failed to parse video_generation_retry event:", err)
+      }
+    })
 
     eventSource.addEventListener("reference_generation_start", (e: MessageEvent) => {
       try {

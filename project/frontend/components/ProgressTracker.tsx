@@ -19,6 +19,10 @@ import type {
   AudioParserResultsEvent,
   ScenePlannerResultsEvent,
   PromptGeneratorResultsEvent,
+  VideoGenerationStartEvent,
+  VideoGenerationCompleteEvent,
+  VideoGenerationFailedEvent,
+  VideoGenerationRetryEvent,
   ReferenceGenerationStartEvent,
   ReferenceGenerationCompleteEvent,
   ReferenceGenerationFailedEvent,
@@ -133,6 +137,13 @@ export function ProgressTracker({
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
   const [promptResults, setPromptResults] = useState<PromptGeneratorResultsEvent | null>(null)
   const [referenceState, setReferenceState] = useState<ReferenceGenerationState>(initialReferenceState)
+  const [videoTotals, setVideoTotals] = useState<{ total: number; completed: number; failed: number; retries: number }>({ total: 0, completed: 0, failed: 0, retries: 0 })
+  const [clipStatuses, setClipStatuses] = useState<Record<number, "pending" | "processing" | "completed" | "failed" | "retrying">>({})
+  
+  // Timer state
+  const [elapsedTime, setElapsedTime] = useState<number>(0)
+  const [timerStarted, setTimerStarted] = useState<boolean>(false)
+  const [hasStarted, setHasStarted] = useState<boolean>(false)
 
   const { updateJob } = jobStore()
   // Removed truncatePrompt - show full prompt text as requested
@@ -169,9 +180,44 @@ export function ProgressTracker({
 
   useEffect(() => {
     setReferenceState(initialReferenceState)
+    setElapsedTime(0)
+    setTimerStarted(false)
+    setHasStarted(false)
   }, [jobId])
+  
+  // Timer effect - starts when job begins and stops when complete/failed
+  useEffect(() => {
+    if (!timerStarted && currentJob && currentJob.status === "processing") {
+      setTimerStarted(true)
+    }
+    
+    if (!timerStarted) return
+    
+    // Stop timer if job is complete or failed
+    if (currentJob && (currentJob.status === "completed" || currentJob.status === "failed")) {
+      return
+    }
+    
+    const interval = setInterval(() => {
+      setElapsedTime((prev) => prev + 1)
+    }, 1000)
+    
+    return () => clearInterval(interval)
+  }, [timerStarted, currentJob])
 
   const referenceKey = (imageType: string, imageId: string) => `${imageType}:${imageId}`
+  
+  // Format elapsed time as HH:MM:SS or MM:SS
+  const formatElapsedTime = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = seconds % 60
+    
+    if (hours > 0) {
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    }
+    return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
 
   const handleReferenceStart = (data: ReferenceGenerationStartEvent) => {
     const key = referenceKey(data.image_type, data.image_id)
@@ -291,20 +337,32 @@ export function ProgressTracker({
 
   const { isConnected, error: sseError } = useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
-      setCurrentStage(data.stage)
-      updateJob(jobId, { currentStage: data.stage })
+      // Normalize stage names so spinners/checkmarks display correctly
+      const normalize = (name: string) => {
+        const n = name.toLowerCase()
+        if (n === "audio_analysis") return "audio_parser"
+        if (n === "scene_planning") return "scene_planner"
+        if (n === "reference_generation") return "reference_generator"
+        if (n === "prompt_generator") return "prompt_generation"
+        if (n === "video_generator") return "video_generation"
+        return n
+      }
+      const stage = normalize(data.stage)
+      if (!hasStarted) setHasStarted(true)
+      setCurrentStage(stage)
+      updateJob(jobId, { currentStage: stage })
       
       setStages((prev) => {
-        const existing = prev.find((s) => s.name === data.stage)
+        const existing = prev.find((s) => s.name === stage)
         const status = data.status as "pending" | "processing" | "completed" | "failed"
         if (existing) {
           return prev.map((s) =>
-            s.name === data.stage
+            s.name === stage
               ? { ...s, status }
               : s
           )
         }
-        return [...prev, { name: data.stage, status }]
+        return [...prev, { name: stage, status }]
       })
     },
     onProgress: (data: ProgressEvent) => {
@@ -342,6 +400,42 @@ export function ProgressTracker({
     onPromptGeneratorResults: (data: PromptGeneratorResultsEvent) => {
       setPromptResults(data)
     },
+    onVideoGenerationStart: (data: VideoGenerationStartEvent) => {
+      setClipStatuses((prev) => ({ ...prev, [data.clip_index]: "processing" }))
+      setVideoTotals((prev) => ({
+        total: Math.max(prev.total, data.total_clips || prev.total || (promptResults?.total_clips ?? 0)),
+        completed: prev.completed,
+        failed: prev.failed,
+        retries: prev.retries,
+      }))
+    },
+    onVideoGenerationComplete: (data: VideoGenerationCompleteEvent) => {
+      setClipStatuses((prev) => ({ ...prev, [data.clip_index]: "completed" }))
+      setVideoTotals((prev) => ({
+        total: prev.total || (promptResults?.total_clips ?? 0),
+        completed: prev.completed + 1,
+        failed: prev.failed,
+        retries: prev.retries,
+      }))
+    },
+    onVideoGenerationFailed: (data: VideoGenerationFailedEvent) => {
+      setClipStatuses((prev) => ({ ...prev, [data.clip_index]: "failed" }))
+      setVideoTotals((prev) => ({
+        total: prev.total || (promptResults?.total_clips ?? 0),
+        completed: prev.completed,
+        failed: prev.failed + 1,
+        retries: prev.retries,
+      }))
+    },
+    onVideoGenerationRetry: (data: VideoGenerationRetryEvent) => {
+      setClipStatuses((prev) => ({ ...prev, [data.clip_index]: "retrying" }))
+      setVideoTotals((prev) => ({
+        total: prev.total || (promptResults?.total_clips ?? 0),
+        completed: prev.completed,
+        failed: prev.failed,
+        retries: prev.retries + 1,
+      }))
+    },
     onReferenceGenerationStart: handleReferenceStart,
     onReferenceGenerationComplete: handleReferenceComplete,
     onReferenceGenerationFailed: handleReferenceFailed,
@@ -350,10 +444,27 @@ export function ProgressTracker({
 
   return (
     <div className="w-full space-y-4">
+      {/* Loading overlay to make the transition smoother until SSE is ready */}
+      {!hasStarted && !isConnected && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
+          <div className="w-[320px] rounded-lg border bg-card p-5 shadow-lg">
+            <div className="mb-3 text-sm font-medium">Preparing job progress…</div>
+            <Progress value={Math.min(displayProgress || 10, 90)} className="h-2" />
+            <div className="mt-2 text-xs text-muted-foreground">Connecting to server…</div>
+          </div>
+        </div>
+      )}
       <div className="space-y-3 p-4 bg-muted/30 rounded-lg border min-h-[120px] flex flex-col justify-center">
         <div className="flex items-center justify-between mb-2">
           <span className="text-base font-semibold">Progress</span>
+          <div className="flex items-center gap-4">
+            {timerStarted && (
+              <span className="text-sm font-mono text-muted-foreground">
+                ⏱ {formatElapsedTime(elapsedTime)}
+              </span>
+            )}
           <span className="text-base font-semibold text-muted-foreground">{displayProgress}%</span>
+          </div>
         </div>
         <Progress value={displayProgress} className="h-3" />
       </div>
@@ -514,64 +625,6 @@ export function ProgressTracker({
                   </div>
                 </div>
               )}
-            </div>
-        </CollapsibleCard>
-      )}
-
-      {referenceImages.length > 0 && (
-        <CollapsibleCard 
-          title="Reference Images" 
-          defaultOpen={true}
-        >
-          <div className="space-y-4">
-            <div>
-              <p className="text-sm text-muted-foreground mb-2">
-                {referenceState.completedImages}/{referenceState.totalImages || referenceImages.length} images ready
-              </p>
-              <Progress value={referenceProgressValue} className="h-2" />
-            </div>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {referenceImages.map((entry) => (
-                <div key={entry.key} className="space-y-2 rounded-lg border p-3">
-                  <div className="flex items-center justify-between text-sm">
-                    <div className="font-semibold capitalize">
-                      {entry.imageType} · {entry.imageId}
-                    </div>
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${referenceStatusClasses[entry.status]}`}>
-                      {referenceStatusLabels[entry.status]}
-                    </span>
-                  </div>
-                  {entry.imageUrl ? (
-                    <div className="relative h-40 w-full overflow-hidden rounded-md border bg-muted/30">
-                      <Image
-                        src={entry.imageUrl}
-                        alt={`${entry.imageType} ${entry.imageId}`}
-                        fill
-                        className="object-cover"
-                        loading="lazy"
-                        unoptimized
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex h-40 items-center justify-center rounded-md border border-dashed bg-muted/30 text-xs text-muted-foreground">
-                      {entry.status === "failed" ? "Image unavailable" : "Waiting for image"}
-                    </div>
-                  )}
-                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                    {typeof entry.generationTime === "number" && (
-                      <span>{entry.generationTime.toFixed(1)}s</span>
-                    )}
-                    {typeof entry.cost === "number" && <span>${entry.cost.toFixed(3)}</span>}
-                    {entry.retryCount ? <span>Retries: {entry.retryCount}</span> : null}
-                  </div>
-                  {entry.reason && (
-                    <p className="text-xs text-muted-foreground">
-                      {entry.reason}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         </CollapsibleCard>
       )}
@@ -664,6 +717,64 @@ export function ProgressTracker({
         </CollapsibleCard>
       )}
 
+      {referenceImages.length > 0 && (
+        <CollapsibleCard 
+          title="Reference Images" 
+          defaultOpen={true}
+        >
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm text-muted-foreground mb-2">
+                {referenceState.completedImages}/{referenceState.totalImages || referenceImages.length} images ready
+              </p>
+              <Progress value={referenceProgressValue} className="h-2" />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {referenceImages.map((entry) => (
+                <div key={entry.key} className="space-y-2 rounded-lg border p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="font-semibold capitalize">
+                      {entry.imageType} · {entry.imageId}
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${referenceStatusClasses[entry.status]}`}>
+                      {referenceStatusLabels[entry.status]}
+                    </span>
+                  </div>
+                  {entry.imageUrl ? (
+                    <div className="relative h-40 w-full overflow-hidden rounded-md border bg-muted/30">
+                      <Image
+                        src={entry.imageUrl}
+                        alt={`${entry.imageType} ${entry.imageId}`}
+                        fill
+                        className="object-cover"
+                        loading="lazy"
+                        unoptimized
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex h-40 items-center justify-center rounded-md border border-dashed bg-muted/30 text-xs text-muted-foreground">
+                      {entry.status === "failed" ? "Image unavailable" : "Waiting for image"}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                    {typeof entry.generationTime === "number" && (
+                      <span>{entry.generationTime.toFixed(1)}s</span>
+                    )}
+                    {typeof entry.cost === "number" && <span>${entry.cost.toFixed(3)}</span>}
+                    {entry.retryCount ? <span>Retries: {entry.retryCount}</span> : null}
+                  </div>
+                  {entry.reason && (
+                    <p className="text-xs text-muted-foreground">
+                      {entry.reason}
+                    </p>
+                  )}
+                </div>
+              ))}
+              </div>
+            </div>
+        </CollapsibleCard>
+      )}
+
       {promptResults && (
         <CollapsibleCard title="Clip Prompts" defaultOpen={false}>
           <div className="space-y-4">
@@ -694,6 +805,66 @@ export function ProgressTracker({
                 </div>
               ))}
             </div>
+          </div>
+        </CollapsibleCard>
+      )}
+
+      {(videoTotals.total > 0) && (
+        <CollapsibleCard title="Video Generation" defaultOpen={true}>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Overall Progress</span>
+              <span className="font-medium">
+                {videoTotals.completed}/{videoTotals.total} clips completed
+              </span>
+            </div>
+            <Progress
+              value={
+                videoTotals.total > 0 ? (videoTotals.completed / videoTotals.total) * 100 : 0
+              }
+              className="h-2"
+            />
+            <div className="text-xs text-muted-foreground flex gap-4">
+              <span>Failed: {videoTotals.failed}</span>
+              <span>Retries: {videoTotals.retries}</span>
+            </div>
+            {videoTotals.total > 0 && (
+              <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                {Array.from({ length: videoTotals.total }).map((_, idx) => {
+                  const status = clipStatuses[idx] || "pending"
+                  return (
+                    <div
+                      key={idx}
+                      className={
+                        "flex items-center justify-between rounded border px-2 py-1 text-xs " +
+                        (status === "completed"
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                          : status === "failed"
+                          ? "bg-rose-50 border-rose-200 text-rose-800"
+                          : status === "retrying"
+                          ? "bg-amber-50 border-amber-200 text-amber-800"
+                          : "bg-muted/30 border-muted-200 text-muted-foreground")
+                      }
+                    >
+                      <span>Clip {idx}</span>
+                      <span
+                        className={
+                          "ml-2 h-3 w-3 rounded-full " +
+                          (status === "completed"
+                            ? "bg-emerald-500"
+                            : status === "failed"
+                            ? "bg-rose-500"
+                            : status === "retrying"
+                            ? "bg-amber-500"
+                            : "bg-muted-foreground animate-pulse")
+                        }
+                        title={status}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </CollapsibleCard>
       )}
