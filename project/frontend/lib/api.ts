@@ -157,6 +157,7 @@ export async function downloadVideo(jobId: string): Promise<Blob> {
     headers["Authorization"] = `Bearer ${token}`
   }
 
+  // First, get the signed download URL from the API
   const response = await fetch(`${API_BASE_URL}/api/v1/jobs/${jobId}/download`, {
     headers,
   })
@@ -175,6 +176,22 @@ export async function downloadVideo(jobId: string): Promise<Blob> {
     throw new APIError("Download failed", response.status, true)
   }
 
-  return await response.blob()
+  // Parse the JSON response to get the download_url
+  const data = await response.json()
+  const downloadUrl = data.download_url
+
+  if (!downloadUrl) {
+    throw new APIError("Download URL not found in response", 500, false)
+  }
+
+  // Fetch the actual video file from the signed URL
+  const videoResponse = await fetch(downloadUrl)
+
+  if (!videoResponse.ok) {
+    throw new APIError("Failed to download video file", videoResponse.status, true)
+  }
+
+  // Return the video blob
+  return await videoResponse.blob()
 }
 
