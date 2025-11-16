@@ -22,13 +22,29 @@ async function request<T>(
     headers["Authorization"] = `Bearer ${token}`
     console.log("Sending request with token:", endpoint, "Token:", token.substring(0, 20) + "...")
   } else {
-    // Debug: Log when token is missing
-    console.error("❌ No auth token found for request to:", endpoint)
-    console.error("Auth store state:", {
-      user: authStore.getState().user?.email,
-      hasToken: !!authStore.getState().token,
-      token: authStore.getState().token
-    })
+    // Try to get token from Supabase session as fallback (similar to SSE)
+    try {
+      const { supabase } = await import("@/lib/supabase")
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.access_token) {
+        const fallbackToken = session.access_token
+        console.log("✅ Found token in Supabase session, using for request")
+        headers["Authorization"] = `Bearer ${fallbackToken}`
+        // Update authStore with the token
+        authStore.setState({ token: fallbackToken })
+      } else {
+        // Debug: Log when token is missing
+        console.error("❌ No auth token found for request to:", endpoint)
+        console.error("Auth store state:", {
+          user: authStore.getState().user?.email,
+          hasToken: !!authStore.getState().token,
+          isLoading: authStore.getState().isLoading
+        })
+        // Don't throw error here - let the API handle 401
+      }
+    } catch (err) {
+      console.error("❌ Failed to get token from Supabase session:", err)
+    }
   }
 
   // Don't set Content-Type for FormData (browser will set it with boundary)
@@ -42,10 +58,18 @@ async function request<T>(
     if (typeof window !== "undefined") {
       console.log("🌐 Making request to:", fullUrl)
     }
+    
+    // Add timeout to prevent hanging (30 seconds)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
+    
     const response = await fetch(fullUrl, {
       ...options,
       headers,
+      signal: controller.signal,
     })
+    
+    clearTimeout(timeoutId)
 
     if (!response.ok) {
       let errorMessage = "An error occurred"
@@ -93,6 +117,12 @@ async function request<T>(
     if (error instanceof APIError) {
       throw error
     }
+    // Handle abort (timeout)
+    if (error instanceof Error && error.name === "AbortError") {
+      console.error("❌ Request timeout:", endpoint)
+      throw new APIError("Request timeout - server took too long to respond", 0, true)
+    }
+    console.error("❌ Request error:", endpoint, error)
     throw new APIError("Connection error", 0, true)
   }
 }

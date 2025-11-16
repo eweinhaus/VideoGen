@@ -171,22 +171,18 @@ class TestProcessInputValidation:
         clips.clips = [clips.clips[2], clips.clips[0], clips.clips[1]]
         
         # Mock all dependencies to avoid actual processing
-        # Patch publish_progress before reload, then reload to use patched version
-        with patch('modules.composer.process.publish_progress', new_callable=AsyncMock) as mock_publish:
-            # Reload after patching
-            if 'modules.composer.process' in sys.modules:
-                importlib.reload(sys.modules['modules.composer.process'])
-            from modules.composer.process import process
-            
-            with patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
-                 patch('modules.composer.downloader.download_audio', new_callable=AsyncMock) as mock_download_audio, \
-                 patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
-                 patch('modules.composer.duration_handler.handle_clip_duration', new_callable=AsyncMock) as mock_duration, \
-                 patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
-                 patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
-                 patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
-                 patch('shared.storage.StorageClient') as mock_storage, \
-                 patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
+        # Reload module first, then patch publish_progress from the module object
+        process_module_reloaded = sys.modules.get('modules.composer.process')
+        with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock) as mock_publish, \
+             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
+             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock) as mock_download_audio, \
+             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.duration_handler.handle_clip_duration', new_callable=AsyncMock) as mock_duration, \
+             patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch('shared.storage.StorageClient') as mock_storage, \
+             patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
             
             from pathlib import Path
             mock_path = MagicMock(spec=Path)
