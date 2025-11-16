@@ -395,14 +395,14 @@ async def generate_video_clip(
                 
                 # Emit heartbeat every 10 seconds to show activity
                 # Check if we've crossed a 10-second boundary (more reliable than modulo)
-                current_heartbeat_second = elapsed_seconds // 10
+                current_heartbeat_second = int(elapsed) // 10
                 if current_heartbeat_second > last_heartbeat_second:
                     last_heartbeat_second = current_heartbeat_second
                     progress_callback({
                         "event_type": "video_generation_progress",
                         "data": {
                             "clip_index": clip_prompt.clip_index,
-                            "elapsed_seconds": elapsed_seconds,
+                            "elapsed_seconds": int(elapsed),
                             "estimated_remaining": max(0, int(estimated_clip_time - elapsed)),
                             "sub_progress": sub_progress_ratio,
                         }
