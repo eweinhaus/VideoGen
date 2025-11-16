@@ -64,11 +64,31 @@ def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
     Build deterministic prompt/negative prompt pair for a clip.
     """
     fragments: List[str] = []
-
+    
+    # When using character reference images, we need to strongly emphasize the scene from the prompt
+    # and explicitly ignore the background from the character reference image
+    using_character_ref = bool(context.character_reference_urls)
+    
+    # If using character reference, start with explicit scene instruction
+    if using_character_ref:
+        # Put scene description FIRST and make it very explicit
+        if context.scene_descriptions:
+            scene_desc = ', '.join(context.scene_descriptions)
+            fragments.append(f"SCENE SETTING (ignore background from reference image): {scene_desc}")
+        elif context.visual_description:
+            fragments.append(f"SCENE SETTING (ignore background from reference image): {context.visual_description.strip()}")
+        else:
+            fragments.append("SCENE SETTING (ignore background from reference image): Wide shot of the main scene consistent with the overall style")
+        
+        # Add explicit instruction to ignore image background
+        fragments.append("IMPORTANT: Use the scene description above, completely ignore any background or scene elements from the character reference image")
+    
+    # Core visual description
     description = context.visual_description.strip()
     if not description:
         description = "Wide shot of the main scene consistent with the overall style"
-    fragments.append(description)
+    if not using_character_ref:  # Only add if we didn't already add it above
+        fragments.append(description)
 
     motion = context.motion.strip() if context.motion else ""
     if not motion:
@@ -85,7 +105,8 @@ def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
             f"Characters: {', '.join(context.character_descriptions)}"
         )
 
-    if context.scene_descriptions:
+    if context.scene_descriptions and not using_character_ref:
+        # Only add scene descriptions here if we didn't already add them at the start
         fragments.append(
             f"Scene context: {', '.join(context.scene_descriptions)}"
         )
@@ -111,6 +132,10 @@ def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
     reference_hint = _build_reference_hint(context)
     if reference_hint:
         fragments.append(reference_hint)
+    
+    # Add final reminder if using character reference
+    if using_character_ref:
+        fragments.append("REMINDER: Scene and background must come from the prompt description above, not from the character reference image")
 
     prompt = ", ".join(fragment for fragment in fragments if fragment)
     prompt = _enforce_word_limit(prompt, 200)
@@ -164,7 +189,10 @@ def _build_reference_hint(context: ClipContext) -> str:
     if context.scene_reference_url:
         hints.append("Match the look and composition of the established scene reference image")
     if context.character_reference_urls:
-        hints.append("Keep character appearance consistent with earlier shots")
+        # When using character reference images, focus on character/object appearance only
+        # Ignore any scene/background in the character reference image - use the prompt's scene description instead
+        # Make this very explicit since the model tends to use the image as first frame
+        hints.append("CRITICAL: Character reference image is ONLY for character appearance - completely ignore all background, scene, setting, or environment from the character reference image. The scene must come entirely from the prompt description above.")
     return ", ".join(hints)
 
 
