@@ -105,65 +105,41 @@ async def process(
                     "total_clips": len(clip_prompts.clip_prompts),
                 }
             })
-            # Download and upload image if available
+            # Download and upload image if available (optional via env)
             # Priority: Character reference images > Scene reference images
-            # Character reference images are used for character appearance consistency
-            # Scene reference images are used for scene/background consistency
+            # Default to NOT using reference images unless explicitly enabled
+            use_references = os.getenv("VIDEO_USE_REFERENCES", "false").lower() in ("1", "true", "yes", "on")
             image_url = None
-            
-            # Prioritize character reference images (for character appearance)
-            if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
-                character_ref_url = clip_prompt.character_reference_urls[0]  # Use first character reference
-                logger.debug(
-                    f"Using character reference image for clip {clip_prompt.clip_index}",
-                    extra={"job_id": str(job_id), "character_ref_url": character_ref_url}
-                )
-                image_url = await download_and_upload_image(
-                    character_ref_url,
-                    job_id
-                )
-                if not image_url:
-                    logger.warning(
-                        f"Character reference image download failed for clip {clip_prompt.clip_index}, falling back to scene reference",
-                        extra={"job_id": str(job_id)}
+            if use_references:
+                # Prioritize character reference images (for character appearance)
+                if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+                    character_ref_url = clip_prompt.character_reference_urls[0]  # Use first character reference
+                    logger.debug(
+                        f"Using character reference image for clip {clip_prompt.clip_index}",
+                        extra={"job_id": str(job_id), "character_ref_url": character_ref_url}
                     )
-                    # Fall through to scene reference if character reference download fails
-                    if clip_prompt.scene_reference_url:
-                        logger.debug(
-                            f"Using scene reference image for clip {clip_prompt.clip_index}",
+                    image_url = await download_and_upload_image(
+                        character_ref_url,
+                        job_id
+                    )
+                    if not image_url and clip_prompt.scene_reference_url:
+                        logger.warning(
+                            f"Character reference download failed; falling back to scene reference for clip {clip_prompt.clip_index}",
                             extra={"job_id": str(job_id)}
                         )
                         image_url = await download_and_upload_image(
                             clip_prompt.scene_reference_url,
                             job_id
                         )
-                        if not image_url:
-                            logger.warning(
-                                f"Scene reference image download failed for clip {clip_prompt.clip_index}, proceeding text-only",
-                                extra={"job_id": str(job_id)}
-                            )
-            # Use scene reference images if no character reference available
-            elif clip_prompt.scene_reference_url:
-                logger.debug(
-                    f"Using scene reference image for clip {clip_prompt.clip_index}",
-                    extra={"job_id": str(job_id)}
-                )
-                image_url = await download_and_upload_image(
-                    clip_prompt.scene_reference_url,
-                    job_id
-                )
-                if not image_url:
-                    logger.warning(
-                        f"Scene reference image download failed for clip {clip_prompt.clip_index}, proceeding text-only",
+                elif clip_prompt.scene_reference_url:
+                    logger.debug(
+                        f"Using scene reference image for clip {clip_prompt.clip_index}",
                         extra={"job_id": str(job_id)}
                     )
-            else:
-                # No references available - text-only generation
-                logger.debug(
-                    f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
-                    extra={"job_id": str(job_id)}
-                )
-                image_url = None
+                    image_url = await download_and_upload_image(
+                        clip_prompt.scene_reference_url,
+                        job_id
+                    )
             
             # Retry logic
             for attempt in range(3):
