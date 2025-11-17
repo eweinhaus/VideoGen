@@ -256,25 +256,22 @@ async def process(
             step_start = time.time()
             duration_handled_paths = []
             clips_trimmed = 0
-            clips_looped = 0
             for normalized_path, clip in zip(normalized_paths, sorted_clips):
-                result_path, was_trimmed, was_looped = await handle_clip_duration(
+                result_path, was_trimmed, _ = await handle_clip_duration(
                     normalized_path, clip, temp_dir, job_id_uuid
                 )
                 duration_handled_paths.append(result_path)
                 if was_trimmed:
                     clips_trimmed += 1
-                if was_looped:
-                    clips_looped += 1
             timings["handle_durations"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Durations handled", 94)
             
             logger.info(
-                f"Handled durations: {clips_trimmed} trimmed, {clips_looped} looped in {timings['handle_durations']:.2f}s",
+                f"Handled durations: {clips_trimmed} trimmed, {len(sorted_clips) - clips_trimmed} used as-is in {timings['handle_durations']:.2f}s",
                 extra={
                     "job_id": str(job_id_uuid),
                     "clips_trimmed": clips_trimmed,
-                    "clips_looped": clips_looped,
+                    "clips_used_as_is": len(sorted_clips) - clips_trimmed,
                     "duration_handling_time": timings["handle_durations"]
                 }
             )
@@ -417,7 +414,7 @@ async def process(
             sync_drift=sync_drift,
             clips_used=len(sorted_clips),
             clips_trimmed=clips_trimmed,
-            clips_looped=clips_looped,
+            clips_looped=0,  # Looping disabled - clips are concatenated as-is
             transitions_applied=len(sorted_clips) - 1,  # N clips = N-1 transitions
             file_size_mb=file_size_mb,
             composition_time=composition_time,
@@ -434,7 +431,7 @@ async def process(
                 "composition_time": composition_time,
                 "clips_used": len(sorted_clips),
                 "clips_trimmed": clips_trimmed,
-                "clips_looped": clips_looped,
+                "clips_looped": 0,  # Looping disabled
                 "sync_drift": sync_drift,
                 "video_duration": final_video_duration,
                 "audio_duration": audio_duration,
