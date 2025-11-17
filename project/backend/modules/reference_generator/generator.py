@@ -110,14 +110,32 @@ async def generate_image(
     )
     
     # Default generation settings
+    # Enhanced negative prompt for character images to prevent cartoonish results
+    if image_type == "character":
+        negative_prompt = (
+            "cartoon, illustration, painting, drawing, anime, manga, 3d render, cgi, "
+            "digital art, stylized, artistic, abstract, fantasy art, concept art, "
+            "comic book, graphic novel, animated, animation, cartoonish, "
+            "blurry, static, low quality, distorted, watermark, text overlay, "
+            "oversaturated, fake, artificial, plastic, doll-like, toy-like, "
+            "unrealistic proportions, exaggerated features, "
+            "watercolor, oil painting, sketch, line art, vector art, "
+            "stylized features, exaggerated eyes, anime eyes, manga style"
+        )
+    else:
+        negative_prompt = (
+            "blurry, static, low quality, distorted, watermark, text overlay, "
+            "cartoon, illustration, painting, drawing"
+        )
+    
     default_settings = {
         "prompt": prompt,
-        "negative_prompt": "blurry, static, low quality, distorted, watermark, text overlay",
+        "negative_prompt": negative_prompt,
         "width": 1024,
         "height": 1024,
         "num_outputs": 1,
-        "guidance_scale": 7.5,
-        "num_inference_steps": 30,
+        "guidance_scale": 9.0 if image_type == "character" else 7.5,  # Even higher guidance for more realistic characters
+        "num_inference_steps": 50 if image_type == "character" else 30,  # More steps for better quality
         "scheduler": "K_EULER"
         # Note: seed is omitted - Replicate will randomize if not provided
         # If you need deterministic results, set seed to an integer
@@ -180,8 +198,8 @@ async def generate_image(
         if not output_url:
             raise GenerationError(f"No output URL returned from Replicate API for {image_id}")
         
-        # Download image bytes
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
+        # Download image bytes (increased timeout to 60s for large images)
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
             response = await http_client.get(output_url)
             response.raise_for_status()
             image_bytes = response.content
@@ -317,8 +335,27 @@ async def generate_all_references(
         async with sem:
             # For variations, append variation index to image_id
             base_image_id = scene_or_char.id
-            image_id = f"{base_image_id}_var{variation_index}" if img_type == "character" and variation_index > 0 else base_image_id
-            description = scene_or_char.description
+            # For character images, only generate base (variation_index=0) for consistency
+            # Multiple variations cause inconsistency - we want the SAME person in all clips
+            if img_type == "character" and variation_index > 0:
+                # Skip variations - only generate base character reference
+                logger.debug(
+                    f"Skipping character variation {variation_index} for {base_image_id} - using single consistent reference",
+                    extra={"job_id": str(job_id), "image_id": base_image_id, "variation_index": variation_index}
+                )
+                return {
+                    "success": False,
+                    "image_type": img_type,
+                    "image_id": f"{base_image_id}_var{variation_index}",
+                    "character_id": base_image_id,
+                    "error": "Skipped - using single consistent character reference",
+                    "retry_count": 0,
+                    "skipped": True
+                }
+            
+            image_id = base_image_id  # Always use base ID for characters (no variations)
+            # Get description - for characters, use description field or fallback to ID
+            description = getattr(scene_or_char, 'description', None) or base_image_id
             
             # Check budget before generation (if duration provided)
             if duration_seconds:
@@ -348,7 +385,15 @@ async def generate_all_references(
             
             try:
                 # Synthesize prompt with variation support
-                prompt = synthesize_prompt(description, plan.style, img_type, variation_index)
+                # For character images, pass the Character object for enhanced prompts
+                character_obj = scene_or_char if img_type == "character" else None
+                prompt = synthesize_prompt(
+                    description, 
+                    plan.style, 
+                    img_type, 
+                    variation_index,
+                    character=character_obj
+                )
                 
                 # Generate image (first attempt)
                 retry_count = 0
@@ -454,13 +499,10 @@ async def generate_all_references(
         concurrency = 2
         semaphore = asyncio.Semaphore(concurrency)
     
-    # Get number of variations per character from settings
-    variations_per_character = settings.reference_variations_per_character
-
     # Create tasks for all images
     # Scenes: 1 per scene
-    # Characters: N variations per character
-    total_character_tasks = len(characters) * variations_per_character
+    # Characters: 1 per character (no variations for consistency - same person in all clips)
+    total_character_tasks = len(characters)  # Always 1 per character
     total_tasks = len(scenes) + total_character_tasks
 
     logger.info(
@@ -469,7 +511,7 @@ async def generate_all_references(
             "job_id": str(job_id),
             "scenes_count": len(scenes),
             "characters_count": len(characters),
-            "variations_per_character": variations_per_character,
+            "variations_per_character": 1,  # Always 1 for consistency
             "total_character_tasks": total_character_tasks,
             "total_tasks": total_tasks
         }
@@ -480,10 +522,11 @@ async def generate_all_references(
     for scene in scenes:
         tasks.append(generate_one(semaphore, scene, "scene", variation_index=0))
 
-    # Generate character references (N variations per character)
+    # Generate character references (1 per character for consistency)
+    # Multiple variations cause inconsistency - we want the SAME person in all clips
     for char in characters:
-        for var_idx in range(variations_per_character):
-            tasks.append(generate_one(semaphore, char, "character", variation_index=var_idx))
+        # Only generate base (variation_index=0) for character consistency
+        tasks.append(generate_one(semaphore, char, "character", variation_index=0))
     
     if len(tasks) == 0:
         logger.warning(

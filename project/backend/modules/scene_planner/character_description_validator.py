@@ -152,6 +152,7 @@ def _extract_features(description: str) -> Dict[str, str]:
     Extract character features from description text.
 
     Uses regex patterns to find feature descriptions even if format is not perfect.
+    Handles both newline-separated and dash-separated formats.
 
     Returns:
         Dictionary mapping feature names to descriptions
@@ -159,15 +160,16 @@ def _extract_features(description: str) -> Dict[str, str]:
     features = {}
 
     # Pattern to match "Feature: description" format
-    # Handles both bullet point format and inline format
+    # Handles both bullet point format and inline format (with " - " separators)
+    # Captures until next feature, newline, or end of string
     feature_patterns = {
-        "Hair": r"(?:^|\n)\s*[-•]?\s*Hair:\s*([^\n]+)",
-        "Face": r"(?:^|\n)\s*[-•]?\s*Face:\s*([^\n]+)",
-        "Eyes": r"(?:^|\n)\s*[-•]?\s*Eyes:\s*([^\n]+)",
-        "Clothing": r"(?:^|\n)\s*[-•]?\s*Clothing:\s*([^\n]+)",
-        "Accessories": r"(?:^|\n)\s*[-•]?\s*Accessories:\s*([^\n]+)",
-        "Build": r"(?:^|\n)\s*[-•]?\s*Build:\s*([^\n]+)",
-        "Age": r"(?:^|\n)\s*[-•]?\s*Age:\s*([^\n]+)",
+        "Hair": r"[-•]?\s*Hair:\s*([^-\n]+?)(?=\s*-\s*(?:Face|Eyes|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Face": r"[-•]?\s*Face:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Eyes|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Eyes": r"[-•]?\s*Eyes:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Clothing": r"[-•]?\s*Clothing:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Accessories": r"[-•]?\s*Accessories:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Build|Age|CRITICAL)|\n|$)",
+        "Build": r"[-•]?\s*Build:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Accessories|Age|CRITICAL)|\n|$)",
+        "Age": r"[-•]?\s*Age:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Accessories|Build|CRITICAL)|\n|$)",
     }
 
     for feature_name, pattern in feature_patterns.items():
@@ -175,8 +177,8 @@ def _extract_features(description: str) -> Dict[str, str]:
         if match:
             # Clean up the extracted text
             feature_text = match.group(1).strip()
-            # Remove trailing punctuation or "CRITICAL" if it got captured
-            feature_text = re.sub(r'(CRITICAL|\.|\n).*$', '', feature_text, flags=re.DOTALL).strip()
+            # Remove trailing punctuation
+            feature_text = feature_text.rstrip('.,;')
             features[feature_name] = feature_text
         else:
             logger.warning(
