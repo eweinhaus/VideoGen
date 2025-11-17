@@ -30,23 +30,25 @@ def extract_character_features(
         description: Raw character description from Scene Planner LLM
 
     Returns:
-        Tuple of (CharacterFeatures, character_name) or (None, None) if extraction fails
+        Tuple of (CharacterFeatures, character_name) - always returns CharacterFeatures (uses defaults if needed)
     """
     # Extract features from the description
     features_dict = _extract_features(description)
 
-    # If we didn't extract enough features, log warning and return None
+    # ALWAYS create CharacterFeatures object (use defaults if extraction fails)
+    # This ensures we never fall back to raw description text without names/roles
     if len(features_dict) < 4:
         logger.warning(
-            f"Character {character_id} description missing most features (only {len(features_dict)} found)",
+            f"Character {character_id} description missing most features (only {len(features_dict)} found), will use defaults",
             extra={
                 "character_id": character_id,
-                "features_extracted": list(features_dict.keys())
+                "features_extracted": list(features_dict.keys()),
+                "note": "Using defaults to ensure structured formatting with names/roles"
             }
         )
-        return None, character_name
 
     # Build CharacterFeatures object with extracted or default values
+    # NOTE: ALWAYS returns CharacterFeatures (never None) to ensure proper formatting
     features = CharacterFeatures(
         hair=features_dict.get("Hair") or "short dark brown hair, straight texture, neat style",
         face=features_dict.get("Face") or "medium brown skin tone, oval face shape, smooth features, clean shaven",

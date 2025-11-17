@@ -121,3 +121,55 @@ async def get_audio_duration(audio_path: Path) -> float:
     """
     return await get_video_duration(audio_path)
 
+
+async def get_video_properties(video_path: Path) -> dict:
+    """
+    Get video properties (width, height, fps) using ffprobe.
+    
+    Args:
+        video_path: Path to video file
+        
+    Returns:
+        Dictionary with width, height, fps, or None values if extraction fails
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path)
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        lines = result.stdout.strip().split('\n')
+        width = int(lines[0]) if lines[0] else None
+        height = int(lines[1]) if lines[1] else None
+        
+        # Parse fps from fraction (e.g., "30/1" -> 30.0)
+        fps = None
+        if len(lines) > 2 and lines[2]:
+            fps_str = lines[2].strip()
+            if '/' in fps_str:
+                num, den = fps_str.split('/')
+                fps = float(num) / float(den) if float(den) != 0 else None
+            else:
+                fps = float(fps_str)
+        
+        return {
+            "width": width,
+            "height": height,
+            "fps": fps
+        }
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError, subprocess.TimeoutExpired, IndexError) as e:
+        logger.warning(
+            f"Failed to get video properties: {e}, will re-encode",
+            extra={"video_path": str(video_path)}
+        )
+        return {"width": None, "height": None, "fps": None}
+
