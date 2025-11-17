@@ -26,13 +26,32 @@ const VALID_AUDIO_TYPES = [
   "audio/x-flac",
 ]
 
-// In production, always use full pipeline (composer)
-// In development, default to scene_planner for testing
-const getDefaultStopAtStage = (): PipelineStage | null => {
+// Check if we're in production environment
+const isProduction = (): boolean => {
   if (process.env.NODE_ENV === "production") {
-    return "composer"
+    return true
   }
-  return "scene_planner"
+  if (process.env.NEXT_PUBLIC_ENVIRONMENT === "production") {
+    return true
+  }
+  if (process.env.NEXT_PUBLIC_DISABLE_STOP_AT_STAGE === "true") {
+    return true
+  }
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname
+    const isLocalhost = hostname === "localhost" || hostname.includes("127.0.0.1")
+    const isPreviewDeployment = hostname.includes(".vercel.app") && 
+                                 (hostname.match(/-/g) || []).length >= 2
+    if (!isLocalhost && !isPreviewDeployment) {
+      return true
+    }
+  }
+  return false
+}
+
+// Default to composer (full pipeline) for all environments
+const getDefaultStopAtStage = (): PipelineStage | null => {
+  return "composer"
 }
 
 export const uploadStore = create<UploadState>((set, get) => ({
@@ -134,7 +153,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
     try {
       // In production, always use composer (full pipeline)
       // In development, use the selected stage or default to composer
-      const stopAtStage = process.env.NODE_ENV === "production" 
+      const stopAtStage = isProduction()
         ? "composer" 
         : get().stopAtStage || "composer"
       
@@ -166,7 +185,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({
       audioFile: null,
       userPrompt: "",
-      stopAtStage: getDefaultStopAtStage(), // Reset to default (composer in prod, scene_planner in dev)
+      stopAtStage: getDefaultStopAtStage(), // Reset to default (composer)
       errors: {},
       isSubmitting: false,
     })
