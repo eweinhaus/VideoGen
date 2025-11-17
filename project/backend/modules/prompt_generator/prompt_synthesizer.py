@@ -73,6 +73,10 @@ class ClipContext:
     cinematography_full: str = ""
     color_palette_full: List[str] = field(default_factory=list)
 
+    # CHARACTER CONSISTENCY FIX: Character objects (not just descriptions)
+    # This allows access to structured features for proper formatting
+    characters: List[Any] = field(default_factory=list)  # List[Character] from shared.models.scene
+
 
 def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = True) -> Tuple[str, str]:
     """
@@ -142,8 +146,8 @@ def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = 
             f"Scene context: {', '.join(context.scene_descriptions)}"
         )
 
-    if context.lyrics_context:
-        fragments.append(f"Lyrics reference: \"{context.lyrics_context.strip()}\"")
+    # NOTE: Lyrics are now appended AFTER LLM optimization (similar to character identity blocks)
+    # to ensure they are not modified by the LLM and remain exactly as extracted from audio parser
 
     # PHASE 2: Conditionally include comprehensive style block
     # When include_comprehensive_style=False (for LLM optimization), use condensed style
@@ -260,28 +264,125 @@ def build_character_identity_block(context: ClipContext) -> str:
     """
     Build character identity block with immutable character descriptions.
 
+    PHASE 1: Now formats from structured CharacterFeatures instead of pre-formatted text.
+    PHASE 3: Properly separates multiple characters with clear labels and roles.
+
     This ensures identical character descriptions across all clips, preventing
     the LLM from modifying or paraphrasing character features.
 
-    Similar to build_comprehensive_style_block(), but for character identity.
     This is appended AFTER LLM optimization to ensure the model cannot rewrite
     or deviate from the precise character specifications.
 
     Args:
-        context: ClipContext with character descriptions
+        context: ClipContext with Character objects (with structured features)
 
     Returns:
-        Formatted character identity block with emphasis on immutability
+        Formatted character identity block with proper multi-character separation
     """
-    if not context.character_descriptions:
+    # Try to use structured Character objects first
+    if context.characters:
+        return _build_identity_from_characters(context.characters)
+
+    # Fallback: Use legacy character_descriptions if available
+    if context.character_descriptions:
+        return _build_identity_from_descriptions(context.character_descriptions)
+
+    return ""
+
+
+def _build_identity_from_characters(characters: List[Any]) -> str:
+    """
+    Build character identity block from structured Character objects.
+
+    PHASE 1: Formats from CharacterFeatures (no pre-formatted text).
+    PHASE 3: Proper multi-character formatting with labels and roles.
+
+    Args:
+        characters: List of Character objects with structured features
+
+    Returns:
+        Formatted character identity block
+    """
+    if not characters:
+        return ""
+
+    # Build individual character blocks
+    character_blocks = []
+    for char in characters:
+        # Skip if no features available (fallback to description if needed)
+        if not hasattr(char, 'features') or char.features is None:
+            # Fallback to description field if features not available
+            if hasattr(char, 'description') and char.description:
+                character_blocks.append(char.description)
+            continue
+
+        # Get character name and role
+        char_name = getattr(char, 'name', None) or getattr(char, 'id', 'Character')
+        char_role = getattr(char, 'role', '')
+
+        # Build character label with role
+        if char_role and char_role != 'character':
+            char_label = f"{char_name} ({char_role})"
+        else:
+            char_label = char_name
+
+        # Format features (NO "FIXED CHARACTER IDENTITY:" header - that caused nesting)
+        features = char.features
+        char_block = f"""{char_label}:
+Hair: {features.hair}
+Face: {features.face}
+Eyes: {features.eyes}
+Clothing: {features.clothing}
+Accessories: {features.accessories}
+Build: {features.build}
+Age: {features.age}"""
+
+        character_blocks.append(char_block)
+
+    if not character_blocks:
+        return ""
+
+    # PHASE 3: Proper multi-character formatting
+    if len(character_blocks) == 1:
+        # Single character
+        identity_block = f"""CHARACTER IDENTITIES:
+
+{character_blocks[0]}
+
+CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character must maintain these precise features in every clip."""
+    else:
+        # Multiple characters - separate with double newlines
+        characters_text = "\n\n".join(character_blocks)
+        character_count = len(character_blocks)
+        identity_block = f"""CHARACTER IDENTITIES:
+
+{characters_text}
+
+CRITICAL: These are EXACT, IMMUTABLE features for ALL {character_count} characters. Each character must maintain these precise features in every clip."""
+
+    return identity_block
+
+
+def _build_identity_from_descriptions(character_descriptions: List[str]) -> str:
+    """
+    DEPRECATED: Build character identity block from pre-formatted descriptions.
+
+    This is a fallback for backward compatibility when Character objects
+    don't have structured features yet.
+
+    Args:
+        character_descriptions: List of pre-formatted character description strings
+
+    Returns:
+        Formatted character identity block
+    """
+    if not character_descriptions:
         return ""
 
     # Join all character descriptions
-    # Note: character_descriptions is a list of strings from ScenePlan
-    char_desc = ', '.join(context.character_descriptions)
+    char_desc = ', '.join(character_descriptions)
 
     # Check if character description already has CRITICAL statement
-    # (from Scene Planner's FIXED CHARACTER IDENTITY format)
     has_critical_statement = "CRITICAL:" in char_desc and "IMMUTABLE features" in char_desc
 
     if has_critical_statement:
@@ -298,6 +399,32 @@ def build_character_identity_block(context: ClipContext) -> str:
         )
 
     return identity_block
+
+
+def build_lyrics_block(context: ClipContext) -> str:
+    """
+    Build lyrics block with exact lyrics for this clip's time range.
+
+    This ensures lyrics are appended AFTER LLM optimization, preserving the exact
+    words spoken during this clip's time range as extracted by the audio parser.
+    
+    Similar to build_character_identity_block(), lyrics are appended after optimization
+    to prevent the LLM from modifying or paraphrasing them.
+
+    Args:
+        context: ClipContext with lyrics_context
+
+    Returns:
+        Formatted lyrics block with exact lyrics for this clip, or empty string if none
+    """
+    if not context.lyrics_context:
+        return ""
+
+    # Lyrics are already filtered to clip's exact time range by scene planner
+    # Format as a clear reference block
+    lyrics_block = f"LYRICS REFERENCE: \"{context.lyrics_context.strip()}\""
+
+    return lyrics_block
 
 
 def summarize_color_palette(color_palette: List[str]) -> str:

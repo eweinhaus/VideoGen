@@ -1,15 +1,88 @@
 """
-Post-processing validation and reformatting for character descriptions.
+Post-processing validation and extraction for character descriptions.
 
-Ensures character descriptions follow the FIXED CHARACTER IDENTITY format
-required for text-to-video generation consistency.
+Extracts character features from LLM output into structured format.
+Does NOT format into text - that happens later in prompt_synthesizer.
 """
 
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from shared.logging import get_logger
+from shared.models.scene import CharacterFeatures
 
 logger = get_logger("scene_planner")
+
+
+def extract_character_features(
+    character_id: str,
+    character_name: str,
+    description: str
+) -> tuple[Optional[CharacterFeatures], Optional[str]]:
+    """
+    Extract character features from LLM description into structured format.
+
+    This function ONLY extracts features - it does NOT format them into text.
+    Formatting happens later in prompt_synthesizer.build_character_identity_block().
+
+    Args:
+        character_id: Character ID (e.g., "protagonist")
+        character_name: Character name (e.g., "Alice")
+        description: Raw character description from Scene Planner LLM
+
+    Returns:
+        Tuple of (CharacterFeatures, character_name) - always returns CharacterFeatures (uses defaults if needed)
+    """
+    # Extract features from the description
+    features_dict = _extract_features(description)
+
+    # ALWAYS create CharacterFeatures object (use defaults if extraction fails)
+    # This ensures we never fall back to raw description text without names/roles
+    if len(features_dict) < 4:
+        logger.warning(
+            f"Character {character_id} description missing most features (only {len(features_dict)} found), will use defaults",
+            extra={
+                "character_id": character_id,
+                "features_extracted": list(features_dict.keys()),
+                "note": "Using defaults to ensure structured formatting with names/roles"
+            }
+        )
+
+    # Build CharacterFeatures object with extracted or default values
+    # NOTE: ALWAYS returns CharacterFeatures (never None) to ensure proper formatting
+    features = CharacterFeatures(
+        hair=features_dict.get("Hair") or "short dark brown hair, straight texture, neat style",
+        face=features_dict.get("Face") or "medium brown skin tone, oval face shape, smooth features, clean shaven",
+        eyes=features_dict.get("Eyes") or "dark brown eyes, medium eyebrows",
+        clothing=features_dict.get("Clothing") or "dark gray hoodie, blue jeans, white sneakers",
+        accessories=features_dict.get("Accessories") or "None",
+        build=features_dict.get("Build") or "athletic build, approximately 5'9\" height, medium frame",
+        age=features_dict.get("Age") or "appears late 20s"
+    )
+
+    # Log warning if using defaults
+    missing_features = [name for name in ["Hair", "Face", "Eyes", "Clothing", "Build", "Age"]
+                       if name not in features_dict or not features_dict[name]]
+
+    if missing_features:
+        logger.warning(
+            f"Character {character_id} missing features, using defaults",
+            extra={
+                "character": character_name,
+                "missing_features": missing_features,
+                "note": "Scene Planner LLM failed to provide specific details"
+            }
+        )
+
+    logger.info(
+        f"Extracted character {character_id} features into structured format",
+        extra={
+            "character_id": character_id,
+            "features_count": len(features_dict),
+            "had_all_features": len(missing_features) == 0
+        }
+    )
+
+    return features, character_name
 
 
 def validate_and_reformat_character_description(
@@ -18,10 +91,10 @@ def validate_and_reformat_character_description(
     description: str
 ) -> str:
     """
-    Validate and reformat character description to ensure it matches the required format.
+    DEPRECATED: Use extract_character_features() instead.
 
-    This is Option 2: Post-Process the Description - ensures LLM output matches
-    the exact format specification even if the LLM deviates.
+    This function is kept for backward compatibility but will be removed.
+    It extracts features and then formats them into the old text format.
 
     Args:
         character_id: Character ID (e.g., "protagonist")
@@ -31,30 +104,27 @@ def validate_and_reformat_character_description(
     Returns:
         Reformatted description in FIXED CHARACTER IDENTITY format
     """
+    # Extract features
+    features, name = extract_character_features(character_id, character_name, description)
 
-    # Check if description already has the correct format
-    if _has_correct_format(description):
-        logger.debug(
-            f"Character {character_id} description already in correct format",
+    if features is None:
+        # Fallback: use the original description
+        logger.warning(
+            f"Could not extract features for {character_id}, using original description",
             extra={"character_id": character_id}
         )
         return description
 
-    # Extract features from the description
-    features = _extract_features(description)
-
-    # Build properly formatted description
-    formatted = _build_formatted_description(character_name, features)
-
-    logger.info(
-        f"Reformatted character {character_id} description to FIXED CHARACTER IDENTITY format",
-        extra={
-            "character_id": character_id,
-            "had_format_header": "FIXED CHARACTER IDENTITY:" in description,
-            "had_critical_footer": "CRITICAL:" in description,
-            "features_extracted": len(features)
-        }
-    )
+    # Build the old formatted description for backward compatibility
+    formatted = _build_formatted_description(name or character_name, {
+        "Hair": features.hair,
+        "Face": features.face,
+        "Eyes": features.eyes,
+        "Clothing": features.clothing,
+        "Accessories": features.accessories,
+        "Build": features.build,
+        "Age": features.age
+    })
 
     return formatted
 

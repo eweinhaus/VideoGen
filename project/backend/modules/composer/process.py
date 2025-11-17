@@ -31,6 +31,7 @@ from .downloader import download_all_clips, download_audio
 from .normalizer import normalize_clip
 from .duration_handler import handle_cascading_durations, extend_last_clip
 from .transition_applier import apply_transitions
+from .video_padder import pad_video_to_audio
 from .audio_syncer import sync_audio
 from .encoder import encode_final_video
 
@@ -134,6 +135,7 @@ async def process(
         "normalize_clips": 0.0,
         "handle_durations": 0.0,
         "apply_transitions": 0.0,
+        "pad_video": 0.0,
         "sync_audio": 0.0,
         "encode_final": 0.0,
         "upload_final": 0.0,
@@ -396,11 +398,28 @@ async def process(
                 }
             )
             
-            # Step 6: Sync audio - 97-99%
-            await publish_progress(job_id_uuid, "Syncing audio with video...", 97)
+            # Step 6: Pad video to match audio length (if needed) - 97-98%
+            await publish_progress(job_id_uuid, "Padding video to match audio length...", 97)
+            step_start = time.time()
+            padded_video_path = await pad_video_to_audio(
+                concatenated_path, audio_bytes, temp_dir, job_id_uuid
+            )
+            timings["pad_video"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Video padded", 98)
+            
+            logger.info(
+                f"Padded video in {timings['pad_video']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "padding_time": timings["pad_video"]
+                }
+            )
+            
+            # Step 7: Sync audio - 98-99%
+            await publish_progress(job_id_uuid, "Syncing audio with video...", 98)
             step_start = time.time()
             video_with_audio_path, sync_drift = await sync_audio(
-                concatenated_path, audio_bytes, temp_dir, job_id_uuid
+                padded_video_path, audio_bytes, temp_dir, job_id_uuid
             )
             timings["sync_audio"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Audio synced", 99)
@@ -414,7 +433,7 @@ async def process(
                 }
             )
             
-            # Step 7: Encode final video - 99-99.5%
+            # Step 8: Encode final video - 99-99.5%
             await publish_progress(job_id_uuid, "Encoding final video...", 99)
             step_start = time.time()
             final_video_path = await encode_final_video(
@@ -431,18 +450,61 @@ async def process(
                 }
             )
             
-            # Step 8: Upload final video - 99-100%
+            # Step 9: Upload final video - 99-100%
             await publish_progress(job_id_uuid, "Uploading final video...", 99)
             step_start = time.time()
             storage = StorageClient()
             final_video_bytes = final_video_path.read_bytes()
             storage_path = f"{job_id_uuid}/final_video.mp4"
-            video_url = await storage.upload_file(
-                bucket=VIDEO_OUTPUTS_BUCKET,
-                path=storage_path,
-                file_data=final_video_bytes,
-                content_type="video/mp4"
+            
+            # Calculate file size for logging
+            file_size_mb = len(final_video_bytes) / (1024 * 1024)
+            logger.info(
+                f"Starting upload of {file_size_mb:.2f} MB video file",
+                extra={"job_id": str(job_id_uuid), "file_size_mb": file_size_mb}
             )
+            
+            # Send periodic "still uploading" messages during long uploads
+            # This helps prevent frontend timeouts by showing the upload is still active
+            upload_start = time.time()
+            
+            async def send_periodic_updates():
+                """Send periodic progress updates during upload."""
+                update_count = 0
+                while True:
+                    await asyncio.sleep(30)  # Send update every 30 seconds
+                    elapsed = time.time() - upload_start
+                    update_count += 1
+                    # Send message to keep connection alive and show progress
+                    await publish_progress(
+                        job_id_uuid,
+                        f"Uploading final video... ({elapsed:.0f}s elapsed, {file_size_mb:.1f} MB)",
+                        99  # Keep at 99% until upload completes
+                    )
+                    logger.debug(
+                        f"Upload progress update: {elapsed:.1f}s elapsed",
+                        extra={"job_id": str(job_id_uuid), "elapsed": elapsed, "update_count": update_count}
+                    )
+            
+            # Start periodic update task
+            update_task = asyncio.create_task(send_periodic_updates())
+            
+            try:
+                # Perform the actual upload (this is blocking but runs in executor)
+                video_url = await storage.upload_file(
+                    bucket=VIDEO_OUTPUTS_BUCKET,
+                    path=storage_path,
+                    file_data=final_video_bytes,
+                    content_type="video/mp4"
+                )
+            finally:
+                # Cancel the periodic update task once upload completes
+                update_task.cancel()
+                try:
+                    await update_task
+                except asyncio.CancelledError:
+                    pass
+            
             timings["upload_final"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Upload complete", 100)
             
@@ -503,7 +565,7 @@ async def process(
                 "composition_time": composition_time,
                 "clips_used": len(sorted_clips),
                 "clips_trimmed": clips_trimmed,
-                "clips_looped": clips_looped,
+                "clips_looped": 0,  # Looping disabled
                 "sync_drift": sync_drift,
                 "video_duration": final_video_duration,
                 "audio_duration": audio_duration,

@@ -10,11 +10,14 @@ from datetime import datetime
 from typing import Dict, Any
 from shared.redis_client import RedisClient
 from shared.logging import get_logger
+from shared.config import settings
 
 logger = get_logger(__name__)
 
 redis_client = RedisClient()
-QUEUE_NAME = "video_generation"
+# Use environment-aware queue name to prevent cross-environment job consumption
+# Local workers will use "video_generation_development", production uses "video_generation_production"
+QUEUE_NAME = settings.queue_name
 
 
 async def enqueue_job(

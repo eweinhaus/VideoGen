@@ -10,12 +10,41 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_serializer
 
 
+class CharacterFeatures(BaseModel):
+    """Structured character features for consistent appearance."""
+
+    hair: str = Field(description="Hair color, length, texture, and style")
+    face: str = Field(description="Skin tone, face shape, distinctive features, facial hair")
+    eyes: str = Field(description="Eye color and eyebrow description")
+    clothing: str = Field(description="Specific clothing items with colors and details")
+    accessories: str = Field(description="Accessories like glasses, jewelry, hats, or 'None'")
+    build: str = Field(description="Body type, height, and frame description")
+    age: str = Field(description="Apparent age (e.g., 'appears mid-20s')")
+
+
 class Character(BaseModel):
     """Character definition."""
-    
+
     id: str
-    description: str
-    role: str = Field(description="Character role: 'main character', 'background', etc.")
+    role: str = Field(description="Character role: 'main character', 'love interest', 'background', etc.")
+
+    # Structured features (RECOMMENDED)
+    features: Optional[CharacterFeatures] = Field(
+        default=None,
+        description="Structured character features for consistent appearance"
+    )
+
+    # Name extracted from description or ID
+    name: Optional[str] = Field(
+        default=None,
+        description="Character name (e.g., 'John', 'Sarah', 'Bartender')"
+    )
+
+    # Deprecated: Pre-formatted text description (kept for backward compatibility)
+    description: Optional[str] = Field(
+        default=None,
+        description="DEPRECATED: Use 'features' instead. Pre-formatted character description."
+    )
 
 
 class Scene(BaseModel):

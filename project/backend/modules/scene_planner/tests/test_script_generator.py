@@ -93,16 +93,28 @@ def test_generate_clip_scripts(sample_llm_output, sample_clip_boundaries, sample
 
 
 def test_align_lyrics_to_clip(sample_lyrics):
-    """Test aligning lyrics to clip time range with formatted text."""
-    # Lyrics within range - should use formatted_text
-    lyrics = _align_lyrics_to_clip(0.5, 2.5, sample_lyrics)
-    assert lyrics == "Hello world"  # Uses formatted phrase, not individual words
+    """Test aligning lyrics to clip time range - builds from individual words with mutually exclusive ranges."""
+    # Lyrics within range - builds from individual words within clip time range
+    # Words at 1.0s and 2.0s are within [0.5, 2.5), result: "Hello world"
+    lyrics = _align_lyrics_to_clip(0.5, 2.5, sample_lyrics, is_last_clip=False)
+    assert lyrics == "Hello world"  # Built from individual words, not formatted_text
+    
+    # Test half-open interval - word at exactly 2.5s should be excluded (not last clip)
+    # Word at 2.0s is included (< 2.5), but if there was a word at 2.5s it would be excluded
+    lyrics = _align_lyrics_to_clip(0.5, 2.5, sample_lyrics, is_last_clip=False)
+    assert lyrics == "Hello world"  # Only includes words < 2.5
     
     # No lyrics in range
-    lyrics = _align_lyrics_to_clip(20.0, 25.0, sample_lyrics)
+    lyrics = _align_lyrics_to_clip(20.0, 25.0, sample_lyrics, is_last_clip=False)
     assert lyrics is None
     
-    # Single lyric in range - should use formatted_text
-    lyrics = _align_lyrics_to_clip(5.5, 7.0, sample_lyrics)
-    assert lyrics == "test"  # Uses formatted phrase
+    # Single lyric in range - builds from individual word within clip time range
+    # Word at 6.0s is within [5.5, 7.0), result: "test"
+    lyrics = _align_lyrics_to_clip(5.5, 7.0, sample_lyrics, is_last_clip=False)
+    assert lyrics == "test"  # Built from individual word within clip range
+    
+    # Test last clip uses inclusive end boundary
+    # Word at 6.0s is within [5.5, 7.0] (inclusive), result: "test"
+    lyrics = _align_lyrics_to_clip(5.5, 7.0, sample_lyrics, is_last_clip=True)
+    assert lyrics == "test"  # Last clip includes boundary words
 
