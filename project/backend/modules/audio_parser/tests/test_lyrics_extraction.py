@@ -60,6 +60,11 @@ async def test_extract_lyrics_success(sample_audio_bytes, sample_job_id):
         assert len(lyrics) > 0
         assert lyrics[0].text == "test"
         assert lyrics[0].timestamp == 0.0
+        # Verify new fields are present
+        assert lyrics[0].confidence is not None
+        assert 0.0 <= lyrics[0].confidence <= 1.0
+        assert lyrics[0].formatted_text is not None
+        assert isinstance(lyrics[0].formatted_text, str)
         mock_cost_tracker.check_budget.assert_called_once()
         mock_cost_tracker.track_cost.assert_called_once()
 

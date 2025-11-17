@@ -75,7 +75,18 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
             # Check if this was a fallback (instrumental) or actual failure
             # For now, empty lyrics is valid (instrumental tracks)
             pass
-        logger.info(f"Lyrics extraction: {len(lyrics)} words")
+        
+        # Calculate average lyrics confidence
+        lyrics_confidence = 0.0
+        if lyrics:
+            lyrics_confidence = sum(
+                lyric.confidence or 0.5 for lyric in lyrics
+            ) / len(lyrics)
+        
+        logger.info(
+            f"Lyrics extraction: {len(lyrics)} words, "
+            f"avg confidence={lyrics_confidence:.2f}"
+        )
         
         # Create AudioAnalysis object
         analysis = AudioAnalysis(
@@ -92,6 +103,7 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
                 "structure_confidence": 0.8 if not structure_fallback else 0.5,
                 "mood_confidence": mood.confidence,
                 "lyrics_count": len(lyrics),
+                "lyrics_confidence": round(lyrics_confidence, 3),
                 "fallbacks_used": fallbacks_used
             }
         )

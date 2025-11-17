@@ -24,11 +24,11 @@ def sample_clip_boundaries():
 
 @pytest.fixture
 def sample_lyrics():
-    """Sample lyrics."""
+    """Sample lyrics with formatted text."""
     return [
-        Lyric(text="Hello", timestamp=1.0),
-        Lyric(text="world", timestamp=2.0),
-        Lyric(text="test", timestamp=6.0),
+        Lyric(text="Hello", timestamp=1.0, confidence=0.9, formatted_text="Hello world"),
+        Lyric(text="world", timestamp=2.0, confidence=0.9, formatted_text="Hello world"),
+        Lyric(text="test", timestamp=6.0, confidence=0.85, formatted_text="test"),
     ]
 
 
@@ -93,16 +93,16 @@ def test_generate_clip_scripts(sample_llm_output, sample_clip_boundaries, sample
 
 
 def test_align_lyrics_to_clip(sample_lyrics):
-    """Test aligning lyrics to clip time range."""
-    # Lyrics within range
+    """Test aligning lyrics to clip time range with formatted text."""
+    # Lyrics within range - should use formatted_text
     lyrics = _align_lyrics_to_clip(0.5, 2.5, sample_lyrics)
-    assert lyrics == "Hello world"
+    assert lyrics == "Hello world"  # Uses formatted phrase, not individual words
     
     # No lyrics in range
     lyrics = _align_lyrics_to_clip(20.0, 25.0, sample_lyrics)
     assert lyrics is None
     
-    # Single lyric in range
+    # Single lyric in range - should use formatted_text
     lyrics = _align_lyrics_to_clip(5.5, 7.0, sample_lyrics)
-    assert lyrics == "test"
+    assert lyrics == "test"  # Uses formatted phrase
 

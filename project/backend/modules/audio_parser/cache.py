@@ -13,6 +13,10 @@ logger = get_logger("audio_parser")
 
 redis_client = RedisClient()
 
+# Cache version - increment this to invalidate all cached results
+# Version 2: Updated clip boundaries from 4-8s to 3-7s range
+CACHE_VERSION = 2
+
 
 async def get_cached_analysis(file_hash: str) -> Optional[AudioAnalysis]:
     """
@@ -25,7 +29,7 @@ async def get_cached_analysis(file_hash: str) -> Optional[AudioAnalysis]:
         AudioAnalysis if found, None otherwise
     """
     try:
-        cache_key = f"videogen:cache:audio_cache:{file_hash}"
+        cache_key = f"videogen:cache:audio_cache:v{CACHE_VERSION}:{file_hash}"
         cached_data = await redis_client.get(cache_key)
         
         if cached_data:
@@ -48,10 +52,10 @@ async def store_cached_analysis(file_hash: str, analysis: AudioAnalysis, ttl: in
         ttl: Time to live in seconds (default: 86400 = 24 hours)
     """
     try:
-        cache_key = f"videogen:cache:audio_cache:{file_hash}"
+        cache_key = f"videogen:cache:audio_cache:v{CACHE_VERSION}:{file_hash}"
         cached_data = analysis.model_dump_json()
         await redis_client.set(cache_key, cached_data, ex=ttl)
-        logger.info(f"Stored analysis in cache: {file_hash}")
+        logger.info(f"Stored analysis in cache: {file_hash} (version {CACHE_VERSION})")
     except Exception as e:
         logger.warning(f"Failed to store cached analysis: {str(e)}")
         # Cache failures should not fail the request
