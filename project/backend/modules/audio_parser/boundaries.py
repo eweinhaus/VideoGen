@@ -49,19 +49,20 @@ def generate_boundaries(
         # If 3s <= duration < 6s, create 1 segment
         # If 6s <= duration < 9s, create 2 segments
         
+        MAX_DURATION = 25.0  # Model limit
         if total_duration < 3.0:
-            # Very short: single segment covering entire duration
+            # Very short: single segment covering entire duration, but respect 25s limit
             boundaries.append(ClipBoundary(
                 start=0.0,
-                end=total_duration,
-                duration=total_duration
+                end=min(total_duration, MAX_DURATION),
+                duration=min(total_duration, MAX_DURATION)
             ))
         elif total_duration < 6.0:
-            # Short: single segment
+            # Short: single segment, but respect 25s limit
             boundaries.append(ClipBoundary(
                 start=0.0,
-                end=total_duration,
-                duration=total_duration
+                end=min(total_duration, MAX_DURATION),
+                duration=min(total_duration, MAX_DURATION)
             ))
         else:
             # 6s <= duration < 9s: create 2 segments of ~3-5s each
@@ -180,14 +181,24 @@ def generate_boundaries(
                     # This means we're near the end and can't create a 3s clip
                     # Merge with previous boundary if possible, or extend to end
                     if len(boundaries) > 0:
-                        # Merge with previous boundary
+                        # Merge with previous boundary, but respect 25s model limit
+                        MAX_DURATION = 25.0  # Model limit
                         prev_boundary = boundaries[-1]
-                        # Create new boundary with merged end
-                        boundaries[-1] = ClipBoundary(
-                            start=prev_boundary.start,
-                            end=total_duration,
-                            duration=total_duration - prev_boundary.start
-                        )
+                        merged_duration = total_duration - prev_boundary.start
+                        if merged_duration > MAX_DURATION:
+                            # Cap at 25s limit
+                            boundaries[-1] = ClipBoundary(
+                                start=prev_boundary.start,
+                                end=prev_boundary.start + MAX_DURATION,
+                                duration=MAX_DURATION
+                            )
+                        else:
+                            # Create new boundary with merged end
+                            boundaries[-1] = ClipBoundary(
+                                start=prev_boundary.start,
+                                end=total_duration,
+                                duration=merged_duration
+                            )
                         # Skip creating this boundary
                         break
                     else:
@@ -241,12 +252,22 @@ def generate_boundaries(
             duration = end - start
             # If still < 3.0, we're at the end - merge with previous or skip
             if duration < 3.0 and len(boundaries) > 0:
+                MAX_DURATION = 25.0  # Model limit
                 prev_boundary = boundaries[-1]
-                boundaries[-1] = ClipBoundary(
-                    start=prev_boundary.start,
-                    end=total_duration,
-                    duration=total_duration - prev_boundary.start
-                )
+                merged_duration = total_duration - prev_boundary.start
+                if merged_duration > MAX_DURATION:
+                    # Cap at 25s limit
+                    boundaries[-1] = ClipBoundary(
+                        start=prev_boundary.start,
+                        end=prev_boundary.start + MAX_DURATION,
+                        duration=MAX_DURATION
+                    )
+                else:
+                    boundaries[-1] = ClipBoundary(
+                        start=prev_boundary.start,
+                        end=total_duration,
+                        duration=merged_duration
+                    )
                 continue
         elif duration > 7.0:
             # Cap at 7s maximum
@@ -267,9 +288,10 @@ def generate_boundaries(
     
     # Ensure minimum 1 clip (for very short songs, we may have fewer than 3)
     if len(boundaries) < 1:
-        # Fallback: create at least 1 clip
+        # Fallback: create at least 1 clip, but respect 25s model limit
+        MAX_DURATION = 25.0  # Model limit
         if total_duration < 3.0:
-            return [ClipBoundary(start=0.0, end=total_duration, duration=total_duration)]
+            return [ClipBoundary(start=0.0, end=min(total_duration, MAX_DURATION), duration=min(total_duration, MAX_DURATION))]
         else:
             return _create_equal_segments(total_duration, min(3, int(total_duration / 3.0)))
     
@@ -300,23 +322,30 @@ def generate_boundaries(
                 ))
                 logger.info(f"Created additional clip for remaining {remaining_time:.1f}s (last clip would have been {new_duration:.1f}s)")
             else:
-                # If we can't create a new clip (too short or max_clips reached), extend anyway
-                # This ensures we cover the full audio duration
+                # If we can't create a new clip (too short or max_clips reached), extend but cap at 25s
+                # This ensures we cover the full audio duration while respecting model limit
+                MAX_DURATION = 25.0  # Model limit: ClipBoundary.duration <= 25.0
                 prev_boundary = boundaries[-1]
+                capped_duration = min(new_duration, MAX_DURATION)
+                capped_end = prev_boundary.start + capped_duration
                 boundaries[-1] = ClipBoundary(
                     start=prev_boundary.start,
-                    end=new_end,
-                    duration=new_duration
+                    end=capped_end,
+                    duration=capped_duration
                 )
-                logger.info(f"Extended last boundary beyond 10s limit to cover full duration: {prev_boundary.end:.1f}s -> {new_end:.1f}s (duration: {new_duration:.1f}s)")
+                if new_duration > MAX_DURATION:
+                    logger.warning(f"Capped last boundary at 25s model limit: {prev_boundary.end:.1f}s -> {capped_end:.1f}s (duration: {capped_duration:.1f}s, would have been {new_duration:.1f}s)")
+                else:
+                    logger.info(f"Extended last boundary beyond 10s limit to cover full duration: {prev_boundary.end:.1f}s -> {capped_end:.1f}s (duration: {capped_duration:.1f}s)")
     
-    # Final validation: ensure all boundaries have duration >= 3.0 and <= 10.0
-    # Allow last boundary to extend up to 10s to cover full audio, but prefer 3-7s range
+    # Final validation: ensure all boundaries have duration >= 3.0 and <= 25.0 (model limit)
+    # Allow last boundary to extend up to 25s (model limit) to cover full audio, but prefer 3-7s range
     # Filter out any boundaries that don't meet the range and merge/skip as needed
+    MAX_DURATION = 25.0  # Model limit: ClipBoundary.duration <= 25.0
     validated_boundaries = []
     for i, boundary in enumerate(boundaries):
-        # Last boundary can be up to 10s (to cover full audio), others should be 3-7s
-        max_duration = 10.0 if i == len(boundaries) - 1 else 7.0
+        # Last boundary can be up to 25s (model limit, to cover full audio), others should be 3-7s
+        max_duration = MAX_DURATION if i == len(boundaries) - 1 else 7.0
         if 3.0 <= boundary.duration <= max_duration:
             validated_boundaries.append(boundary)
         elif boundary.duration < 3.0:
@@ -359,17 +388,18 @@ def generate_boundaries(
                         duration=new_duration
                     ))
         elif boundary.duration > 7.0:
-            # If duration > 7.0, allow it if it's the last boundary and ≤ 10s
+            # If duration > 7.0, allow it if it's the last boundary and ≤ 25s (model limit)
             # Otherwise, cap at 7.0
-            if i == len(boundaries) - 1 and boundary.duration <= 10.0:
-                # Last boundary can extend up to 10s to cover full audio
+            if i == len(boundaries) - 1 and boundary.duration <= MAX_DURATION:
+                # Last boundary can extend up to 25s (model limit) to cover full audio
                 validated_boundaries.append(boundary)
             else:
-                # Cap at 7.0 for non-last boundaries
+                # Cap at 7.0 for non-last boundaries, or 25s if last boundary exceeds limit
+                cap_duration = MAX_DURATION if i == len(boundaries) - 1 else 7.0
                 validated_boundaries.append(ClipBoundary(
                     start=boundary.start,
-                    end=min(boundary.start + 7.0, total_duration),
-                    duration=min(7.0, total_duration - boundary.start)
+                    end=min(boundary.start + cap_duration, total_duration),
+                    duration=min(cap_duration, total_duration - boundary.start)
                 ))
     
     # Use validated boundaries if we filtered any out, otherwise use original
