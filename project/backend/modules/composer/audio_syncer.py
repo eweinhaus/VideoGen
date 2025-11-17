@@ -40,7 +40,13 @@ async def sync_audio(
     
     output_path = temp_dir / "video_with_audio.mp4"
     
-    # FFmpeg command: combine video + audio, use -shortest to match durations
+    # Get audio duration first - this is our source of truth
+    # Audio clips were spliced from this audio file, so we anchor to its duration
+    audio_duration = await get_audio_duration(audio_path)
+    
+    # FFmpeg command: combine video + audio
+    # Video should already be padded to match audio length exactly
+    # Use -t to explicitly set duration to audio length (ensures exact match to audio)
     ffmpeg_cmd = [
         "ffmpeg",
         "-i", str(video_path),
@@ -48,7 +54,7 @@ async def sync_audio(
         "-c:v", "copy",  # Copy video (no re-encoding)
         "-c:a", "aac",   # Encode audio to AAC
         "-b:a", OUTPUT_AUDIO_BITRATE,  # Audio bitrate
-        "-shortest",     # Match to shortest stream (handles duration mismatch)
+        "-t", str(audio_duration),  # Set duration to audio length (video should already match after padding)
         "-y",
         str(output_path)
     ]

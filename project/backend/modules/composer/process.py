@@ -30,6 +30,7 @@ from .downloader import download_all_clips, download_audio
 from .normalizer import normalize_clip
 from .duration_handler import handle_clip_duration
 from .transition_applier import apply_transitions
+from .video_padder import pad_video_to_audio
 from .audio_syncer import sync_audio
 from .encoder import encode_final_video
 
@@ -133,6 +134,7 @@ async def process(
         "normalize_clips": 0.0,
         "handle_durations": 0.0,
         "apply_transitions": 0.0,
+        "pad_video": 0.0,
         "sync_audio": 0.0,
         "encode_final": 0.0,
         "upload_final": 0.0,
@@ -293,11 +295,28 @@ async def process(
                 }
             )
             
-            # Step 6: Sync audio - 97-99%
-            await publish_progress(job_id_uuid, "Syncing audio with video...", 97)
+            # Step 6: Pad video to match audio length (if needed) - 97-98%
+            await publish_progress(job_id_uuid, "Padding video to match audio length...", 97)
+            step_start = time.time()
+            padded_video_path = await pad_video_to_audio(
+                concatenated_path, audio_bytes, temp_dir, job_id_uuid
+            )
+            timings["pad_video"] = time.time() - step_start
+            await publish_progress(job_id_uuid, "Video padded", 98)
+            
+            logger.info(
+                f"Padded video in {timings['pad_video']:.2f}s",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "padding_time": timings["pad_video"]
+                }
+            )
+            
+            # Step 7: Sync audio - 98-99%
+            await publish_progress(job_id_uuid, "Syncing audio with video...", 98)
             step_start = time.time()
             video_with_audio_path, sync_drift = await sync_audio(
-                concatenated_path, audio_bytes, temp_dir, job_id_uuid
+                padded_video_path, audio_bytes, temp_dir, job_id_uuid
             )
             timings["sync_audio"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Audio synced", 99)
@@ -311,7 +330,7 @@ async def process(
                 }
             )
             
-            # Step 7: Encode final video - 99-99.5%
+            # Step 8: Encode final video - 99-99.5%
             await publish_progress(job_id_uuid, "Encoding final video...", 99)
             step_start = time.time()
             final_video_path = await encode_final_video(
@@ -328,7 +347,7 @@ async def process(
                 }
             )
             
-            # Step 8: Upload final video - 99-100%
+            # Step 9: Upload final video - 99-100%
             await publish_progress(job_id_uuid, "Uploading final video...", 99)
             step_start = time.time()
             storage = StorageClient()
@@ -401,9 +420,20 @@ async def process(
             final_video_duration = await get_video_duration(final_video_path)
             file_size_mb = final_video_path.stat().st_size / 1024 / 1024
             
-            # Get audio duration from original audio if available (or calculate from clips)
-            # For MVP, use sum of target durations as approximation
-            audio_duration = sum(clip.target_duration for clip in sorted_clips)
+            # Get actual audio duration from audio file
+            # We wrote audio to temp file in pad_video_to_audio, so it should still exist
+            from .utils import get_audio_duration
+            audio_path = temp_dir / "audio_for_padding.mp3"
+            if not audio_path.exists():
+                # Fallback: use audio from sync step
+                audio_path = temp_dir / "audio.mp3"
+            if audio_path.exists():
+                audio_duration = await get_audio_duration(audio_path)
+            else:
+                # Final fallback: write audio bytes temporarily to get duration
+                temp_audio = temp_dir / "temp_audio_for_duration.mp3"
+                temp_audio.write_bytes(audio_bytes)
+                audio_duration = await get_audio_duration(temp_audio)
         
         # Create VideoOutput after temp directory cleanup
         video_output = VideoOutput(
