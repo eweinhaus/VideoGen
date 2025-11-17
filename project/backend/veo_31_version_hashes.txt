@@ -1,0 +1,17 @@
+# Veo 3.1 Version Hashes
+# This file stores tested version hashes for google/veo-3.1 model
+
+# Latest version hash retrieved on 2025-01-17
+# Hash: 20ebd92c5919f20e8fa2e983bdb60016a99794c9accfab496ea25a68e0dbbaad
+# Status: ✅ TESTED AND WORKING
+# Test Date: 2025-01-17
+# Test Results:
+#   - Duration 4s: ✅ Works (generated video successfully)
+#   - Duration 6s: ✅ Works (generated video successfully)
+#   - Duration 8s: ✅ Works (generated video successfully)
+# Notes:
+#   - Veo 3.1 only accepts discrete duration values: 4, 6, or 8 seconds
+#   - This version hash is the latest and best working version
+#   - All three valid durations tested and confirmed working
+LATEST_2025_01_17=20ebd92c5919f20e8fa2e983bdb60016a99794c9accfab496ea25a68e0dbbaad
+

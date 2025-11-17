@@ -7,13 +7,14 @@
 REST API server and SSE handler that orchestrates pipeline execution via job queue. The API Gateway is the central orchestration layer that coordinates the entire video generation pipeline.
 
 ## Key Features
-- ✅ REST Endpoints (7 endpoints: upload, job status, job list, cancel, health, SSE stream, download)
+- ✅ REST Endpoints (8 endpoints: upload, job status, job list, cancel, health, SSE stream, download, models)
 - ✅ SSE Streaming for real-time progress events (Redis pub/sub)
 - ✅ Job Queue (Redis-based queue with worker process)
 - ✅ Pipeline Orchestrator (executes modules 3-8 sequentially)
 - ✅ Cost Tracking (real-time tracking with $2000/job budget limit)
 - ✅ Rate Limiting (5 jobs/hour/user, Redis sliding window)
 - ✅ JWT Authentication (Supabase Auth integration with Redis caching)
+- ✅ Model Metadata API (aspect ratios, model information)
 
 ## REST Endpoints
 
@@ -57,6 +58,13 @@ SSE stream for real-time progress updates.
 Download final video file via signed URL.
 - Generates signed URL (1 hour expiration)
 - Returns: `download_url`, `expires_in`, `filename`
+
+### `GET /api/v1/models/{model_key}/aspect-ratios`
+Get supported aspect ratios for a video generation model.
+- Path parameter: `model_key` (e.g., "kling_v21", "kling_v25_turbo")
+- Returns: `{"model_key": "...", "aspect_ratios": ["16:9", "9:16", ...], "default": "16:9"}`
+- Returns 404 if model not found
+- No authentication required (public endpoint)
 
 ## Architecture
 
@@ -131,7 +139,8 @@ api_gateway/
 │   ├── jobs.py          # GET /jobs, GET /jobs/{id}, POST /jobs/{id}/cancel
 │   ├── stream.py        # GET /jobs/{id}/stream (SSE)
 │   ├── download.py       # GET /jobs/{id}/download
-│   └── health.py        # GET /health
+│   ├── health.py        # GET /health
+│   └── models.py        # GET /models/{model_key}/aspect-ratios
 ├── services/
 │   ├── rate_limiter.py  # Rate limiting (Redis sliding window)
 │   ├── queue_service.py # Queue management

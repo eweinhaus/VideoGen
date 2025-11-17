@@ -160,13 +160,14 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 # Register routes
-from api_gateway.routes import upload, health, jobs, download, stream
+from api_gateway.routes import upload, health, jobs, download, stream, models
 
 app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(jobs.router, prefix="/api/v1", tags=["jobs"])
 app.include_router(download.router, prefix="/api/v1", tags=["download"])
 app.include_router(stream.router, prefix="/api/v1", tags=["stream"])
+app.include_router(models.router, prefix="/api/v1", tags=["models"])
 
 
 @app.get("/")

@@ -110,6 +110,7 @@ async def process(
     plan: Optional[ScenePlan] = None,
     event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     video_model: str = None,
+    aspect_ratio: str = "16:9",
 ) -> Tuple[Clips, list[dict]]:
     """
     Generate all video clips in parallel.
@@ -121,6 +122,7 @@ async def process(
         event_publisher: Optional async callback(event_type, data) to publish events in real-time
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
                     If None, falls back to VIDEO_MODEL environment variable
+        aspect_ratio: Aspect ratio for video generation (default: "16:9")
         
     Returns:
         Clips model with all generated clips
@@ -137,6 +139,18 @@ async def process(
         selected_model_key = get_selected_model()
     else:
         selected_model_key = video_model
+    
+    # Validate aspect ratio before starting (fail fast if invalid)
+    from shared.errors import ValidationError
+    from modules.video_generator.config import get_model_config
+    model_config = get_model_config(selected_model_key)
+    supported_aspect_ratios = model_config.get("aspect_ratios", ["16:9"])
+    if aspect_ratio not in supported_aspect_ratios:
+        raise ValidationError(
+            f"Aspect ratio '{aspect_ratio}' not supported for model '{selected_model_key}'. "
+            f"Supported: {supported_aspect_ratios}. "
+            f"This error prevents all clips from being generated."
+        )
     
     # Validate model configuration before starting
     try:
@@ -348,6 +362,7 @@ async def process(
                         extra_context=None,
                         progress_callback=progress_callback,
                         video_model=selected_model_key,
+                        aspect_ratio=aspect_ratio,
                     )
                     
                     logger.info(
@@ -628,6 +643,7 @@ async def process(
                         extra_context=None,
                         progress_callback=None,  # Skip progress updates for retries
                         video_model=selected_model_key,
+                        aspect_ratio=aspect_ratio,
                     )
                     
                     logger.info(

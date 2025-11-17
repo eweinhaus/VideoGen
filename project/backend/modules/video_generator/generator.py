@@ -200,6 +200,25 @@ def get_video_duration(video_bytes: bytes) -> float:
                 logger.warning(f"Failed to delete temporary file {tmp_path}: {e}")
 
 
+def map_to_nearest_valid_duration(target_duration: float, valid_durations: list) -> int:
+    """
+    Map target duration to nearest valid duration value.
+    
+    Args:
+        target_duration: Target duration in seconds
+        valid_durations: List of valid duration values (e.g., [4, 6, 8])
+        
+    Returns:
+        Nearest valid duration as integer
+    """
+    if not valid_durations:
+        return int(round(target_duration))
+    
+    # Find the closest valid duration
+    closest = min(valid_durations, key=lambda x: abs(x - target_duration))
+    return int(closest)
+
+
 async def generate_video_clip(
     clip_prompt: ClipPrompt,
     image_url: Optional[str],
@@ -209,6 +228,7 @@ async def generate_video_clip(
     extra_context: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     video_model: str = None,
+    aspect_ratio: str = "16:9",
 ) -> Clip:
     """
     Generate single video clip via Replicate.
@@ -221,6 +241,7 @@ async def generate_video_clip(
         environment: "production" or "development"
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
                     If None, falls back to VIDEO_MODEL environment variable
+        aspect_ratio: Aspect ratio for video generation (default: "16:9")
         
     Returns:
         Clip model with video URL, duration, cost, etc.
@@ -236,6 +257,19 @@ async def generate_video_clip(
     else:
         selected_model_key = video_model
     model_config = get_model_config(selected_model_key)
+    
+    # Validate aspect ratio
+    from shared.errors import ValidationError
+    supported_aspect_ratios = model_config.get("aspect_ratios", ["16:9"])
+    if aspect_ratio not in supported_aspect_ratios:
+        raise ValidationError(
+            f"Aspect ratio '{aspect_ratio}' not supported for model '{selected_model_key}'. "
+            f"Supported: {supported_aspect_ratios}"
+        )
+    
+    # Get parameter name and mapping
+    aspect_ratio_param = model_config.get("aspect_ratio_parameter", "aspect_ratio")
+    resolution_mapping = model_config.get("resolution_mapping", {})
     
     # Log model configuration for debugging
     replicate_string = model_config.get("replicate_string", "unknown")
@@ -273,12 +307,7 @@ async def generate_video_clip(
         requested_duration = min(target_duration * buffer_multiplier, 10.0)
         
         # For continuous models, use the calculated duration directly
-        if selected_model_key == "veo_31":
-            # Veo 3.1: Continuous duration support - apply percentage buffer
-            input_data["duration"] = requested_duration
-        else:
-            # Other continuous models (if any)
-            input_data["duration"] = requested_duration
+        input_data["duration"] = requested_duration
         
         buffer_strategy = "percentage"
         logger.info(
@@ -290,6 +319,29 @@ async def generate_video_clip(
                 "requested_duration": requested_duration,
                 "buffer_strategy": buffer_strategy,
                 "buffer_multiplier": buffer_multiplier,
+                "model": selected_model_key
+            }
+        )
+    elif selected_model_key == "veo_31":
+        # Veo 3.1: Discrete duration support (4s/6s/8s) - map to nearest valid value
+        # Apply buffer first, then map to nearest valid duration
+        requested_duration = min(target_duration * buffer_multiplier, 8.0)  # Cap at 8s (max for Veo 3.1)
+        supported_durations = model_config.get("supported_durations", [4, 6, 8])
+        mapped_duration = map_to_nearest_valid_duration(requested_duration, supported_durations)
+        input_data["duration"] = mapped_duration
+        
+        buffer_strategy = "nearest_valid"
+        logger.info(
+            f"Buffer calculation for clip {clip_prompt.clip_index} (Veo 3.1 discrete model)",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_prompt.clip_index,
+                "original_target_duration": original_target_duration,
+                "requested_duration": requested_duration,
+                "mapped_duration": mapped_duration,
+                "buffer_strategy": buffer_strategy,
+                "buffer_multiplier": buffer_multiplier,
+                "valid_durations": supported_durations,
                 "model": selected_model_key
             }
         )
@@ -353,28 +405,74 @@ async def generate_video_clip(
                 }
             )
 
-    # Map resolution based on model's supported resolutions
-    resolution = settings.get("resolution", "1024x576")
-    supported_resolutions = model_config.get("resolutions", ["1080p"])
+    # Map aspect ratio based on model's parameter requirements
+    # This takes precedence over default resolution logic
+    if aspect_ratio_param == "resolution" and resolution_mapping:
+        # Use resolution mapping (e.g., "16:9" -> "1080p")
+        mapped_value = resolution_mapping.get(aspect_ratio, "1080p")
+        input_data[aspect_ratio_param] = mapped_value
+        logger.info(
+            f"Using aspect ratio '{aspect_ratio}' mapped to resolution '{mapped_value}'",
+            extra={
+                "job_id": str(job_id),
+                "aspect_ratio": aspect_ratio,
+                "mapped_resolution": mapped_value,
+                "model": selected_model_key
+            }
+        )
+    elif aspect_ratio_param in ["aspect_ratio", "ratio"]:
+        # Use aspect ratio directly
+        input_data[aspect_ratio_param] = aspect_ratio
+        
+        # For models that support both aspect_ratio and resolution (e.g., Veo 3.1),
+        # also set resolution for highest quality
+        supported_resolutions = model_config.get("resolutions", ["1080p"])
+        if "resolution" in model_config.get("parameter_names", {}):
+            # Set resolution to highest quality available (1080p preferred)
+            if "1080p" in supported_resolutions:
+                input_data["resolution"] = "1080p"  # Always use 1080p for highest quality
+            elif "720p" in supported_resolutions:
+                input_data["resolution"] = "720p"
+        
+        logger.info(
+            f"Using aspect ratio '{aspect_ratio}' with resolution '{input_data.get('resolution', 'default')}'",
+            extra={
+                "job_id": str(job_id),
+                "aspect_ratio": aspect_ratio,
+                "resolution": input_data.get("resolution"),
+                "model": selected_model_key
+            }
+        )
+    else:
+        # Fall back to default resolution logic if aspect ratio not supported or not provided
+        # Map resolution based on model's supported resolutions
+        resolution = settings.get("resolution", "1024x576")
+        supported_resolutions = model_config.get("resolutions", ["1080p"])
 
-    if "1080p" in supported_resolutions:
-        if "1080" in resolution or resolution == "1080p":
-            input_data["resolution"] = "1080p"
-        elif "720" in resolution or resolution == "720p":
-            input_data["resolution"] = "720p" if "720p" in supported_resolutions else "1080p"
-        else:
-            input_data["resolution"] = "1080p" if environment == "production" else ("720p" if "720p" in supported_resolutions else "1080p")
-    elif "720p" in supported_resolutions:
-        input_data["resolution"] = "720p"
-    elif "variable" in supported_resolutions:
-        # Models with variable resolution may not need resolution parameter
-        pass
+        if "1080p" in supported_resolutions:
+            if "1080" in resolution or resolution == "1080p":
+                input_data["resolution"] = "1080p"
+            elif "720" in resolution or resolution == "720p":
+                input_data["resolution"] = "720p" if "720p" in supported_resolutions else "1080p"
+            else:
+                input_data["resolution"] = "1080p" if environment == "production" else ("720p" if "720p" in supported_resolutions else "1080p")
+        elif "720p" in supported_resolutions:
+            input_data["resolution"] = "720p"
+        elif "variable" in supported_resolutions:
+            # Models with variable resolution may not need resolution parameter
+            pass
 
     # Add image if available (parameter name varies by model)
-    # Kling and most I2V models use "start_image" or "image"
+    # Use parameter name from model config (e.g., "start_image" for Kling, "image" for Veo3)
     if image_url and model_config.get("type") in ["image-to-video", "text-and-image-to-video"]:
-        # Try start_image first (Kling format)
-        input_data["start_image"] = image_url
+        # Get image parameter name from model config
+        parameter_names = model_config.get("parameter_names", {})
+        image_param = parameter_names.get("image", "start_image")  # Default to "start_image" for backward compatibility
+        input_data[image_param] = image_url
+        logger.debug(
+            f"Using image parameter '{image_param}' for model {selected_model_key}",
+            extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
+        )
 
     # Get model version string for Replicate
     # Extract version from model config - don't use default fallback to avoid wrong model version
@@ -390,7 +488,15 @@ async def generate_video_clip(
         # Start prediction
         logger.info(
             f"Starting video generation for clip {clip_prompt.clip_index}",
-            extra={"job_id": str(job_id), "target_duration": clip_prompt.duration, "resolution": input_data.get("resolution")}
+            extra={
+                "job_id": str(job_id),
+                "model": selected_model_key,
+                "target_duration": clip_prompt.duration,
+                "resolution": input_data.get("resolution"),
+                "aspect_ratio": aspect_ratio,
+                "has_image": image_url is not None,
+                "input_params": list(input_data.keys())
+            }
         )
         
         # Create prediction - Replicate API
@@ -446,6 +552,20 @@ async def generate_video_clip(
                 )
             except Exception as e:
                 error_str = str(e).lower()
+                # Log detailed error information for debugging
+                logger.error(
+                    f"Failed to create prediction for {selected_model_key}",
+                    extra={
+                        "job_id": str(job_id),
+                        "model": selected_model_key,
+                        "replicate_string": model_config.get("replicate_string", "unknown"),
+                        "version": model_version[:20] if isinstance(model_version, str) and len(model_version) > 20 else model_version,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "input_params": list(input_data.keys()),
+                        "clip_index": clip_prompt.clip_index
+                    }
+                )
                 if "invalid version" in error_str or "not permitted" in error_str or "422" in error_str:
                     # Version hash might be invalid/expired, raise clearer error
                     replicate_string = model_config.get("replicate_string", "unknown")

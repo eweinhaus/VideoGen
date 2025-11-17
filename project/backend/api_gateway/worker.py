@@ -64,8 +64,11 @@ async def process_job(job_data: dict) -> None:
             }).eq("id", job_id).execute()
             return
         
-        # Execute pipeline (pass stop_at_stage and video_model)
-        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model)
+        # Extract aspect_ratio from job data
+        aspect_ratio = job_data.get("aspect_ratio", "16:9")
+        
+        # Execute pipeline (pass stop_at_stage, video_model, and aspect_ratio)
+        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio)
         
         logger.info("Job processed successfully", extra={"job_id": job_id})
         

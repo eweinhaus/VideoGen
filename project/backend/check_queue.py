@@ -19,6 +19,7 @@ sys.path.insert(0, str(project_root))
 
 from shared.redis_client import RedisClient
 from shared.logging import get_logger
+from shared.config import settings
 
 logger = get_logger(__name__)
 redis_client = RedisClient()
@@ -26,7 +27,9 @@ redis_client = RedisClient()
 
 async def check_queue(clear: bool = False):
     """Check and optionally clear the queue."""
-    queue_key = "video_generation:queue"
+    # Use environment-aware queue name
+    queue_name = settings.queue_name
+    queue_key = f"{queue_name}:queue"
     
     try:
         length = await redis_client.client.llen(queue_key)

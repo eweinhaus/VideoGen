@@ -26,7 +26,8 @@ async def enqueue_job(
     audio_url: str,
     user_prompt: str,
     stop_at_stage: str = None,
-    video_model: str = "kling_v21"
+    video_model: str = "kling_v21",
+    aspect_ratio: str = "16:9"
 ) -> None:
     """
     Enqueue a job to the processing queue.
@@ -38,6 +39,7 @@ async def enqueue_job(
         user_prompt: User's creative prompt
         stop_at_stage: Optional stage to stop at (for testing)
         video_model: Video generation model to use
+        aspect_ratio: Aspect ratio for video generation (default: "16:9")
     """
     job_data = {
         "job_id": job_id,
@@ -46,17 +48,20 @@ async def enqueue_job(
         "user_prompt": user_prompt,
         "stop_at_stage": stop_at_stage,
         "video_model": video_model,
+        "aspect_ratio": aspect_ratio,
         "created_at": datetime.utcnow().isoformat()
     }
     
     try:
         # Add to queue (using Redis list as queue)
+        # Encode as bytes since Redis client has decode_responses=False
         queue_key = f"{QUEUE_NAME}:queue"
-        await redis_client.client.lpush(queue_key, json.dumps(job_data))
+        job_json = json.dumps(job_data)
+        await redis_client.client.lpush(queue_key, job_json.encode('utf-8'))
         
         # Store job data for worker to retrieve
         job_key = f"{QUEUE_NAME}:job:{job_id}"
-        await redis_client.client.set(job_key, json.dumps(job_data), ex=900)  # 15 min TTL
+        await redis_client.client.set(job_key, job_json.encode('utf-8'), ex=900)  # 15 min TTL
         
         logger.info("Job enqueued", extra={"job_id": job_id, "user_id": user_id})
         

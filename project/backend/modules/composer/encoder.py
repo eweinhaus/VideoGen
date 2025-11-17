@@ -24,15 +24,22 @@ logger = get_logger("composer.encoder")
 async def encode_final_video(
     video_path: Path,
     temp_dir: Path,
-    job_id: UUID
+    job_id: UUID,
+    target_width: int,
+    target_height: int
 ) -> Path:
     """
     Encode final video with H.264/AAC at 5000k bitrate.
+    
+    Note: Video should already be at target resolution from normalization step.
+    This function just encodes without resizing.
     
     Args:
         video_path: Path to video with audio
         temp_dir: Temporary directory for output
         job_id: Job ID for logging
+        target_width: Expected output width (for validation/logging)
+        target_height: Expected output height (for validation/logging)
         
     Returns:
         Path to final encoded video
@@ -53,7 +60,10 @@ async def encode_final_video(
         str(output_path)
     ]
     
-    logger.info("Encoding final video", extra={"job_id": str(job_id)})
+    logger.info(
+        f"Encoding final video ({target_width}x{target_height})",
+        extra={"job_id": str(job_id), "target_width": target_width, "target_height": target_height}
+    )
     
     try:
         await run_ffmpeg_command(ffmpeg_cmd, job_id=job_id, timeout=300)
