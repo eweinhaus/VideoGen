@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import Image from "next/image"
 import { useSSE } from "@/hooks/useSSE"
 import { jobStore } from "@/stores/jobStore"
@@ -384,12 +384,15 @@ export function ProgressTracker({
         return prev
       })
       // Initialize clip statuses if we don't have them yet
+      // NOTE: Only initialize if no statuses exist - database restoration will override these
+      // This prevents overwriting completed clips that were restored from database
       setClipStatuses((prev) => {
         if (Object.keys(prev).length === 0 && promptResults.total_clips > 0) {
           const initialStatuses: Record<number, "pending"> = {}
           for (let i = 0; i < promptResults.total_clips; i++) {
             initialStatuses[i] = "pending"
           }
+          console.log("📝 Initialized clip statuses from promptResults, total:", promptResults.total_clips, "(database restoration will override if available)")
           return initialStatuses
         }
         return prev
@@ -562,39 +565,46 @@ export function ProgressTracker({
   }, [currentJob, referenceState.images])
   
   // Restore video clips state when job data is loaded on refresh
+  // CRITICAL: Always merge database metadata into clipStatuses, even if statuses are already initialized
+  // This fixes race condition where promptResults initializes all clips as "pending" before
+  // database metadata (with completed clips) is loaded, causing completed clips to show as gray
+  // Database metadata is authoritative - it always overrides initialization guesses
   useEffect(() => {
     if (!currentJob) {
       console.log("⚠️ No currentJob for video clips restoration")
       return
     }
     
-    // FIX: Check if clipStatuses is empty, not videoTotals.total
-    // videoTotals.total can be set from promptResults before clips are restored,
-    // causing a race condition where restoration is skipped even though clipStatuses is empty
-    const hasClipStatuses = Object.keys(clipStatuses).length > 0
-    if (hasClipStatuses) {
-      console.log("✅ Video clips already in state, skipping restoration")
+    // Only restore when job matches - ensure we're restoring the right job's clips
+    if (currentJob.id !== jobId) {
       return
     }
     
+    // Always check database metadata and merge with existing statuses
+    // This ensures database state (authoritative) overrides any initialization guesses
     console.log("🔍 Checking for video clips restoration. currentJob.stages:", currentJob.stages)
     const videoStage = currentJob.stages?.video_generator || currentJob.stages?.video_generation
     console.log("🔍 Video stage:", videoStage)
     const clipsMetadata = videoStage?.metadata?.clips
     console.log("🔍 Clips metadata:", clipsMetadata)
     
-    if (clipsMetadata && clipsMetadata.clips && Array.isArray(clipsMetadata.clips)) {
+    if (clipsMetadata && clipsMetadata.clips && Array.isArray(clipsMetadata.clips) && clipsMetadata.clips.length > 0) {
       try {
         console.log("🔍 Restoring video clips from metadata:", clipsMetadata)
         
-        const statuses: Record<number, "pending" | "processing" | "completed" | "failed" | "retrying"> = {}
+        // Merge database metadata with existing statuses (database is authoritative)
+        // This ensures completed clips from database override "pending" initialization guesses
+        const statuses: Record<number, "pending" | "processing" | "completed" | "failed" | "retrying"> = { ...clipStatuses }
         let completed = 0
         let failed = 0
         let retries = 0
         
+        // Process all clips from database metadata (authoritative source)
         clipsMetadata.clips.forEach((clip: any) => {
           const clipIndex = clip.clip_index
           const clipStatus = clip.status === "success" ? "completed" : "failed"
+          
+          // Database metadata is authoritative - always override existing status
           statuses[clipIndex] = clipStatus
           
           if (clipStatus === "completed") {
@@ -608,21 +618,33 @@ export function ProgressTracker({
           }
         })
         
-        setClipStatuses(statuses)
-        setVideoTotals({
-          total: clipsMetadata.total_clips || clipsMetadata.clips.length,
-          completed,
-          failed,
-          retries
-        })
-        console.log("✅ Restored video clips from metadata, total:", clipsMetadata.total_clips || clipsMetadata.clips.length, "completed:", completed)
+        // Update statuses if we have database data (merges with any existing SSE updates)
+        // Only update if we have actual clip data, not just initialized "pending" guesses
+        const hasDatabaseClips = clipsMetadata.clips.length > 0
+        const totalClips = clipsMetadata.total_clips || clipsMetadata.clips.length
+        
+        if (hasDatabaseClips) {
+          setClipStatuses(statuses)
+          setVideoTotals((prev) => ({
+            // Use database total if available, otherwise keep existing or use clips length
+            total: totalClips || prev.total || clipsMetadata.clips.length,
+            // Count from database metadata (authoritative)
+            completed: completed || prev.completed,
+            failed: failed || prev.failed,
+            retries: retries || prev.retries
+          }))
+          console.log("✅ Restored video clips from metadata, total:", totalClips, "completed:", completed, "failed:", failed, "current statuses:", Object.keys(statuses).length)
+        }
       } catch (error) {
         console.error("❌ Failed to restore video clips from metadata:", error)
       }
     } else {
-      console.log("⚠️ No video clips metadata found in stage")
+      // No database metadata yet - check again later when it's available
+      // Don't set hasRestoredClips to true yet, allow re-checking
+      console.log("⚠️ No video clips metadata found in stage or empty clips array (will retry)")
     }
-  }, [currentJob, clipStatuses])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentJob?.id, currentJob?.stages?.video_generator?.metadata, currentJob?.stages?.video_generation?.metadata, jobId])
   
   // Timer effect - starts when job begins and stops when complete/failed
   useEffect(() => {
@@ -1128,6 +1150,8 @@ export function ProgressTracker({
         return prev
       })
       // Initialize all clips as pending if we have a new total
+      // NOTE: Only initialize if no statuses exist - database restoration will override these
+      // This prevents overwriting completed clips that were restored from database
       if (data.total_clips > 0) {
         setClipStatuses((prev) => {
           // Only initialize if we don't have statuses yet
@@ -1136,6 +1160,7 @@ export function ProgressTracker({
             for (let i = 0; i < data.total_clips; i++) {
               initialStatuses[i] = "pending"
             }
+            console.log("📝 Initialized clip statuses from video_generation_start event, total:", data.total_clips, "(database restoration will override if available)")
             return initialStatuses
           }
           return prev
