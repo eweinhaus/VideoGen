@@ -114,14 +114,51 @@ def _extract_features(description: str) -> Dict[str, str]:
                 extra={"feature": feature_name}
             )
 
-    # Fallback: Try to extract features from unstructured text
+    # Fallback: Try to extract features from unstructured text using keyword matching
     if len(features) < 4:  # If we didn't find most features
         logger.warning(
             "Character description missing structured features, attempting unstructured extraction",
             extra={"features_found": len(features)}
         )
-        # This would require more sophisticated NLP, for now just log warning
-        # Return empty dict to trigger default values
+
+        # Try to extract clothing from common words (if not already found)
+        if "Clothing" not in features:
+            clothing_keywords = ["hoodie", "jacket", "shirt", "t-shirt", "dress", "jeans", "pants", "shorts", "sweater", "blazer"]
+            for keyword in clothing_keywords:
+                if keyword in description.lower():
+                    # Extract sentence containing the clothing item
+                    sentences = description.split('.')
+                    for sentence in sentences:
+                        if keyword in sentence.lower():
+                            features["Clothing"] = sentence.strip()
+                            break
+                    break
+
+        # Try to extract hair color/style from common patterns
+        if "Hair" not in features:
+            hair_patterns = [
+                r"(short|long|medium|shoulder-length)\s+(black|brown|blonde|red|gray|white)\s+hair",
+                r"(curly|straight|wavy)\s+hair",
+                r"(black|brown|blonde|red|gray|white)\s+hair"
+            ]
+            for pattern in hair_patterns:
+                match = re.search(pattern, description, re.IGNORECASE)
+                if match:
+                    features["Hair"] = match.group(0)
+                    break
+
+        # Try to extract age from common patterns
+        if "Age" not in features:
+            age_patterns = [
+                r"appears?\s+(early|mid|late)\s+(\d+)s",
+                r"(young|middle-aged|elderly|teen)",
+                r"(\d+)\s+years?\s+old"
+            ]
+            for pattern in age_patterns:
+                match = re.search(pattern, description, re.IGNORECASE)
+                if match:
+                    features["Age"] = f"appears {match.group(0)}"
+                    break
 
     return features
 
@@ -130,6 +167,8 @@ def _build_formatted_description(character_name: str, features: Dict[str, str]) 
     """
     Build properly formatted character description.
 
+    Uses extracted features or smart defaults (NEVER "unspecified").
+
     Args:
         character_name: Character name (e.g., "Alice")
         features: Dictionary of extracted features
@@ -137,14 +176,29 @@ def _build_formatted_description(character_name: str, features: Dict[str, str]) 
     Returns:
         Formatted description in FIXED CHARACTER IDENTITY format
     """
-    # Use extracted features or provide defaults if missing
-    hair = features.get("Hair", "unspecified hair")
-    face = features.get("Face", "unspecified face")
-    eyes = features.get("Eyes", "unspecified eyes")
-    clothing = features.get("Clothing", "unspecified clothing")
-    accessories = features.get("Accessories", "None")
-    build = features.get("Build", "average build")
-    age = features.get("Age", "unspecified age")
+    # Use extracted features or provide smart defaults (NEVER "unspecified")
+    # These defaults are better than nothing - at least they constrain the character
+    hair = features.get("Hair") or "short dark brown hair, straight texture, neat style"
+    face = features.get("Face") or "medium brown skin tone, oval face shape, smooth features, clean shaven"
+    eyes = features.get("Eyes") or "dark brown eyes, medium eyebrows"
+    clothing = features.get("Clothing") or "dark gray hoodie, blue jeans, white sneakers"
+    accessories = features.get("Accessories") or "None"
+    build = features.get("Build") or "athletic build, approximately 5'9\" height, medium frame"
+    age = features.get("Age") or "appears late 20s"
+
+    # Log warning if using defaults
+    missing_features = [name for name in ["Hair", "Face", "Eyes", "Clothing", "Build", "Age"]
+                       if name not in features or not features[name]]
+
+    if missing_features:
+        logger.warning(
+            f"Character {character_name} missing features, using defaults",
+            extra={
+                "character": character_name,
+                "missing_features": missing_features,
+                "note": "Scene Planner LLM failed to provide specific details"
+            }
+        )
 
     # Build the formatted description
     formatted = f"""{character_name} - FIXED CHARACTER IDENTITY:

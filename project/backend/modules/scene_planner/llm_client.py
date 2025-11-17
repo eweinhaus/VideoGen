@@ -30,63 +30,65 @@ _openai_client: Optional[AsyncOpenAI] = None
 
 # Character description guidelines for text-to-video character consistency
 CHARACTER_DESCRIPTION_GUIDELINES = """
-CRITICAL REQUIREMENT: Generate EXTREMELY SPECIFIC character descriptions.
+⚠️ CRITICAL REQUIREMENT: Generate EXTREMELY SPECIFIC character descriptions.
 
-This is for text-to-video generation where precision is CRITICAL for character consistency
-across multiple video clips. Vague descriptions result in completely different people in each clip.
+WARNING: Vague or missing descriptions cause COMPLETELY DIFFERENT PEOPLE in each video clip!
+❌ NEVER use "unspecified", "average", "typical", "normal" - these are USELESS and CAUSE FAILURE!
+✅ ALWAYS provide SPECIFIC, MEASURABLE details for ALL 7 features - NO EXCEPTIONS!
 
-Required details for EACH character (7+ specific features):
+MANDATORY details for EVERY character (ALL 7 features required):
 
 1. Hair:
-   - Exact color with shade (e.g., "warm brown", "ash blonde", "jet black", NOT just "brown")
-   - Length with measurement (e.g., "shoulder-length", "buzzcut 1/4 inch", "waist-length")
+   - Exact color with shade (e.g., "jet black", "ash blonde", "warm brown", NOT "brown" or "unspecified")
+   - Length with measurement ("buzzcut 1/4 inch", "shoulder-length", "waist-length")
    - Texture (straight, wavy, curly, coily, kinky)
-   - Style (fade, ponytail, braids, loose, slicked back, etc.)
+   - Style (fade, ponytail, braids, locs, cornrows, slicked back, etc.)
 
 2. Face:
-   - Skin tone (specific: olive, fair, deep brown, golden tan, NOT just "light" or "dark")
-   - Face shape (round, square, oval, heart-shaped, angular)
-   - Distinctive features (high cheekbones, square jaw, defined chin, freckles, etc.)
-   - Facial hair if applicable (clean shaven, stubble, full beard, goatee, mustache)
+   - Skin tone (SPECIFIC: deep brown, golden tan, fair, olive, mahogany, NOT "light"/"dark"/"unspecified")
+   - Face shape (round, square, oval, heart-shaped, angular, diamond)
+   - Distinctive features (high cheekbones, square jaw, dimples, freckles, etc.)
+   - Facial hair (clean shaven, stubble, full beard, goatee, thin mustache, soul patch)
 
 3. Eyes:
-   - Color (dark brown, hazel, blue, green, gray - be specific)
-   - Eyebrows (thick, thin, arched, straight, defined)
+   - Color (dark brown, hazel, blue, green, gray, amber - NEVER "unspecified")
+   - Eyebrows (thick, thin, arched, straight, defined, bushy)
 
 4. Clothing:
-   - Exact colors with modifiers (bright blue, navy blue, forest green, NOT just "blue" or "green")
-   - Style and type (hoodie, denim jacket, blazer, t-shirt, dress, etc.)
-   - Visible details (buttons, zippers, drawstrings, patterns, logos)
-   - The character wears the SAME OUTFIT in all scenes
+   - Exact colors with modifiers (navy blue, forest green, burgundy, NOT just "blue" or "unspecified")
+   - Specific items (hoodie, denim jacket, graphic t-shirt, leather jacket, NOT "shirt")
+   - Visible details (white drawstrings, silver buttons, brand logo, patterns)
+   - Character wears SAME OUTFIT in all scenes
 
-5. Accessories (if any):
-   - Glasses: shape and color (round tortoiseshell, rectangular black frames, aviator sunglasses)
-   - Jewelry: type and placement (gold chain necklace, silver hoop earrings, watch)
-   - Other: hats, scarves, belts, bags, etc.
-   - Write "None" if no accessories
+5. Accessories:
+   - Glasses: shape + color (round tortoiseshell, rectangular black frames, aviator sunglasses)
+   - Jewelry: type + placement (gold chain necklace, diamond studs, silver watch on left wrist)
+   - Other: specific hats (snapback, beanie, fedora), headphones, bags, etc.
+   - Write "None" ONLY if truly no accessories (NOT "unspecified")
 
 6. Build:
-   - Body type (athletic, slim, muscular, plus-size, stocky, lean)
-   - Approximate height (5'4", 6'2", etc.)
-   - Frame (broad shoulders, narrow waist, petite, etc.)
+   - Body type (athletic, slim, muscular, lean, toned, stocky - NOT "average" or "unspecified")
+   - Approximate height (5'6", 6'0", 5'4", etc.)
+   - Frame (broad shoulders, narrow waist, petite, lanky, stocky)
 
 7. Age:
-   - Apparent age range (appears early 20s, mid 30s, late 40s, etc.)
+   - Apparent age (appears early 20s, mid 30s, late 40s, etc. - NEVER "unspecified")
 
-FORMAT REQUIREMENT:
+SPECIAL: Real People (celebrities, public figures):
+When user mentions a real person (e.g., "Kendrick Lamar", "Taylor Swift"), describe their ACTUAL recognizable features:
 
-[Character Name] - FIXED CHARACTER IDENTITY:
-- Hair: [specific description]
-- Face: [specific description]
-- Eyes: [specific description]
-- Clothing: [specific description]
-- Accessories: [specific description or "None"]
-- Build: [specific description]
-- Age: [specific description]
+"Kendrick Lamar - FIXED CHARACTER IDENTITY:
+- Hair: short black hair in tight coils, shaped fade on sides (1/4 inch), slightly longer on top (1 inch)
+- Face: deep brown skin tone, angular face shape, high cheekbones, thin mustache and goatee
+- Eyes: dark brown eyes, thick straight eyebrows, intense gaze
+- Clothing: black oversized hoodie with white drawstrings, dark blue jeans, white Nike Cortez sneakers
+- Accessories: small diamond stud earrings in both ears, thin gold chain necklace
+- Build: lean athletic build, approximately 5'6" height, narrow shoulders
+- Age: appears mid-30s
 
-CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance.
+CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance."
 
-GOOD EXAMPLES:
+GOOD EXAMPLES (Generic Characters):
 
 "Alice - FIXED CHARACTER IDENTITY:
 - Hair: shoulder-length brown curly hair with natural texture and volume, parted in the middle
@@ -99,26 +101,29 @@ GOOD EXAMPLES:
 
 CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance."
 
-"Marcus - FIXED CHARACTER IDENTITY:
-- Hair: short black fade haircut with sharp line-up, tight curls on top (1/2 inch length)
-- Face: deep brown skin tone, square jaw, high cheekbones, clean shaven
-- Eyes: dark brown eyes, strong thick eyebrows
-- Clothing: burgundy hoodie with white drawstrings and kangaroo pocket, black straight-leg jeans, white Air Force 1 sneakers
-- Accessories: gold chain necklace (visible outside hoodie), silver watch on left wrist
-- Build: athletic muscular build, approximately 6'0" tall, broad shoulders
-- Age: appears early 30s
+UNACCEPTABLE - WILL CAUSE COMPLETE FAILURE:
 
-CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance."
+❌ "Kendrick Lamar - FIXED CHARACTER IDENTITY:
+- Hair: unspecified hair
+- Face: unspecified face
+- Eyes: unspecified eyes
+- Clothing: unspecified clothing
+- Accessories: None
+- Build: average build
+- Age: unspecified age"
+THIS IS USELESS! Will generate random different people in every clip!
 
-BAD EXAMPLES (TOO VAGUE - DO NOT DO THIS):
+❌ "Stylish artist" / "Cool guy" / "Young man" / "Athletic person"
+❌ ANY description using "unspecified", "average", "normal", "typical"
 
-❌ "Stylish young woman with cool vibe"
-❌ "Confident artist"
-❌ "Young man in casual clothes"
-❌ "Beautiful person with nice hair"
-❌ "Athletic guy"
+BACKGROUND CHARACTERS:
+ALL characters appearing in scenes need descriptions (including background):
+- Bartender → full description required
+- Crowd members (if visible/prominent) → full descriptions
+- Passersby (if in multiple clips) → full descriptions
+Only truly faceless/distant crowds can be generic.
 
-These vague descriptions will result in COMPLETELY DIFFERENT PEOPLE in each video clip.
+EVERY character MUST have ALL 7 specific features. "Unspecified" = FAILURE.
 """
 
 
