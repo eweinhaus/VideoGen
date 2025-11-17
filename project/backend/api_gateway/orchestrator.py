@@ -292,7 +292,7 @@ async def handle_pipeline_error(job_id: str, error: Exception) -> None:
         logger.error("Failed to handle pipeline error", exc_info=e, extra={"job_id": job_id})
 
 
-async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None) -> None:
+async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21") -> None:
     """
     Execute the video generation pipeline (modules 3-8).
     
@@ -301,6 +301,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         audio_url: URL of uploaded audio file
         user_prompt: User's creative prompt
         stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
+        video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
     """
     logger.info(
         f"execute_pipeline called for job {job_id}",
@@ -308,7 +309,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "job_id": job_id,
             "audio_url": audio_url,
             "user_prompt_length": len(user_prompt) if user_prompt else 0,
-            "stop_at_stage": stop_at_stage
+            "stop_at_stage": stop_at_stage,
+            "video_model": video_model
         }
     )
     try:
@@ -1451,8 +1453,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                         extra={"job_id": job_id, "event_type": event_type}
                     )
             
-            # Pass ScenePlan and event publisher to video generator for real-time updates
-            clips, video_events = await generate_videos(job_id, clip_prompts, plan, real_time_event_publisher)
+            # Pass ScenePlan, event publisher, and video_model to video generator for real-time updates
+            clips, video_events = await generate_videos(job_id, clip_prompts, plan, real_time_event_publisher, video_model)
             
             # Publish any remaining events that weren't published in real-time (backward compatibility)
             # Note: Most events are already published in real-time, but we still process the list

@@ -137,7 +137,8 @@ async function request<T>(
 export async function uploadAudio(
   audioFile: File,
   userPrompt: string,
-  stopAtStage: string | null = null
+  stopAtStage: string | null = null,
+  videoModel: string = "kling_v21"
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -145,6 +146,7 @@ export async function uploadAudio(
   if (stopAtStage) {
     formData.append("stop_at_stage", stopAtStage)
   }
+  formData.append("video_model", videoModel)
 
   return request<UploadResponse>("/api/v1/upload-audio", {
     method: "POST",

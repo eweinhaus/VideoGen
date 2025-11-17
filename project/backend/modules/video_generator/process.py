@@ -107,6 +107,7 @@ async def process(
     clip_prompts: ClipPrompts,
     plan: Optional[ScenePlan] = None,
     event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    video_model: str = None,
 ) -> Tuple[Clips, list[dict]]:
     """
     Generate all video clips in parallel.
@@ -116,6 +117,8 @@ async def process(
         clip_prompts: ClipPrompts from Prompt Generator
         plan: Optional ScenePlan for context
         event_publisher: Optional async callback(event_type, data) to publish events in real-time
+        video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
+                    If None, falls back to VIDEO_MODEL environment variable
         
     Returns:
         Clips model with all generated clips
@@ -127,9 +130,14 @@ async def process(
     environment = settings.environment
     settings_dict = get_generation_settings(environment)
     
+    # Use provided video_model or fall back to environment variable
+    if video_model is None:
+        selected_model_key = get_selected_model()
+    else:
+        selected_model_key = video_model
+    
     # Validate model configuration before starting
     try:
-        selected_model_key = get_selected_model()
         model_config = get_model_config(selected_model_key)
         is_valid, error_msg = await validate_model_config(selected_model_key, model_config)
         if not is_valid:
@@ -327,6 +335,7 @@ async def process(
                         environment=environment,
                         extra_context=None,
                         progress_callback=progress_callback,
+                        video_model=selected_model_key,
                     )
                     
                     logger.info(

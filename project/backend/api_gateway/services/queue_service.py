@@ -22,7 +22,8 @@ async def enqueue_job(
     user_id: str,
     audio_url: str,
     user_prompt: str,
-    stop_at_stage: str = None
+    stop_at_stage: str = None,
+    video_model: str = "kling_v21"
 ) -> None:
     """
     Enqueue a job to the processing queue.
@@ -33,6 +34,7 @@ async def enqueue_job(
         audio_url: URL of uploaded audio file
         user_prompt: User's creative prompt
         stop_at_stage: Optional stage to stop at (for testing)
+        video_model: Video generation model to use
     """
     job_data = {
         "job_id": job_id,
@@ -40,6 +42,7 @@ async def enqueue_job(
         "audio_url": audio_url,
         "user_prompt": user_prompt,
         "stop_at_stage": stop_at_stage,
+        "video_model": video_model,
         "created_at": datetime.utcnow().isoformat()
     }
     

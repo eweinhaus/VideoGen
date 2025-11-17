@@ -9,6 +9,7 @@ import { AudioUploader } from "@/components/AudioUploader"
 import { PromptInput } from "@/components/PromptInput"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { StepSelector, type PipelineStage } from "@/components/StepSelector"
+import { ModelSelector } from "@/components/ModelSelector"
 import { useAuth } from "@/hooks/useAuth"
 import { uploadStore } from "@/stores/uploadStore"
 import { jobStore } from "@/stores/jobStore"
@@ -20,11 +21,13 @@ export default function UploadPage() {
     audioFile,
     userPrompt,
     stopAtStage,
+    videoModel,
     isSubmitting,
     errors,
     setAudioFile,
     setUserPrompt,
     setStopAtStage,
+    setVideoModel,
     submit,
     reset,
   } = uploadStore()
@@ -150,6 +153,12 @@ export default function UploadPage() {
             <StepSelector
               value={stopAtStage}
               onChange={setStopAtStage}
+              disabled={isSubmitting}
+            />
+
+            <ModelSelector
+              value={videoModel}
+              onChange={setVideoModel}
               disabled={isSubmitting}
             />
 

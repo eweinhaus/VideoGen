@@ -35,6 +35,7 @@ async def process_job(job_data: dict) -> None:
     audio_url = job_data.get("audio_url")
     user_prompt = job_data.get("user_prompt")
     stop_at_stage = job_data.get("stop_at_stage")  # Optional: for testing
+    video_model = job_data.get("video_model", "kling_v21")  # Default to kling_v21 if not provided
     
     if not all([job_id, user_id, audio_url, user_prompt]):
         logger.error("Invalid job data", extra={"job_data": job_data})
@@ -42,7 +43,7 @@ async def process_job(job_data: dict) -> None:
     
     logger.info(
         "Processing job",
-        extra={"job_id": job_id, "user_id": user_id, "stop_at_stage": stop_at_stage}
+        extra={"job_id": job_id, "user_id": user_id, "stop_at_stage": stop_at_stage, "video_model": video_model}
     )
     
     try:
@@ -63,8 +64,8 @@ async def process_job(job_data: dict) -> None:
             }).eq("id", job_id).execute()
             return
         
-        # Execute pipeline (pass stop_at_stage for testing)
-        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage)
+        # Execute pipeline (pass stop_at_stage and video_model)
+        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model)
         
         logger.info("Job processed successfully", extra={"job_id": job_id})
         

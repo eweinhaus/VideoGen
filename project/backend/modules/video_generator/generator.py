@@ -207,6 +207,7 @@ async def generate_video_clip(
     environment: str = "production",
     extra_context: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    video_model: str = None,
 ) -> Clip:
     """
     Generate single video clip via Replicate.
@@ -217,6 +218,8 @@ async def generate_video_clip(
         settings: Generation settings (resolution, fps, etc.)
         job_id: Job ID for logging
         environment: "production" or "development"
+        video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
+                    If None, falls back to VIDEO_MODEL environment variable
         
     Returns:
         Clip model with video URL, duration, cost, etc.
@@ -227,7 +230,10 @@ async def generate_video_clip(
         TimeoutError: If generation times out (>120s)
     """
     # Get selected model and its configuration
-    selected_model_key = get_selected_model()
+    if video_model is None:
+        selected_model_key = get_selected_model()
+    else:
+        selected_model_key = video_model
     model_config = get_model_config(selected_model_key)
     
     # Log model configuration for debugging
