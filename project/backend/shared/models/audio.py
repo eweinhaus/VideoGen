@@ -39,9 +39,11 @@ class SongStructure(BaseModel):
 
 
 class Lyric(BaseModel):
-    """Lyric word model with timestamp."""
-    text: str
+    """Lyric word model with timestamp, confidence, and formatted text."""
+    text: str = Field(..., description="Individual word text")
     timestamp: float = Field(..., ge=0, description="Word start time in seconds")
+    confidence: Optional[float] = Field(None, ge=0, le=1, description="Confidence score 0-1 (if available)")
+    formatted_text: Optional[str] = Field(None, description="Formatted sentence/phrase containing this word")
 
 
 class Mood(BaseModel):

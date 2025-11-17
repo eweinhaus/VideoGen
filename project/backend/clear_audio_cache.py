@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Clear audio parser cache from Redis.
 
@@ -6,6 +7,12 @@ This script deletes all audio parser cache entries from Redis.
 
 import asyncio
 import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
 from shared.redis_client import RedisClient
 from shared.logging import get_logger
 
@@ -17,35 +24,47 @@ async def clear_audio_cache():
     redis_client = RedisClient()
     
     try:
-        # Pattern to match all audio cache keys
-        pattern = "videogen:cache:audio_cache:*"
+        # Check connection
+        if not await redis_client.health_check():
+            logger.error("Failed to connect to Redis")
+            raise ConnectionError("Failed to connect to Redis")
         
-        # Use SCAN to find all matching keys
-        deleted_count = 0
-        cursor = 0
+        logger.info("Connected to Redis, scanning for audio cache keys...")
         
-        logger.info(f"Scanning for keys matching pattern: {pattern}")
+        # Get the underlying Redis client to use SCAN
+        client = redis_client.client
         
-        while True:
-            # Use raw redis client to access SCAN
-            cursor, keys = await redis_client.client.scan(
-                cursor=cursor,
-                match=pattern,
-                count=100
-            )
+        # Pattern to match all audio cache keys (old and new versions)
+        patterns = [
+            "videogen:cache:audio_cache:*",  # Old format (no version)
+            "videogen:cache:audio_cache:v*:*",  # New format (with version)
+        ]
+        
+        total_deleted = 0
+        
+        for pattern in patterns:
+            logger.info(f"Scanning for keys matching pattern: {pattern}")
+            deleted_count = 0
             
-            if keys:
-                # Delete all matching keys
-                deleted = await redis_client.client.delete(*keys)
-                deleted_count += deleted
-                logger.info(f"Deleted {deleted} keys (total: {deleted_count})")
+            # Use SCAN to iterate through keys (more efficient than KEYS for large datasets)
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match=pattern, count=100)
+                
+                if keys:
+                    # Delete all keys in batch
+                    deleted = await client.delete(*keys)
+                    deleted_count += deleted
+                    logger.info(f"Deleted {deleted} keys (pattern: {pattern})")
+                
+                if cursor == 0:
+                    break
             
-            # If cursor is 0, we've scanned all keys
-            if cursor == 0:
-                break
+            total_deleted += deleted_count
+            logger.info(f"Pattern '{pattern}': deleted {deleted_count} keys")
         
-        logger.info(f"✅ Cleared audio parser cache: {deleted_count} entries deleted")
-        return deleted_count
+        logger.info(f"✅ Cleared audio parser cache: {total_deleted} entries deleted")
+        return total_deleted
         
     except Exception as e:
         logger.error(f"Failed to clear audio cache: {str(e)}")
@@ -68,4 +87,3 @@ async def main():
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
-

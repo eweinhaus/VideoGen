@@ -66,7 +66,7 @@ async def test_parse_audio_clip_boundaries_valid(sample_audio_bytes_wav, sample_
     for boundary in analysis.clip_boundaries:
         assert boundary.start >= 0
         assert boundary.end > boundary.start
-        assert 4.0 <= boundary.duration <= 8.0
+        assert 3.0 <= boundary.duration <= 7.0
         assert boundary.duration == boundary.end - boundary.start
 
 

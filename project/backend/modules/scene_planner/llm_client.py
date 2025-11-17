@@ -421,13 +421,35 @@ def _build_user_prompt(
             f"  Clip {i}: {boundary.start:.1f}s - {boundary.end:.1f}s (duration: {boundary.duration:.1f}s)"
         )
     
-    # Format lyrics (if available)
+    # Format lyrics (if available) - use all lyrics with formatted phrases
     lyrics_text = ""
     if audio_data.lyrics:
+        # Group lyrics by formatted phrases to avoid repetition
+        seen_phrases = set()
         lyrics_lines = []
-        for lyric in audio_data.lyrics[:20]:  # Limit to first 20 lyrics to avoid token bloat
-            lyrics_lines.append(f"  [{lyric.timestamp:.1f}s] {lyric.text}")
-        lyrics_text = f"""
+        
+        for lyric in audio_data.lyrics:
+            # Use formatted_text if available, otherwise use individual word
+            if lyric.formatted_text:
+                phrase = lyric.formatted_text
+                # Only add each unique phrase once with its timestamp
+                if phrase not in seen_phrases:
+                    seen_phrases.add(phrase)
+                    lyrics_lines.append(f"  [{lyric.timestamp:.1f}s] {phrase}")
+            else:
+                # Fallback to individual word if formatted_text not available
+                lyrics_lines.append(f"  [{lyric.timestamp:.1f}s] {lyric.text}")
+        
+        # If we have too many unique phrases, limit to first 50 for token management
+        if len(lyrics_lines) > 50:
+            lyrics_lines = lyrics_lines[:50]
+            lyrics_text = f"""
+## Lyrics Context (showing first 50 phrases)
+
+{chr(10).join(lyrics_lines)}
+"""
+        else:
+            lyrics_text = f"""
 ## Lyrics Context
 
 {chr(10).join(lyrics_lines)}

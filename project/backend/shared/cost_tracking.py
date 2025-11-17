@@ -101,6 +101,9 @@ class CostTracker:
                     await db.table("jobs").update({
                         "total_cost": float(new_total)
                     }).eq("id", str(job_id)).execute()
+                    
+                    # Note: cost_update SSE events are published by the orchestrator
+                    # to avoid circular dependency issues (api_gateway imports shared)
                 else:
                     logger.debug(f"Job {job_id} not found when updating total_cost (may be test scenario)")
                 

@@ -425,6 +425,9 @@ export function ProgressTracker({
 
   const { isConnected, error: sseError } = useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
+      // Debug logging for all stage updates
+      console.log("📡 Stage update received:", { stage: data.stage, status: data.status, data })
+      
       // Normalize stage names so spinners/checkmarks display correctly
       const normalize = (name: string) => {
         const n = name.toLowerCase()
@@ -437,6 +440,7 @@ export function ProgressTracker({
         return n
       }
       const stage = normalize(data.stage)
+      console.log("📡 Normalized stage:", { original: data.stage, normalized: stage, status: data.status })
       if (!hasStarted) setHasStarted(true)
       setCurrentStage(stage)
       
@@ -450,6 +454,9 @@ export function ProgressTracker({
       const status = statusMap[(data.status || "").toLowerCase()] || "processing"
       
       // Debug logging for stage completions
+      if (stage === "audio_parser" && status === "completed") {
+        console.log("✅ Audio parser completed:", { stage, status, data })
+      }
       if (stage === "prompt_generation" && status === "completed") {
         console.log("✅ Prompt generator completed:", { stage, status, data })
       }
@@ -546,6 +553,7 @@ export function ProgressTracker({
       })
     },
     onProgress: (data: ProgressEvent) => {
+      console.log("📊 Progress event handler called:", data)
       setProgress(data.progress)
       updateJob(jobId, { progress: data.progress })
       if (data.estimated_remaining !== undefined && data.estimated_remaining !== null) {
@@ -553,6 +561,118 @@ export function ProgressTracker({
         setRemainingTime(data.estimated_remaining)
         // Update job store so header can display estimated time
         updateJob(jobId, { estimatedRemaining: data.estimated_remaining })
+      }
+      // Handle cost from initial progress event (includes total_cost in initial state)
+      if (data.total_cost !== undefined && data.total_cost !== null) {
+        setCost(data.total_cost)
+        updateJob(jobId, { totalCost: data.total_cost })
+      }
+      
+      // If progress event includes stage and status, also update stage status
+      // This handles cases where stage updates come through progress events
+      if (data.stage && data.status) {
+        console.log("📊 Progress event includes stage status, triggering stage update:", { stage: data.stage, status: data.status })
+        // Trigger stage update handler with the stage info from progress event
+        const stageUpdateData = {
+          stage: data.stage,
+          status: data.status
+        } as StageUpdateEvent
+        // Call the stage update handler directly
+        const normalize = (name: string) => {
+          const n = name.toLowerCase()
+          if (n === "audio_analysis") return "audio_parser"
+          if (n === "scene_planning") return "scene_planner"
+          if (n === "reference_generation") return "reference_generator"
+          if (n === "prompt_generator") return "prompt_generation"
+          if (n === "video_generator") return "video_generation"
+          if (n === "composer") return "composition"
+          return n
+        }
+        const stage = normalize(stageUpdateData.stage)
+        if (!hasStarted) setHasStarted(true)
+        setCurrentStage(stage)
+        
+        const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
+          started: "processing",
+          processing: "processing",
+          completed: "completed",
+          failed: "failed",
+          pending: "pending",
+          queued: "pending",
+        }
+        const status = statusMap[(stageUpdateData.status || "").toLowerCase()] || "processing"
+        
+        // Update stages state
+        setStages((prev) => {
+          const normalizeStageName = (name: string): string => {
+            const n = name.toLowerCase()
+            if (n === "audio_analysis") return "audio_parser"
+            if (n === "scene_planning") return "scene_planner"
+            if (n === "reference_generation") return "reference_generator"
+            if (n === "prompt_generator") return "prompt_generation"
+            if (n === "video_generator") return "video_generation"
+            if (n === "composer") return "composition"
+            return n
+          }
+          const existing = prev.find((s) => normalizeStageName(s.name) === stage)
+          
+          const stageOrder = [
+            "audio_parser",
+            "scene_planner",
+            "reference_generator",
+            "prompt_generation",
+            "video_generation",
+            "composition",
+          ]
+          const currentStageIndex = stageOrder.indexOf(stage)
+          const shouldMarkPreviousCompleted = status === "completed" || (currentStageIndex !== -1 && currentStageIndex > 0)
+          
+          let updatedStages = prev.map((s) => {
+            const normalizedSName = normalizeStageName(s.name)
+            const sStageIndex = stageOrder.indexOf(normalizedSName)
+            
+            if (normalizedSName === stage) {
+              if (s.status === "completed" && status === "processing") {
+                return s
+              }
+              if (status === "completed") {
+                return { ...s, status: "completed" as const }
+              }
+              return { ...s, status: status as "pending" | "processing" | "completed" | "failed" }
+            }
+            
+            if (shouldMarkPreviousCompleted && sStageIndex !== -1 && sStageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+              return { ...s, status: "completed" as const }
+            }
+            
+            return s
+          })
+          
+          if (!existing) {
+            if (shouldMarkPreviousCompleted) {
+              updatedStages = updatedStages.map((s) => {
+                const normalizedSName = normalizeStageName(s.name)
+                const sStageIndex = stageOrder.indexOf(normalizedSName)
+                if (sStageIndex !== -1 && sStageIndex < currentStageIndex && s.status !== "completed" && s.status !== "failed") {
+                  return { ...s, status: "completed" as const }
+                }
+                return s
+              })
+            }
+            const finalStatus = status === "completed" ? "completed" as const : (status as "pending" | "processing" | "completed" | "failed")
+            updatedStages = [...updatedStages, { name: stage, status: finalStatus }]
+          }
+          
+          const stagesRecord = updatedStages.reduce((acc, s) => {
+            acc[s.name] = { status: s.status }
+            return acc
+          }, {} as Record<string, { status: string }>)
+          setTimeout(() => {
+            updateJob(jobId, { currentStage: stage, stages: stagesRecord })
+          }, 0)
+          
+          return updatedStages
+        })
       }
     },
     onCostUpdate: (data: CostUpdateEvent) => {
@@ -652,11 +772,15 @@ export function ProgressTracker({
           <span className="text-base font-semibold text-muted-foreground">{displayProgress}%</span>
         </div>
         <Progress value={displayProgress} className="h-3" />
-        {remainingTime !== null && remainingTime !== undefined && (
+        {(remainingTime !== null && remainingTime !== undefined) || displayStage === "audio_parser" || displayStage === "audio_analysis" ? (
           <p className="text-sm text-muted-foreground mt-2">
-            {formatRemainingTime(remainingTime)}
+            {remainingTime !== null && remainingTime !== undefined
+              ? formatRemainingTime(remainingTime)
+              : (displayStage === "audio_parser" || displayStage === "audio_analysis")
+              ? "Estimating time remaining..."
+              : ""}
           </p>
-        )}
+        ) : null}
       </div>
 
       {displayCost !== null && (

@@ -43,36 +43,18 @@ export default function JobProgressPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]) // Only depend on jobId, not fetchJob to prevent unnecessary refetches
 
-  // Handle uploadStore reset when audio_parser starts (hide loading modal)
-  // This ensures the loading modal persists until the job progress page is fully loaded and audio analysis is running
-  useSSE(jobId, {
-    onStageUpdate: (data: StageUpdateEvent) => {
-      const normalize = (name: string) => {
-        const n = name.toLowerCase()
-        if (n === "audio_analysis") return "audio_parser"
-        return n
-      }
-      const stage = normalize(data.stage)
-      const statusMap: Record<string, "pending" | "processing" | "completed" | "failed"> = {
-        started: "processing",
-        processing: "processing",
-        completed: "completed",
-        failed: "failed",
-        pending: "pending",
-      }
-      const status = statusMap[(data.status || "").toLowerCase()] || "processing"
-      
-      // Hide loading modal when audio_parser starts (means job progress page is ready and processing has started)
-      if (stage === "audio_parser" && (status === "processing" || status === "completed")) {
-        import("@/stores/uploadStore").then(({ uploadStore }) => {
-          if (uploadStore.getState().isSubmitting) {
-            console.log("✅ Audio parser started, hiding loading modal")
-            uploadStore.getState().reset()
-          }
-        })
-      }
-    },
-  })
+  // Hide loading modal immediately once we're on the job page
+  useEffect(() => {
+    // Once the job page is loaded and we have the jobId, hide the modal immediately
+    if (jobId) {
+      import("@/stores/uploadStore").then(({ uploadStore }) => {
+        if (uploadStore.getState().isSubmitting) {
+          console.log("✅ On job page, hiding loading modal immediately")
+          uploadStore.getState().reset()
+        }
+      })
+    }
+  }, [jobId])
 
   // Format remaining time for display in header
   const formatRemaining = (seconds: number | null | undefined): string => {

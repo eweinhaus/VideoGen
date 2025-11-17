@@ -53,7 +53,7 @@ export default function UploadPage() {
       const jobId = await submit()
       console.log("✅ Upload successful, jobId:", jobId)
       
-      // Keep modal visible during navigation
+      // Keep modal visible during navigation - isSubmitting stays true
       if (jobId) {
         // Pre-fetch the job to ensure it's in the store before navigation
         try {
@@ -61,14 +61,9 @@ export default function UploadPage() {
         } catch (err) {
           console.warn("⚠️ Failed to pre-fetch job, but continuing with navigation:", err)
         }
-        // Use router.push for client-side navigation so modal stays visible during transition
-        // Keep isSubmitting true to maintain modal during navigation
+        // Navigate to job page - modal will stay visible until we're on the page
+        // The job page will hide it immediately once loaded
         router.push(`/jobs/${jobId}`)
-        
-        // Don't reset isSubmitting immediately - let it stay visible
-        // The modal will be hidden by the job progress page when it's ready
-        // Use a small delay to ensure navigation starts before potentially hiding modal
-        await new Promise(resolve => setTimeout(resolve, 100))
       } else {
         console.error("❌ No jobId returned from submit")
         // Reset submitting state manually only if no jobId

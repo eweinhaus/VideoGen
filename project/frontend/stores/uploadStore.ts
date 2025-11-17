@@ -26,10 +26,19 @@ const VALID_AUDIO_TYPES = [
   "audio/x-flac",
 ]
 
+// In production, always use full pipeline (composer)
+// In development, default to scene_planner for testing
+const getDefaultStopAtStage = (): PipelineStage | null => {
+  if (process.env.NODE_ENV === "production") {
+    return "composer"
+  }
+  return "scene_planner"
+}
+
 export const uploadStore = create<UploadState>((set, get) => ({
   audioFile: null,
   userPrompt: "",
-  stopAtStage: "scene_planner" as PipelineStage | null, // Default to scene_planner for testing
+  stopAtStage: getDefaultStopAtStage(),
   isSubmitting: false,
   errors: {},
 
@@ -123,9 +132,15 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ isSubmitting: true, errors: {} })
 
     try {
-      const { stopAtStage } = get()
+      // In production, always use composer (full pipeline)
+      // In development, use the selected stage or default to composer
+      const stopAtStage = process.env.NODE_ENV === "production" 
+        ? "composer" 
+        : get().stopAtStage || "composer"
+      
       const response = await uploadAudio(audioFile, userPrompt, stopAtStage)
-      set({ isSubmitting: false })
+      // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
+      // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
     } catch (error: any) {
       let errorMessage = error.message || "Upload failed"
@@ -151,7 +166,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({
       audioFile: null,
       userPrompt: "",
-      stopAtStage: "scene_planner" as PipelineStage | null, // Reset to default
+      stopAtStage: getDefaultStopAtStage(), // Reset to default (composer in prod, scene_planner in dev)
       errors: {},
       isSubmitting: false,
     })

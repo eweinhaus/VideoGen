@@ -47,7 +47,14 @@ const STAGE_OPTIONS: Array<{ value: PipelineStage; label: string; description: s
   }
 ]
 
+const isProduction = process.env.NODE_ENV === "production"
+
 export function StepSelector({ value, onChange, disabled }: StepSelectorProps) {
+  // Hide in production - always use full pipeline (composer)
+  if (isProduction) {
+    return null
+  }
+
   return (
     <div className="space-y-3">
       <label className="text-sm font-medium">Stop After Stage (Testing Only)</label>
