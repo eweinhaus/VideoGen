@@ -8,6 +8,8 @@ export interface ProgressEvent {
   progress: number
   estimated_remaining?: number
   total_cost?: number
+  stage?: string  // Optional stage name (may be included in progress events)
+  status?: string  // Optional status (may be included in progress events)
 }
 
 export interface MessageEvent {

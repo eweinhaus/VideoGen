@@ -138,9 +138,17 @@ def generate_boundaries(
     boundaries = []
     current_beat_idx = 0
     clip_index = 0  # Track clip index for variation pattern
+    current_start = beat_timestamps[0] if len(beat_timestamps) > 0 else 0.0  # Start at first beat or 0.0
     
     while current_beat_idx < len(beat_timestamps) and len(boundaries) < max_clips:
-        start = beat_timestamps[current_beat_idx]
+        # For first clip, start at first beat; for subsequent clips, start where previous ended
+        start = current_start
+        
+        # Find the beat index closest to our start time
+        if len(boundaries) > 0:
+            # Find the beat that is >= start time
+            while current_beat_idx < len(beat_timestamps) and beat_timestamps[current_beat_idx] < start:
+                current_beat_idx += 1
         
         # Add variation: alternate between base, base+1, and base-1 beats per clip
         # This creates natural variation in clip durations (roughly 3-7s range)
@@ -251,6 +259,9 @@ def generate_boundaries(
             duration=duration
         ))
         
+        # Next clip starts exactly where this one ends (ensuring no gaps)
+        current_start = end
+        # Move to the beat index after the end beat for next iteration
         current_beat_idx = end_idx + 1
         clip_index += 1
     

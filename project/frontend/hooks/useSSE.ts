@@ -85,39 +85,51 @@ export function useSSE(
     const eventSource = new EventSource(url, { withCredentials: true })
 
     eventSource.onopen = () => {
+      console.log("✅ SSE connection opened for job:", jobId)
       setIsConnected(true)
       setError(null)
       reconnectAttemptsRef.current = 0
     }
 
-    eventSource.onerror = () => {
+    eventSource.onerror = (error) => {
+      console.error("❌ SSE connection error:", error, "for job:", jobId)
       setIsConnected(false)
       eventSource.close()
 
       if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
         const delay = Math.pow(2, reconnectAttemptsRef.current) * 1000 // 2s, 4s, 8s, 16s, 32s
         reconnectAttemptsRef.current++
+        console.log(`🔄 Reconnecting SSE in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`)
 
         reconnectTimeoutRef.current = setTimeout(() => {
           connect()
         }, delay)
       } else {
+        console.error("❌ SSE connection failed after maximum attempts")
         setError("Connection failed after multiple attempts")
       }
+    }
+
+    // Log all incoming messages for debugging
+    eventSource.onmessage = (e: MessageEvent) => {
+      console.log("📨 SSE raw message received:", { type: e.type, data: e.data, lastEventId: e.lastEventId })
     }
 
     // Register event listeners - use handlersRef to get latest handlers without re-creating connection
     eventSource.addEventListener("stage_update", (e: MessageEvent) => {
       try {
+        console.log("🔔 SSE stage_update event listener triggered:", { type: e.type, data: e.data })
         const data = JSON.parse(e.data)
+        console.log("🔔 SSE stage_update event parsed:", data)
         handlersRef.current.onStageUpdate?.(data)
       } catch (err) {
-        console.error("Failed to parse stage_update event:", err)
+        console.error("❌ Failed to parse stage_update event:", err, "Raw data:", e.data)
       }
     })
 
     eventSource.addEventListener("progress", (e: MessageEvent) => {
       try {
+        console.log("📊 SSE progress event received:", e.data)
         const data = JSON.parse(e.data)
         handlersRef.current.onProgress?.(data)
       } catch (err) {
