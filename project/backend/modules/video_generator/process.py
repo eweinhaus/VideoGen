@@ -560,17 +560,36 @@ async def process(
     min_clips = int(os.getenv("VIDEO_GENERATOR_MIN_CLIPS", "3"))
     require_all_clips = os.getenv("VIDEO_GENERATOR_REQUIRE_ALL_CLIPS", "false").lower() == "true"
     auto_retry_on_failure = os.getenv("VIDEO_GENERATOR_AUTO_RETRY_ON_FAILURE", "true").lower() == "true"
+    expected_clips = len(clip_prompts.clip_prompts)
     
-    # If we have insufficient clips, try automatic retry (regardless of error type)
+    # Determine if we need to retry failed clips
+    # Retry if:
+    # 1. We have insufficient clips (< min_clips), OR
+    # 2. require_all_clips=true and we don't have all clips yet
+    needs_retry = (
+        len(failed_clips) > 0 and 
+        auto_retry_on_failure and 
+        (len(successful) < min_clips or (require_all_clips and len(successful) < expected_clips))
+    )
+    
+    # If we need to retry, try automatic retry (regardless of error type)
     # This prevents the "Insufficient clips" crash by giving failed clips another chance
-    if len(successful) < min_clips and len(failed_clips) > 0 and auto_retry_on_failure:
+    retry_successful = []  # Initialize to avoid NameError in error messages
+    if needs_retry:
+        retry_reason = (
+            f"require_all_clips=true and {len(successful)}/{expected_clips} clips" 
+            if require_all_clips and len(successful) < expected_clips
+            else f"insufficient clips ({len(successful)} < {min_clips})"
+        )
         logger.warning(
-            f"Insufficient clips ({len(successful)} < {min_clips}) with {len(failed_clips)} failures. "
+            f"{retry_reason} with {len(failed_clips)} failures. "
             f"Attempting automatic retry with reduced concurrency... (rate_limit_failures: {rate_limit_failures})",
             extra={
                 "job_id": str(job_id),
                 "successful": len(successful),
                 "min_required": min_clips,
+                "expected_clips": expected_clips if require_all_clips else None,
+                "require_all_clips": require_all_clips,
                 "total_failures": len(failed_clips),
                 "rate_limit_failures": rate_limit_failures
             }
@@ -645,14 +664,16 @@ async def process(
     # Final validation after retry - with dynamic fallback
     allow_partial_failure = os.getenv("VIDEO_GENERATOR_ALLOW_PARTIAL_FAILURE", "true").lower() == "true"
     
+    # Calculate final failed count (after retry)
+    final_failed_count = len(failed_clips) - len(retry_successful)
+    
     if require_all_clips:
         # Require ALL clips to succeed before composition
-        expected_clips = len(clip_prompts.clip_prompts)
         if len(successful) < expected_clips:
             raise PipelineError(
                 f"Not all clips generated: {len(successful)}/{expected_clips} successful. "
                 f"All clips must succeed when VIDEO_GENERATOR_REQUIRE_ALL_CLIPS=true. "
-                f"Failed clips: {len(failed_clips) - len(retry_successful) if 'retry_successful' in locals() else failed}"
+                f"Failed clips: {final_failed_count}"
             )
     else:
         # Check if we have ANY successful clips
@@ -682,7 +703,7 @@ async def process(
                 rate_limit_msg = f" ({rate_limit_failures} rate limit failures detected)" if rate_limit_failures > 0 else ""
                 raise PipelineError(
                     f"Insufficient clips generated: {len(successful)} < {min_clips} (minimum required). "
-                    f"Failed clips: {len(failed_clips) - len(retry_successful) if 'retry_successful' in locals() else failed}.{rate_limit_msg} "
+                    f"Failed clips: {final_failed_count}.{rate_limit_msg} "
                     f"Set VIDEO_GENERATOR_ALLOW_PARTIAL_FAILURE=true to continue with fewer clips. "
                     f"Set VIDEO_GENERATOR_AUTO_RETRY_ON_FAILURE=false to disable automatic retry."
                 )

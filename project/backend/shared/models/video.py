@@ -46,11 +46,22 @@ class Clip(BaseModel):
     video_url: str
     actual_duration: float = Field(description="Actual duration in seconds")
     target_duration: float = Field(description="Target duration in seconds")
+    original_target_duration: Optional[float] = Field(
+        default=None,
+        description="Original target duration before buffer (for compensation algorithm)"
+    )
     duration_diff: float = Field(description="Duration difference in seconds")
     status: Literal["success", "failed"]
     cost: Decimal
     retry_count: int = Field(default=0, ge=0)
     generation_time: float = Field(description="Generation time in seconds")
+    
+    def __init__(self, **data):
+        """Initialize Clip with default original_target_duration if not provided."""
+        # Set original_target_duration default to target_duration if not provided (backward compatibility)
+        if "original_target_duration" not in data or data.get("original_target_duration") is None:
+            data["original_target_duration"] = data.get("target_duration")
+        super().__init__(**data)
     
     @field_serializer("cost")
     def serialize_decimal(self, value: Decimal) -> str:
@@ -90,7 +101,13 @@ class VideoOutput(BaseModel):
     sync_drift: float = Field(description="Audio sync drift in seconds")
     clips_used: int
     clips_trimmed: int
-    clips_looped: int
+    clips_looped: int = 0  # Always 0 with cascading compensation (kept for backward compatibility)
+    compensation_applied: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of compensation events: [{'clip_index': 1, 'original_target': 8.0, 'extended_target': 9.5, 'compensation': 0.5}]"
+    )
+    total_shortfall: float = Field(default=0.0, description="Total shortfall after all clips (in seconds)")
+    shortfall_percentage: float = Field(default=0.0, description="Shortfall as percentage of total intended duration")
     transitions_applied: int
     file_size_mb: float = Field(description="File size in megabytes")
     composition_time: float = Field(description="Composition time in seconds")

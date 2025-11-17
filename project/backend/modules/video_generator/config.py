@@ -20,6 +20,12 @@ KLING_MODEL_VERSION = os.getenv("KLING_MODEL_VERSION", "latest")
 SVD_MODEL_VERSION = os.getenv("SVD_MODEL_VERSION", "155d6d446da5e7cd4a2ef72725461ba8687bdf63a2a1fb7bb574f25af24dc7b5")
 COGVIDEOX_MODEL_VERSION = os.getenv("COGVIDEOX_MODEL_VERSION", "latest")
 
+# Duration buffer configuration
+# Buffer multiplier for continuous models (default: 1.25 = 25% buffer)
+# Only applies to models with continuous duration support
+# Discrete models (Kling, etc.) use maximum buffer strategy instead
+VIDEO_GENERATOR_DURATION_BUFFER = float(os.getenv("VIDEO_GENERATOR_DURATION_BUFFER", "1.25"))
+
 KLING_MODEL = f"kwaivgi/kling-v2.1:{KLING_MODEL_VERSION}"
 SVD_MODEL = f"bytedance/seedance-1-pro-fast:{SVD_MODEL_VERSION}"
 COGVIDEOX_MODEL = f"THUDM/cogvideox:{COGVIDEOX_MODEL_VERSION}"
@@ -37,6 +43,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "supports_motion_control": False,
         "supports_audio": False,
         "max_duration": 10,
+        "duration_support": "discrete",  # Only supports 5s or 10s
+        "supported_durations": [5, 10],
         "resolutions": ["720p", "1080p"],
         "fps": 24,
         "estimated_cost_5s": Decimal("0.55"),
@@ -72,6 +80,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "supports_motion_control": False,
         "supports_audio": False,
         "max_duration": 10,
+        "duration_support": "discrete",  # Only supports 5s or 10s
+        "supported_durations": [5, 10],
         "resolutions": ["480p", "720p", "1080p"],
         "fps": 24,
         "estimated_cost_5s": Decimal("0.55"),
@@ -105,6 +115,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "supports_motion_control": False,
         "supports_audio": False,
         "max_duration": 10,
+        "duration_support": "discrete",  # Assumed discrete, needs testing
+        "supported_durations": [5, 10],  # Assumed, needs verification
         "resolutions": ["variable"],  # Resolution varies
         "fps": 24,
         "estimated_cost_5s": Decimal("0.60"),
@@ -136,6 +148,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "supports_motion_control": False,
         "supports_audio": True,  # Background audio
         "max_duration": 10,
+        "duration_support": "discrete",  # Assumed discrete, needs testing
+        "supported_durations": [5, 10],  # Assumed, needs verification
         "resolutions": ["variable"],
         "fps": 24,
         "estimated_cost_5s": Decimal("0.10"),
@@ -168,6 +182,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "supports_audio": True,  # Context-aware audio
         "supports_motion_control": False,
         "max_duration": 10,
+        "duration_support": "continuous",  # Assumed continuous, needs testing
+        "supported_durations": None,  # Continuous, any value up to max_duration
         "resolutions": ["1080p"],
         "fps": 24,
         "estimated_cost_5s": Decimal("1.00"),  # Estimated, actual pricing varies
@@ -355,4 +371,18 @@ def get_model_version(model_name: str = "kling") -> str:
         return COGVIDEOX_MODEL
     else:
         raise ValueError(f"Unknown model: {model_name}")
+
+
+def get_duration_buffer_multiplier() -> float:
+    """
+    Get duration buffer multiplier for continuous models.
+    
+    Returns:
+        Buffer multiplier (default: 1.25 = 25% buffer)
+        
+    Note:
+        This multiplier only applies to models with continuous duration support.
+        Discrete models (Kling, etc.) use maximum buffer strategy instead.
+    """
+    return VIDEO_GENERATOR_DURATION_BUFFER
 

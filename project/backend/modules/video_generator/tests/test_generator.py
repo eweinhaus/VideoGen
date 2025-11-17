@@ -638,3 +638,344 @@ class TestGenerateVideoClip:
                 environment="development"
             )
 
+
+# Buffer calculation and original target duration tests
+class TestBufferCalculation:
+    """Test buffer duration calculation and original target preservation."""
+    
+    @pytest.mark.asyncio
+    @patch('modules.video_generator.generator.get_latest_version_hash')
+    @patch('modules.video_generator.generator.client')
+    @patch('modules.video_generator.generator.download_video_from_url')
+    @patch('modules.video_generator.generator.StorageClient')
+    @patch('modules.video_generator.generator.get_video_duration')
+    @patch('modules.video_generator.generator.get_duration_buffer_multiplier')
+    async def test_buffer_calculation_kling_discrete_maximum(
+        self,
+        mock_buffer_multiplier,
+        mock_get_duration,
+        mock_storage,
+        mock_download,
+        mock_client,
+        mock_get_latest_hash,
+        sample_job_id
+    ):
+        """Test buffer calculation for Kling models (discrete, maximum buffer strategy)."""
+        # Set buffer multiplier (not used for discrete models, but needed)
+        mock_buffer_multiplier.return_value = 1.25
+        # Mock get_latest_version_hash (returns None to use model= parameter)
+        mock_get_latest_hash.return_value = None
+        
+        # Test target > 5s should request 10s (maximum buffer)
+        clip_prompt = ClipPrompt(
+            clip_index=0,
+            prompt="Test prompt",
+            negative_prompt="",
+            duration=8.0,  # Target > 5s
+            scene_reference_url=None,
+            character_reference_urls=[],
+            metadata={}
+        )
+        
+        # Mock Replicate API
+        mock_prediction = Mock()
+        mock_prediction.status = "succeeded"
+        mock_prediction.output = "https://replicate.com/video.mp4"
+        mock_prediction.reload = Mock()
+        mock_prediction.created_at = None
+        mock_client.predictions.create.return_value = mock_prediction
+        
+        # Mock other dependencies
+        mock_download.return_value = b"fake video"
+        mock_get_duration.return_value = 10.0
+        mock_storage_instance = AsyncMock()
+        mock_storage_instance.upload_file = AsyncMock(return_value="https://storage.com/video.mp4")
+        mock_storage_instance.delete_file = AsyncMock()
+        mock_storage.return_value = mock_storage_instance
+        
+        with patch('modules.video_generator.generator.cost_tracker') as mock_tracker:
+            mock_tracker.track_cost = AsyncMock()
+            with patch('modules.video_generator.generator.estimate_clip_cost', return_value=Decimal("0.80")):
+                result = await generate_video_clip(
+                    clip_prompt=clip_prompt,
+                    image_url=None,
+                    settings={"resolution": "1080p", "fps": 24},
+                    job_id=sample_job_id,
+                    environment="production",
+                    video_model="kling_v21"
+                )
+        
+        # Verify original target duration is preserved
+        assert result.original_target_duration == 8.0
+        assert result.target_duration == 8.0
+        # Verify duration requested was 10s (maximum buffer)
+        call_args = mock_client.predictions.create.call_args
+        # call_args is a tuple: (args, kwargs)
+        assert call_args[1]["input"]["duration"] == 10
+    
+    @pytest.mark.asyncio
+    @patch('modules.video_generator.generator.get_latest_version_hash')
+    @patch('modules.video_generator.generator.client')
+    @patch('modules.video_generator.generator.download_video_from_url')
+    @patch('modules.video_generator.generator.StorageClient')
+    @patch('modules.video_generator.generator.get_video_duration')
+    @patch('modules.video_generator.generator.get_duration_buffer_multiplier')
+    async def test_buffer_calculation_kling_discrete_no_buffer(
+        self,
+        mock_buffer_multiplier,
+        mock_get_duration,
+        mock_storage,
+        mock_download,
+        mock_client,
+        mock_get_latest_hash,
+        sample_job_id
+    ):
+        """Test buffer calculation for Kling models when target ≤5s (no buffer possible)."""
+        mock_buffer_multiplier.return_value = 1.25
+        # Mock get_latest_version_hash (returns None to use model= parameter)
+        mock_get_latest_hash.return_value = None
+        
+        # Test target ≤5s should request 5s (no buffer possible)
+        clip_prompt = ClipPrompt(
+            clip_index=0,
+            prompt="Test prompt",
+            negative_prompt="",
+            duration=4.0,  # Target ≤5s
+            scene_reference_url=None,
+            character_reference_urls=[],
+            metadata={}
+        )
+        
+        # Mock Replicate API
+        mock_prediction = Mock()
+        mock_prediction.status = "succeeded"
+        mock_prediction.output = "https://replicate.com/video.mp4"
+        mock_prediction.reload = Mock()
+        mock_prediction.created_at = None
+        mock_client.predictions.create.return_value = mock_prediction
+        
+        # Mock other dependencies
+        mock_download.return_value = b"fake video"
+        mock_get_duration.return_value = 5.0
+        mock_storage_instance = AsyncMock()
+        mock_storage_instance.upload_file = AsyncMock(return_value="https://storage.com/video.mp4")
+        mock_storage_instance.delete_file = AsyncMock()
+        mock_storage.return_value = mock_storage_instance
+        
+        with patch('modules.video_generator.generator.cost_tracker') as mock_tracker:
+            mock_tracker.track_cost = AsyncMock()
+            with patch('modules.video_generator.generator.estimate_clip_cost', return_value=Decimal("0.55")):
+                result = await generate_video_clip(
+                    clip_prompt=clip_prompt,
+                    image_url=None,
+                    settings={"resolution": "1080p", "fps": 24},
+                    job_id=sample_job_id,
+                    environment="production",
+                    video_model="kling_v21"
+                )
+        
+        # Verify original target duration is preserved
+        assert result.original_target_duration == 4.0
+        assert result.target_duration == 4.0
+        # Verify duration requested was 5s (no buffer possible)
+        call_args = mock_client.predictions.create.call_args
+        # call_args is a tuple: (args, kwargs)
+        assert call_args[1]["input"]["duration"] == 5
+    
+    @pytest.mark.asyncio
+    @patch('modules.video_generator.generator.get_latest_version_hash')
+    @patch('modules.video_generator.generator.client')
+    @patch('modules.video_generator.generator.download_video_from_url')
+    @patch('modules.video_generator.generator.StorageClient')
+    @patch('modules.video_generator.generator.get_video_duration')
+    @patch('modules.video_generator.generator.get_duration_buffer_multiplier')
+    async def test_buffer_calculation_veo_continuous_percentage(
+        self,
+        mock_buffer_multiplier,
+        mock_get_duration,
+        mock_storage,
+        mock_download,
+        mock_client,
+        mock_get_latest_hash,
+        sample_job_id
+    ):
+        """Test buffer calculation for Veo 3.1 (continuous, percentage buffer)."""
+        # Set buffer multiplier to 1.25 (25% buffer)
+        mock_buffer_multiplier.return_value = 1.25
+        # Mock get_latest_version_hash (returns None to use model= parameter)
+        mock_get_latest_hash.return_value = None
+        
+        # Test target 4.0s should request 5.0s (25% buffer = 5.0s)
+        clip_prompt = ClipPrompt(
+            clip_index=0,
+            prompt="Test prompt",
+            negative_prompt="",
+            duration=4.0,  # Target 4.0s
+            scene_reference_url=None,
+            character_reference_urls=[],
+            metadata={}
+        )
+        
+        # Mock Replicate API
+        mock_prediction = Mock()
+        mock_prediction.status = "succeeded"
+        mock_prediction.output = "https://replicate.com/video.mp4"
+        mock_prediction.reload = Mock()
+        mock_prediction.created_at = None
+        mock_client.predictions.create.return_value = mock_prediction
+        
+        # Mock other dependencies
+        mock_download.return_value = b"fake video"
+        mock_get_duration.return_value = 5.0
+        mock_storage_instance = AsyncMock()
+        mock_storage_instance.upload_file = AsyncMock(return_value="https://storage.com/video.mp4")
+        mock_storage_instance.delete_file = AsyncMock()
+        mock_storage.return_value = mock_storage_instance
+        
+        with patch('modules.video_generator.generator.cost_tracker') as mock_tracker:
+            mock_tracker.track_cost = AsyncMock()
+            with patch('modules.video_generator.generator.estimate_clip_cost', return_value=Decimal("1.00")):
+                result = await generate_video_clip(
+                    clip_prompt=clip_prompt,
+                    image_url=None,
+                    settings={"resolution": "1080p", "fps": 24},
+                    job_id=sample_job_id,
+                    environment="production",
+                    video_model="veo_31"
+                )
+        
+        # Verify original target duration is preserved
+        assert result.original_target_duration == 4.0
+        assert result.target_duration == 4.0
+        # Verify duration requested was 5.0s (4.0 * 1.25 = 5.0)
+        call_args = mock_client.predictions.create.call_args
+        # call_args is a tuple: (args, kwargs)
+        assert call_args[1]["input"]["duration"] == 5.0
+    
+    @pytest.mark.asyncio
+    @patch('modules.video_generator.generator.get_latest_version_hash')
+    @patch('modules.video_generator.generator.client')
+    @patch('modules.video_generator.generator.download_video_from_url')
+    @patch('modules.video_generator.generator.StorageClient')
+    @patch('modules.video_generator.generator.get_video_duration')
+    @patch('modules.video_generator.generator.get_duration_buffer_multiplier')
+    async def test_buffer_calculation_veo_continuous_capped(
+        self,
+        mock_buffer_multiplier,
+        mock_get_duration,
+        mock_storage,
+        mock_download,
+        mock_client,
+        mock_get_latest_hash,
+        sample_job_id
+    ):
+        """Test buffer calculation for Veo 3.1 when buffer would exceed 10s (capped)."""
+        mock_buffer_multiplier.return_value = 1.25
+        # Mock get_latest_version_hash (returns None to use model= parameter)
+        mock_get_latest_hash.return_value = None
+        
+        # Test target 8.0s should request 10.0s (capped at 10s, not 10.0s)
+        clip_prompt = ClipPrompt(
+            clip_index=0,
+            prompt="Test prompt",
+            negative_prompt="",
+            duration=8.0,  # Target 8.0s, 25% buffer = 10.0s (capped)
+            scene_reference_url=None,
+            character_reference_urls=[],
+            metadata={}
+        )
+        
+        # Mock Replicate API
+        mock_prediction = Mock()
+        mock_prediction.status = "succeeded"
+        mock_prediction.output = "https://replicate.com/video.mp4"
+        mock_prediction.reload = Mock()
+        mock_prediction.created_at = None
+        mock_client.predictions.create.return_value = mock_prediction
+        
+        # Mock other dependencies
+        mock_download.return_value = b"fake video"
+        mock_get_duration.return_value = 10.0
+        mock_storage_instance = AsyncMock()
+        mock_storage_instance.upload_file = AsyncMock(return_value="https://storage.com/video.mp4")
+        mock_storage_instance.delete_file = AsyncMock()
+        mock_storage.return_value = mock_storage_instance
+        
+        with patch('modules.video_generator.generator.cost_tracker') as mock_tracker:
+            mock_tracker.track_cost = AsyncMock()
+            with patch('modules.video_generator.generator.estimate_clip_cost', return_value=Decimal("1.50")):
+                result = await generate_video_clip(
+                    clip_prompt=clip_prompt,
+                    image_url=None,
+                    settings={"resolution": "1080p", "fps": 24},
+                    job_id=sample_job_id,
+                    environment="production",
+                    video_model="veo_31"
+                )
+        
+        # Verify original target duration is preserved
+        assert result.original_target_duration == 8.0
+        assert result.target_duration == 8.0
+        # Verify duration requested was 10.0s (capped at max)
+        call_args = mock_client.predictions.create.call_args
+        # call_args is a tuple: (args, kwargs)
+        assert call_args[1]["input"]["duration"] == 10.0
+
+
+class TestOriginalTargetDuration:
+    """Test original target duration preservation in Clip model."""
+    
+    def test_clip_original_target_defaults_to_target(self):
+        """Test that original_target_duration defaults to target_duration if not provided."""
+        clip = Clip(
+            clip_index=0,
+            video_url="https://example.com/video.mp4",
+            actual_duration=5.0,
+            target_duration=5.0,
+            duration_diff=0.0,
+            status="success",
+            cost=Decimal("0.50"),
+            retry_count=0,
+            generation_time=10.0
+        )
+        
+        # Should default to target_duration
+        assert clip.original_target_duration == 5.0
+    
+    def test_clip_original_target_explicit(self):
+        """Test that original_target_duration can be set explicitly."""
+        clip = Clip(
+            clip_index=0,
+            video_url="https://example.com/video.mp4",
+            actual_duration=10.0,
+            target_duration=8.0,  # After buffer calculation
+            original_target_duration=6.0,  # Original before buffer
+            duration_diff=2.0,
+            status="success",
+            cost=Decimal("0.80"),
+            retry_count=0,
+            generation_time=15.0
+        )
+        
+        # Should use explicit value
+        assert clip.original_target_duration == 6.0
+        assert clip.target_duration == 8.0
+    
+    def test_clip_original_target_none_defaults(self):
+        """Test that original_target_duration=None defaults to target_duration."""
+        clip = Clip(
+            clip_index=0,
+            video_url="https://example.com/video.mp4",
+            actual_duration=5.0,
+            target_duration=5.0,
+            original_target_duration=None,  # Explicitly None
+            duration_diff=0.0,
+            status="success",
+            cost=Decimal("0.50"),
+            retry_count=0,
+            generation_time=10.0
+        )
+        
+        # Should default to target_duration even if None provided
+        assert clip.original_target_duration == 5.0
+
