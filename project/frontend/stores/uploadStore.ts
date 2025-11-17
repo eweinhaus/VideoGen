@@ -61,7 +61,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   audioFile: null,
   userPrompt: "",
   stopAtStage: getDefaultStopAtStage(),
-  videoModel: "kling_v21", // Default model
+  videoModel: "kling_v25_turbo", // Default model
   isSubmitting: false,
   errors: {},
 
@@ -194,7 +194,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       audioFile: null,
       userPrompt: "",
       stopAtStage: getDefaultStopAtStage(), // Reset to default (composer)
-      videoModel: "kling_v21", // Reset to default model
+      videoModel: "kling_v25_turbo", // Reset to default model
       errors: {},
       isSubmitting: false,
     })

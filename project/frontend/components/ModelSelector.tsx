@@ -15,12 +15,12 @@ interface ModelSelectorProps {
 
 const MODEL_OPTIONS: Array<{ value: VideoModel; label: string }> = [
   {
-    value: "kling_v21",
-    label: "Kling v2.1"
-  },
-  {
     value: "kling_v25_turbo",
     label: "Kling v2.5 Turbo"
+  },
+  {
+    value: "kling_v21",
+    label: "Kling v2.1"
   },
   {
     value: "hailuo_23",
