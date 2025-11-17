@@ -1,5 +1,7 @@
 "use client"
 
+import { useState, useEffect } from "react"
+
 export type PipelineStage = 
   | "audio_parser"
   | "scene_planner"
@@ -47,11 +49,60 @@ const STAGE_OPTIONS: Array<{ value: PipelineStage; label: string; description: s
   }
 ]
 
-const isProduction = process.env.NODE_ENV === "production"
+// Check if we're in production environment (client-side only)
+// This function should only be called on the client side
+const isProduction = (): boolean => {
+  // Must be on client side to check
+  if (typeof window === "undefined") {
+    // On server side, assume production to prevent rendering
+    return true
+  }
+  
+  // Check NODE_ENV (set at build time)
+  if (process.env.NODE_ENV === "production") {
+    return true
+  }
+  
+  // Check custom environment variable (can be set in Vercel)
+  if (process.env.NEXT_PUBLIC_ENVIRONMENT === "production") {
+    return true
+  }
+  
+  // Check if explicitly disabled
+  if (process.env.NEXT_PUBLIC_DISABLE_STOP_AT_STAGE === "true") {
+    return true
+  }
+  
+  // Check hostname
+  // Hide on production domains (not localhost, not preview deployments)
+  const hostname = window.location.hostname
+  // Show component only on localhost or preview deployments
+  // Preview deployments on Vercel have pattern: project-git-branch-username.vercel.app (contains multiple dashes)
+  // Production on vercel.app: project.vercel.app (single subdomain)
+  // Custom production domains: any other domain
+  const isLocalhost = hostname === "localhost" || hostname.includes("127.0.0.1")
+  const isPreviewDeployment = hostname.includes(".vercel.app") && 
+                               (hostname.match(/-/g) || []).length >= 2 // Preview has multiple dashes
+  
+  // If not localhost and not a preview deployment, it's production - hide component
+  if (!isLocalhost && !isPreviewDeployment) {
+    return true
+  }
+  
+  return false
+}
 
 export function StepSelector({ value, onChange, disabled }: StepSelectorProps) {
+  // Use state to ensure we only check production status on client side
+  const [shouldShow, setShouldShow] = useState(false)
+  
+  useEffect(() => {
+    // Only show if NOT in production (client-side check)
+    setShouldShow(!isProduction())
+  }, [])
+  
   // Hide in production - always use full pipeline (composer)
-  if (isProduction) {
+  if (!shouldShow) {
     return null
   }
 

@@ -15,7 +15,8 @@ redis_client = RedisClient()
 
 # Cache version - increment this to invalidate all cached results
 # Version 2: Updated clip boundaries from 4-8s to 3-7s range
-CACHE_VERSION = 2
+# Version 3: Fixed clip boundary gaps - clips now start exactly where previous clip ends
+CACHE_VERSION = 3
 
 
 async def get_cached_analysis(file_hash: str) -> Optional[AudioAnalysis]:
