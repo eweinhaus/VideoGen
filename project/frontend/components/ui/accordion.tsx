@@ -23,6 +23,14 @@ export function AccordionItem({
   const [contentHeight, setContentHeight] = React.useState<number>(0)
   const prevIsOpenRef = React.useRef<boolean>(false)
 
+  // Measure content height using hidden element
+  const measureHeight = React.useCallback(() => {
+    if (measureRef.current) {
+      return measureRef.current.scrollHeight
+    }
+    return 0
+  }, [])
+
   // Handle initial mount - only set to open if defaultOpen is true
   React.useEffect(() => {
     if (defaultOpen) {
@@ -37,14 +45,6 @@ export function AccordionItem({
       })
     }
   }, [defaultOpen, measureHeight])
-
-  // Measure content height using hidden element
-  const measureHeight = React.useCallback(() => {
-    if (measureRef.current) {
-      return measureRef.current.scrollHeight
-    }
-    return 0
-  }, [])
 
   // Handle opening/closing animation
   React.useEffect(() => {

@@ -94,3 +94,33 @@ async def test_parse_audio_structure_valid(sample_audio_bytes_wav, sample_job_id
         assert segment.end > segment.start
         assert segment.start < analysis.duration
         assert segment.end <= analysis.duration
+
+
+@pytest.mark.asyncio
+async def test_parse_audio_new_features(sample_audio_bytes_wav, sample_job_id):
+    """Test that new features (subdivisions, beat strength, intensity) are populated."""
+    analysis = await parse_audio(sample_audio_bytes_wav, sample_job_id)
+    
+    # Test beat subdivisions
+    assert "beat_subdivisions" in analysis.model_dump()
+    assert "eighth_notes" in analysis.beat_subdivisions
+    assert "sixteenth_notes" in analysis.beat_subdivisions
+    assert isinstance(analysis.beat_subdivisions["eighth_notes"], list)
+    assert isinstance(analysis.beat_subdivisions["sixteenth_notes"], list)
+    
+    # Test beat strength
+    assert "beat_strength" in analysis.model_dump()
+    assert len(analysis.beat_strength) == len(analysis.beat_timestamps)
+    assert all(s in ["downbeat", "upbeat"] for s in analysis.beat_strength)
+    
+    # Test beat intensity in segments
+    for segment in analysis.song_structure:
+        # beat_intensity is optional, so may be None
+        if segment.beat_intensity is not None:
+            assert segment.beat_intensity in ["high", "medium", "low"]
+    
+    # Test metadata includes new statistics
+    assert "subdivision_count" in analysis.metadata
+    assert "downbeat_count" in analysis.metadata
+    assert "intensity_distribution" in analysis.metadata
+    assert isinstance(analysis.metadata["intensity_distribution"], dict)

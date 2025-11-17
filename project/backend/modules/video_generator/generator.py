@@ -213,7 +213,7 @@ async def generate_video_clip(
     
     Args:
         clip_prompt: ClipPrompt with prompt, duration, etc.
-        image_url: Replicate file URL or file object (or None for text-only)
+        image_url: Replicate file URL (or None for text-only)
         settings: Generation settings (resolution, fps, etc.)
         job_id: Job ID for logging
         environment: "production" or "development"
@@ -371,8 +371,26 @@ async def generate_video_clip(
         # Poll for completion (fixed 3-second interval)
         start_time = time.time()
         poll_interval = 3  # Fixed 3-second polling
-        estimated_clip_time = 45  # Average time per clip (seconds) - can be adjusted based on environment
-        last_heartbeat_second = -1  # Track last heartbeat second to avoid duplicates
+        
+        # Get model-specific generation time estimate from config
+        try:
+            model_key = selected_model_key  # Already retrieved at start of function
+            config = get_model_config(model_key)
+            estimated_clip_time = config.get("generation_time_avg_seconds", 90)  # Default to 90s if not in config
+            logger.debug(
+                f"Using model-specific estimated clip time: {estimated_clip_time}s for {model_key}",
+                extra={"job_id": str(job_id), "model": model_key, "estimated_time": estimated_clip_time}
+            )
+        except Exception as e:
+            # Fallback to environment-based estimate
+            estimated_clip_time = 90 if environment == "production" else 60
+            logger.warning(
+                f"Failed to get model-specific time estimate, using fallback: {estimated_clip_time}s",
+                extra={"job_id": str(job_id), "error": str(e), "environment": environment}
+            )
+        
+        last_progress_update = 0  # Track last progress update time (for throttling)
+        progress_update_interval = 3  # Update progress every 3 seconds (more frequent than before)
         
         while prediction.status not in ["succeeded", "failed", "canceled"]:
             await asyncio.sleep(poll_interval)
@@ -388,25 +406,73 @@ async def generate_video_clip(
             # Reload to get latest status
             prediction.reload()
             
-            # Emit progress updates during polling (heartbeat + sub-progress)
+            # Emit progress updates during polling (more frequent updates)
             if progress_callback:
                 # Calculate sub-progress: estimate completion based on elapsed time
-                sub_progress_ratio = min(1.0, elapsed / estimated_clip_time)
+                # Use a more sophisticated estimation that accounts for typical generation phases
+                # Early phase (0-30%): slower, model initialization
+                # Middle phase (30-70%): steady generation
+                # Late phase (70-100%): encoding/finalization
                 
-                # Emit heartbeat every 10 seconds to show activity
-                # Check if we've crossed a 10-second boundary (more reliable than modulo)
-                current_heartbeat_second = int(elapsed) // 10
-                if current_heartbeat_second > last_heartbeat_second:
-                    last_heartbeat_second = current_heartbeat_second
-                    progress_callback({
+                # Normalized time (0-1) based on estimated clip time
+                normalized_time = min(1.0, elapsed / estimated_clip_time)
+                
+                # Apply non-linear progress curve (accounts for initialization and encoding phases)
+                # Early phase: slower progress (0-30% of time = 0-20% progress)
+                # Middle phase: steady (30-70% of time = 20-70% progress)
+                # Late phase: slower (70-100% of time = 70-100% progress)
+                if normalized_time <= 0.3:
+                    # Early phase: slower progress
+                    sub_progress_ratio = (normalized_time / 0.3) * 0.2
+                elif normalized_time <= 0.7:
+                    # Middle phase: steady progress
+                    sub_progress_ratio = 0.2 + ((normalized_time - 0.3) / 0.4) * 0.5
+                else:
+                    # Late phase: slower progress (encoding)
+                    sub_progress_ratio = 0.7 + ((normalized_time - 0.7) / 0.3) * 0.3
+                
+                # Clamp to [0, 1]
+                sub_progress_ratio = max(0.0, min(1.0, sub_progress_ratio))
+                
+                # Update progress more frequently (every 3 seconds instead of 10)
+                if elapsed - last_progress_update >= progress_update_interval:
+                    last_progress_update = elapsed
+                    
+                    # Try to get more accurate timing from prediction if available
+                    prediction_elapsed = None
+                    if hasattr(prediction, 'created_at') and prediction.created_at:
+                        try:
+                            from datetime import datetime, timezone
+                            if isinstance(prediction.created_at, str):
+                                created_at = datetime.fromisoformat(prediction.created_at.replace('Z', '+00:00'))
+                            else:
+                                created_at = prediction.created_at
+                            if created_at.tzinfo is None:
+                                created_at = created_at.replace(tzinfo=timezone.utc)
+                            now = datetime.now(timezone.utc)
+                            prediction_elapsed = (now - created_at).total_seconds()
+                        except Exception:
+                            pass  # Fall back to local elapsed time
+                    
+                    # Use prediction elapsed time if available, otherwise use local elapsed
+                    effective_elapsed = prediction_elapsed if prediction_elapsed is not None else elapsed
+                    
+                    progress_event = {
                         "event_type": "video_generation_progress",
                         "data": {
                             "clip_index": clip_prompt.clip_index,
-                            "elapsed_seconds": int(elapsed),
-                            "estimated_remaining": max(0, int(estimated_clip_time - elapsed)),
+                            "elapsed_seconds": int(effective_elapsed),
+                            "estimated_remaining": max(0, int(estimated_clip_time - effective_elapsed)),
                             "sub_progress": sub_progress_ratio,
+                            "estimated_total": int(estimated_clip_time),
+                            "status": prediction.status if hasattr(prediction, 'status') else "processing",
                         }
-                    })
+                    }
+                    # Handle both sync and async callbacks
+                    if asyncio.iscoroutinefunction(progress_callback):
+                        await progress_callback(progress_event)
+                    else:
+                        progress_callback(progress_event)
         
         # Handle result
         if prediction.status == "succeeded":

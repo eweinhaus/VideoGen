@@ -10,7 +10,7 @@ from uuid import UUID
 from shared.models.audio import AudioAnalysis
 from shared.logging import get_logger
 
-from modules.audio_parser.beat_detection import detect_beats
+from modules.audio_parser.beat_detection import detect_beats, detect_beat_subdivisions, classify_beat_strength
 from modules.audio_parser.structure_analysis import analyze_structure
 from modules.audio_parser.mood_classifier import classify_mood
 from modules.audio_parser.boundaries import generate_boundaries
@@ -45,13 +45,22 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
             fallbacks_used.append("beat_detection")
         logger.info(f"Beat detection: BPM={bpm:.1f}, beats={len(beat_timestamps)}, confidence={beat_confidence:.2f}")
         
+        # 1a. Beat Subdivisions (eighth and sixteenth notes)
+        subdivisions = detect_beat_subdivisions(beat_timestamps, bpm, duration)
+        logger.info(f"Beat subdivisions: {len(subdivisions['eighth_notes'])} eighth, {len(subdivisions['sixteenth_notes'])} sixteenth notes")
+        
+        # 1b. Beat Strength Classification (downbeat/upbeat)
+        beat_strength = classify_beat_strength(beat_timestamps, audio, sr, bpm)
+        downbeat_count = sum(1 for s in beat_strength if s == "downbeat")
+        logger.info(f"Beat strength: {downbeat_count} downbeats, {len(beat_strength) - downbeat_count} upbeats")
+        
         # 2. Clip Boundaries (generate first - these will be used for structure)
         clip_boundaries = generate_boundaries(beat_timestamps, bpm, duration)
         logger.info(f"Clip boundaries: {len(clip_boundaries)} clips")
         
         # 3. Structure Analysis (uses clip boundaries as base, then classifies each segment)
         from modules.audio_parser.structure_analysis import analyze_structure_from_clips
-        structure_result = analyze_structure_from_clips(audio, sr, clip_boundaries, duration)
+        structure_result = analyze_structure_from_clips(audio, sr, clip_boundaries, duration, beat_timestamps)
         if isinstance(structure_result, tuple):
             song_structure, structure_fallback = structure_result
         else:
@@ -94,6 +103,8 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
             bpm=bpm,
             duration=duration,
             beat_timestamps=beat_timestamps,
+            beat_subdivisions=subdivisions,
+            beat_strength=beat_strength,
             song_structure=song_structure,
             lyrics=lyrics,
             mood=mood,
@@ -104,7 +115,14 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
                 "mood_confidence": mood.confidence,
                 "lyrics_count": len(lyrics),
                 "lyrics_confidence": round(lyrics_confidence, 3),
-                "fallbacks_used": fallbacks_used
+                "fallbacks_used": fallbacks_used,
+                "subdivision_count": len(subdivisions.get("eighth_notes", [])) + len(subdivisions.get("sixteenth_notes", [])),
+                "downbeat_count": sum(1 for s in beat_strength if s == "downbeat"),
+                "intensity_distribution": {
+                    "high": sum(1 for s in song_structure if getattr(s, 'beat_intensity', None) == "high"),
+                    "medium": sum(1 for s in song_structure if getattr(s, 'beat_intensity', None) == "medium"),
+                    "low": sum(1 for s in song_structure if getattr(s, 'beat_intensity', None) == "low")
+                }
             }
         )
         

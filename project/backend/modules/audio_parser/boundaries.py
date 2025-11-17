@@ -273,21 +273,24 @@ def generate_boundaries(
         else:
             return _create_equal_segments(total_duration, min(3, int(total_duration / 3.0)))
     
-    # Trim last clip to end if needed (flexible - can extend up to 7s max)
+    # Trim last clip to end if needed - smart extension
+    # Extend last clip to cover full duration if reasonable (≤10s), otherwise create new clip
     if boundaries[-1].end < total_duration:
         new_end = total_duration
         new_duration = new_end - boundaries[-1].start
-        # Allow extending if it's within 3-7s range
-        if new_duration <= 7.0:
-            # Create new boundary with extended end
+        
+        # Smart extension: extend if new duration ≤ 10s (reasonable limit)
+        if new_duration <= 10.0:
+            # Extend the last boundary to cover full duration
             prev_boundary = boundaries[-1]
             boundaries[-1] = ClipBoundary(
                 start=prev_boundary.start,
                 end=new_end,
                 duration=new_duration
             )
+            logger.info(f"Extended last boundary to cover full duration: {prev_boundary.end:.1f}s -> {new_end:.1f}s (duration: {new_duration:.1f}s)")
         else:
-            # If extending would exceed 7s, create additional clip if there's enough time
+            # If extending would exceed 10s, create additional clip if there's enough time
             remaining_time = total_duration - boundaries[-1].end
             if remaining_time >= 3.0 and len(boundaries) < max_clips:
                 boundaries.append(ClipBoundary(
@@ -295,12 +298,26 @@ def generate_boundaries(
                     end=total_duration,
                     duration=remaining_time
                 ))
+                logger.info(f"Created additional clip for remaining {remaining_time:.1f}s (last clip would have been {new_duration:.1f}s)")
+            else:
+                # If we can't create a new clip (too short or max_clips reached), extend anyway
+                # This ensures we cover the full audio duration
+                prev_boundary = boundaries[-1]
+                boundaries[-1] = ClipBoundary(
+                    start=prev_boundary.start,
+                    end=new_end,
+                    duration=new_duration
+                )
+                logger.info(f"Extended last boundary beyond 10s limit to cover full duration: {prev_boundary.end:.1f}s -> {new_end:.1f}s (duration: {new_duration:.1f}s)")
     
-    # Final validation: ensure all boundaries have duration >= 3.0 and <= 7.0
+    # Final validation: ensure all boundaries have duration >= 3.0 and <= 10.0
+    # Allow last boundary to extend up to 10s to cover full audio, but prefer 3-7s range
     # Filter out any boundaries that don't meet the range and merge/skip as needed
     validated_boundaries = []
     for i, boundary in enumerate(boundaries):
-        if 3.0 <= boundary.duration <= 7.0:
+        # Last boundary can be up to 10s (to cover full audio), others should be 3-7s
+        max_duration = 10.0 if i == len(boundaries) - 1 else 7.0
+        if 3.0 <= boundary.duration <= max_duration:
             validated_boundaries.append(boundary)
         elif boundary.duration < 3.0:
             # If duration < 3.0, try to merge with previous or next boundary
@@ -342,13 +359,18 @@ def generate_boundaries(
                         duration=new_duration
                     ))
         elif boundary.duration > 7.0:
-            # If duration > 7.0, split or cap it
-            # For now, cap at 7.0
-            validated_boundaries.append(ClipBoundary(
-                start=boundary.start,
-                end=min(boundary.start + 7.0, total_duration),
-                duration=min(7.0, total_duration - boundary.start)
-            ))
+            # If duration > 7.0, allow it if it's the last boundary and ≤ 10s
+            # Otherwise, cap at 7.0
+            if i == len(boundaries) - 1 and boundary.duration <= 10.0:
+                # Last boundary can extend up to 10s to cover full audio
+                validated_boundaries.append(boundary)
+            else:
+                # Cap at 7.0 for non-last boundaries
+                validated_boundaries.append(ClipBoundary(
+                    start=boundary.start,
+                    end=min(boundary.start + 7.0, total_duration),
+                    duration=min(7.0, total_duration - boundary.start)
+                ))
     
     # Use validated boundaries if we filtered any out, otherwise use original
     # Only replace if we have validated boundaries (don't lose all boundaries)

@@ -2,7 +2,7 @@
 """
 Clear audio parser cache from Redis.
 
-This script deletes all cached audio analysis results.
+This script deletes all audio parser cache entries from Redis.
 """
 
 import asyncio
@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 from shared.redis_client import RedisClient
 from shared.logging import get_logger
 
-logger = get_logger("clear_cache")
+logger = get_logger("clear_audio_cache")
 
 
 async def clear_audio_cache():
@@ -27,7 +27,7 @@ async def clear_audio_cache():
         # Check connection
         if not await redis_client.health_check():
             logger.error("Failed to connect to Redis")
-            return False
+            raise ConnectionError("Failed to connect to Redis")
         
         logger.info("Connected to Redis, scanning for audio cache keys...")
         
@@ -63,12 +63,12 @@ async def clear_audio_cache():
             total_deleted += deleted_count
             logger.info(f"Pattern '{pattern}': deleted {deleted_count} keys")
         
-        logger.info(f"✅ Cache cleared! Total keys deleted: {total_deleted}")
-        return True
+        logger.info(f"✅ Cleared audio parser cache: {total_deleted} entries deleted")
+        return total_deleted
         
     except Exception as e:
-        logger.error(f"Failed to clear cache: {str(e)}")
-        return False
+        logger.error(f"Failed to clear audio cache: {str(e)}")
+        raise
     finally:
         await redis_client.close()
 
@@ -76,15 +76,14 @@ async def clear_audio_cache():
 async def main():
     """Main entry point."""
     print("Clearing audio parser cache...")
-    success = await clear_audio_cache()
-    
-    if success:
-        print("✅ Cache cleared successfully!")
-        sys.exit(0)
-    else:
-        print("❌ Failed to clear cache")
-        sys.exit(1)
+    try:
+        count = await clear_audio_cache()
+        print(f"✅ Successfully cleared {count} cache entries")
+        return 0
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        return 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
