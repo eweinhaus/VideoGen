@@ -33,19 +33,19 @@ def generate_boundaries(
         List of ClipBoundary objects
     """
     # Calculate target number of clips if not specified
-    # Roughly ~20 clips for typical songs, but flexible based on duration
+    # Target ~10 seconds per clip, fewer clips for typical songs
     if max_clips is None:
-        # Target ~5 seconds per clip on average (middle of 3-7s range)
-        target_clips = int(total_duration / 5.0)
-        # But keep it reasonable: 10-30 clips for most songs
-        max_clips = max(10, min(30, target_clips))
+        # Target ~10 seconds per clip on average
+        target_clips = int(total_duration / 10.0)
+        # But keep it reasonable: 5-20 clips for most songs
+        max_clips = max(5, min(20, target_clips))
     # Edge case 1: Very short songs (<9s) → Create fewer segments to ensure 3s minimum
-    # The model requires 3-7s per segment, so for songs <9s, we can't have 3 segments
-    # Instead, create 1-2 segments that meet the 3s minimum requirement
+    # For normal songs, we target 6-15s per clip (~10s), but very short songs can't meet this
+    # Instead, create 1-2 segments that meet the 3s minimum requirement (Pydantic model constraint)
     if total_duration < 9.0:
         boundaries = []
-        # For songs <9s, create segments that are at least 3s each
-        # If duration < 3s, create 1 segment (edge case)
+        # For songs <9s, create segments that are at least 3s each (model minimum)
+        # If duration < 3s, create 1 segment (edge case, model requires >=3s)
         # If 3s <= duration < 6s, create 1 segment
         # If 6s <= duration < 9s, create 2 segments
         
@@ -66,7 +66,7 @@ def generate_boundaries(
             ))
         else:
             # 6s <= duration < 9s: create 2 segments of ~3-5s each
-            # Ensure both segments are at least 3s
+            # Ensure both segments are at least 3s (model minimum requirement)
             mid_point = max(3.0, total_duration - 3.0)  # Ensure second segment is at least 3s
             if mid_point > total_duration - 3.0:
                 mid_point = total_duration / 2.0  # If possible, split evenly
@@ -104,15 +104,15 @@ def generate_boundaries(
         boundaries = []
         current_time = 0.0
         while current_time < total_duration and len(boundaries) < max_clips:
-            # Target ~5 seconds (middle of 3-7s range), using 4 beats as base
-            end_time = min(current_time + (4 * beat_interval), total_duration)
+            # Target ~10 seconds, using 8 beats as base (approximately 10s at typical BPM)
+            end_time = min(current_time + (8 * beat_interval), total_duration)
             duration = end_time - current_time
-            # Ensure duration is within 3-7s range
-            if duration < 3.0:
-                end_time = min(current_time + 3.0, total_duration)
+            # Ensure duration is within 6-15s range (prefer ~10s)
+            if duration < 6.0:
+                end_time = min(current_time + 6.0, total_duration)
                 duration = end_time - current_time
-            elif duration > 7.0:
-                end_time = min(current_time + 7.0, total_duration)
+            elif duration > 15.0:
+                end_time = min(current_time + 15.0, total_duration)
                 duration = end_time - current_time
             
             boundaries.append(ClipBoundary(
@@ -130,9 +130,9 @@ def generate_boundaries(
         return boundaries[:max_clips]
     
     # Normal case: Beat-aligned boundaries
-    # Target roughly 5 seconds per clip (middle of 3-7s range), but flexible
+    # Target roughly 10 seconds per clip, but flexible
     # Add variation: use different beats_per_clip values to create natural variation
-    target_duration = 5.0  # Middle of 3-7s range
+    target_duration = 10.0  # Target 10 seconds per clip
     beat_interval = np.mean(np.diff(beat_timestamps)) if len(beat_timestamps) > 1 else (60.0 / bpm)
     base_beats_per_clip = max(1, math.ceil(target_duration / beat_interval))
     
@@ -152,7 +152,7 @@ def generate_boundaries(
                 current_beat_idx += 1
         
         # Add variation: alternate between base, base+1, and base-1 beats per clip
-        # This creates natural variation in clip durations (roughly 3-7s range)
+        # This creates natural variation in clip durations (roughly 6-15s range, prefer ~10s)
         variation_pattern = [0, 1, -1, 0, 1, -1, 0]  # Pattern repeats every 7 clips
         beats_variation = variation_pattern[clip_index % len(variation_pattern)]
         beats_per_clip = max(1, base_beats_per_clip + beats_variation)
@@ -161,24 +161,24 @@ def generate_boundaries(
         end = beat_timestamps[end_idx]
         duration = end - start
         
-        # Adjust duration to be within 3-7s range
-        if duration < 3.0:
-            # Extend to next beats to reach at least 3s
-            while end_idx < len(beat_timestamps) - 1 and duration < 3.0:
+        # Adjust duration to be within 6-15s range (prefer ~10s)
+        if duration < 6.0:
+            # Extend to next beats to reach at least 6s
+            while end_idx < len(beat_timestamps) - 1 and duration < 6.0:
                 end_idx += 1
                 end = beat_timestamps[end_idx]
                 duration = end - start
-                if duration >= 3.0:
+                if duration >= 6.0:
                     break
             
-            # If we've run out of beats and duration is still < 3.0, extend to total_duration
-            if duration < 3.0:
-                # Extend to total_duration to ensure minimum 3s duration
-                end = min(start + 3.0, total_duration)
+            # If we've run out of beats and duration is still < 6.0, extend to total_duration
+            if duration < 6.0:
+                # Extend to total_duration to ensure minimum 6s duration
+                end = min(start + 6.0, total_duration)
                 duration = end - start
-                # If extending to 3s would exceed total_duration, we need to handle this differently
-                if duration < 3.0:
-                    # This means we're near the end and can't create a 3s clip
+                # If extending to 6s would exceed total_duration, we need to handle this differently
+                if duration < 6.0:
+                    # This means we're near the end and can't create a 6s clip
                     # Merge with previous boundary if possible, or extend to end
                     if len(boundaries) > 0:
                         # Merge with previous boundary, but respect 25s model limit
@@ -202,35 +202,36 @@ def generate_boundaries(
                         # Skip creating this boundary
                         break
                     else:
-                        # First boundary - extend to at least 3s or total_duration
-                        end = max(start + 3.0, total_duration)
+                        # First boundary - extend to at least 6s or total_duration
+                        end = max(start + 6.0, total_duration)
                         duration = end - start
         
-        # Cap duration at 7s maximum
-        if duration > 7.0:
-            # Find the beat that keeps us closest to 7s without going over
-            # Backtrack to find a beat that gives us duration <= 7.0
-            while end_idx > current_beat_idx and duration > 7.0:
+        # Cap duration at 15s maximum (allow some flexibility up to 20s for last boundary)
+        if duration > 15.0:
+            # Find the beat that keeps us closest to 15s without going over
+            # Backtrack to find a beat that gives us duration <= 15.0
+            while end_idx > current_beat_idx and duration > 15.0:
                 end_idx -= 1
                 if end_idx > current_beat_idx:
                     end = beat_timestamps[end_idx]
                     duration = end - start
                 else:
-                    # Can't go back further, cap at 7s
-                    end = min(start + 7.0, total_duration)
+                    # Can't go back further, cap at 15s
+                    end = min(start + 15.0, total_duration)
                     duration = end - start
                     break
         
-        # Ensure duration is at least 3.0 before creating boundary
-        if duration < 3.0:
-            # If we still can't reach 3s, skip this boundary or merge with previous
+        # Ensure duration is at least 6.0 before creating boundary
+        if duration < 6.0:
+            # If we still can't reach 6s, skip this boundary or merge with previous
             if len(boundaries) > 0:
-                # Merge with previous boundary
+                # Merge with previous boundary, but respect 25s model limit
                 prev_boundary = boundaries[-1]
                 new_end = min(end, total_duration)
                 new_duration = new_end - prev_boundary.start
-                # Ensure merged duration doesn't exceed 7s
-                if new_duration <= 7.0:
+                MAX_DURATION = 25.0  # Model limit
+                # Ensure merged duration doesn't exceed 25s
+                if new_duration <= MAX_DURATION:
                     # Create new boundary with merged end
                     boundaries[-1] = ClipBoundary(
                         start=prev_boundary.start,
@@ -240,18 +241,18 @@ def generate_boundaries(
                 # Skip creating this boundary
                 continue
             else:
-                # First boundary - must be at least 3s or use total_duration
-                end = max(start + 3.0, total_duration)
+                # First boundary - must be at least 6s or use total_duration
+                end = max(start + 6.0, total_duration)
                 duration = end - start
         
-        # Final safeguard: ensure duration is at least 3.0 and at most 7.0 before creating boundary
-        if duration < 3.0:
+        # Final safeguard: ensure duration is at least 6.0 and at most 15.0 before creating boundary
+        if duration < 6.0:
             # This should not happen after all the checks above, but as a final safeguard
             # extend to ensure minimum duration
-            end = min(start + 3.0, total_duration)
+            end = min(start + 6.0, total_duration)
             duration = end - start
-            # If still < 3.0, we're at the end - merge with previous or skip
-            if duration < 3.0 and len(boundaries) > 0:
+            # If still < 6.0, we're at the end - merge with previous or skip
+            if duration < 6.0 and len(boundaries) > 0:
                 MAX_DURATION = 25.0  # Model limit
                 prev_boundary = boundaries[-1]
                 merged_duration = total_duration - prev_boundary.start
@@ -269,9 +270,9 @@ def generate_boundaries(
                         duration=merged_duration
                     )
                 continue
-        elif duration > 7.0:
-            # Cap at 7s maximum
-            end = min(start + 7.0, total_duration)
+        elif duration > 15.0:
+            # Cap at 15s maximum (allow up to 20s for last boundary if needed)
+            end = min(start + 15.0, total_duration)
             duration = end - start
         
         boundaries.append(ClipBoundary(
@@ -338,25 +339,25 @@ def generate_boundaries(
                 else:
                     logger.info(f"Extended last boundary beyond 10s limit to cover full duration: {prev_boundary.end:.1f}s -> {capped_end:.1f}s (duration: {capped_duration:.1f}s)")
     
-    # Final validation: ensure all boundaries have duration >= 3.0 and <= 25.0 (model limit)
-    # Allow last boundary to extend up to 25s (model limit) to cover full audio, but prefer 3-7s range
+    # Final validation: ensure all boundaries have duration >= 6.0 and <= 25.0 (model limit)
+    # Allow last boundary to extend up to 25s (model limit) to cover full audio, but prefer 6-15s range
     # Filter out any boundaries that don't meet the range and merge/skip as needed
     MAX_DURATION = 25.0  # Model limit: ClipBoundary.duration <= 25.0
     validated_boundaries = []
     for i, boundary in enumerate(boundaries):
-        # Last boundary can be up to 25s (model limit, to cover full audio), others should be 3-7s
-        max_duration = MAX_DURATION if i == len(boundaries) - 1 else 7.0
-        if 3.0 <= boundary.duration <= max_duration:
+        # Last boundary can be up to 25s (model limit, to cover full audio), others should be 6-15s
+        max_duration = MAX_DURATION if i == len(boundaries) - 1 else 15.0
+        if 6.0 <= boundary.duration <= max_duration:
             validated_boundaries.append(boundary)
-        elif boundary.duration < 3.0:
-            # If duration < 3.0, try to merge with previous or next boundary
+        elif boundary.duration < 6.0:
+            # If duration < 6.0, try to merge with previous or next boundary
             if len(validated_boundaries) > 0:
                 # Merge with previous boundary
                 prev_boundary = validated_boundaries[-1]
                 new_end = min(boundary.end, total_duration)
                 new_duration = new_end - prev_boundary.start
-                # Ensure merged duration is still <= 7.0
-                if new_duration <= 7.0:
+                # Ensure merged duration is still <= 25s (model limit)
+                if new_duration <= MAX_DURATION:
                     # Create new boundary with merged end
                     validated_boundaries[-1] = ClipBoundary(
                         start=prev_boundary.start,
@@ -364,38 +365,38 @@ def generate_boundaries(
                         duration=new_duration
                     )
                 else:
-                    # Can't merge without violating 7s maximum, skip this boundary
+                    # Can't merge without violating 25s maximum, skip this boundary
                     continue
             elif i < len(boundaries) - 1:
                 # Merge with next boundary (skip this one, extend next)
                 next_boundary = boundaries[i + 1]
                 new_start = boundary.start
                 new_duration = next_boundary.end - new_start
-                if new_duration <= 7.0:
+                if new_duration <= MAX_DURATION:
                     validated_boundaries.append(ClipBoundary(
                         start=new_start,
                         end=next_boundary.end,
                         duration=new_duration
                     ))
             else:
-                # Last boundary - extend to ensure >= 3.0
-                new_end = max(boundary.start + 3.0, total_duration)
+                # Last boundary - extend to ensure >= 6.0
+                new_end = max(boundary.start + 6.0, total_duration)
                 new_duration = new_end - boundary.start
-                if new_duration <= 7.0:
+                if new_duration <= MAX_DURATION:
                     validated_boundaries.append(ClipBoundary(
                         start=boundary.start,
                         end=new_end,
                         duration=new_duration
                     ))
-        elif boundary.duration > 7.0:
-            # If duration > 7.0, allow it if it's the last boundary and ≤ 25s (model limit)
-            # Otherwise, cap at 7.0
+        elif boundary.duration > 15.0:
+            # If duration > 15.0, allow it if it's the last boundary and ≤ 25s (model limit)
+            # Otherwise, cap at 15.0
             if i == len(boundaries) - 1 and boundary.duration <= MAX_DURATION:
                 # Last boundary can extend up to 25s (model limit) to cover full audio
                 validated_boundaries.append(boundary)
             else:
-                # Cap at 7.0 for non-last boundaries, or 25s if last boundary exceeds limit
-                cap_duration = MAX_DURATION if i == len(boundaries) - 1 else 7.0
+                # Cap at 15.0 for non-last boundaries, or 25s if last boundary exceeds limit
+                cap_duration = MAX_DURATION if i == len(boundaries) - 1 else 15.0
                 validated_boundaries.append(ClipBoundary(
                     start=boundary.start,
                     end=min(boundary.start + cap_duration, total_duration),
@@ -413,8 +414,8 @@ def generate_boundaries(
             last_boundary = boundaries[-1]
             last_boundary = ClipBoundary(
                 start=last_boundary.start,
-                end=max(last_boundary.start + 3.0, total_duration),
-                duration=max(3.0, min(7.0, total_duration - last_boundary.start))
+                end=max(last_boundary.start + 6.0, total_duration),
+                duration=max(6.0, min(15.0, total_duration - last_boundary.start))
             )
             boundaries = [last_boundary]
     
@@ -423,17 +424,17 @@ def generate_boundaries(
 
 
 def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBoundary]:
-    """Create equal-length segments, ensuring durations are in 3-7s range."""
+    """Create equal-length segments, ensuring durations are in 6-15s range (prefer ~10s)."""
     # For very short songs, we may need to adjust
     # If total duration is less than 9s, we already handled it in the main function
-    # This function is called when we need minimum 3 clips but can't fit 3-7s each
-    # In that case, we'll create segments that are as close to 3s as possible
+    # This function is called when we need minimum 3 clips but can't fit 6-15s each
+    # In that case, we'll create segments that are as close to 6s as possible (minimum 3s per model)
     
     if duration < 9.0:
-        # For songs <9s, create 3 segments with minimum 3s each where possible
+        # For songs <9s, create 3 segments with minimum 3s each where possible (model minimum)
         # But if duration < 9s, we already handled it above, so this shouldn't be called
-        # However, if it is called, ensure minimum 3s per segment
-        min_segment_duration = max(3.0, duration / num_segments)
+        # However, if it is called, ensure minimum 3s per segment (model constraint)
+        min_segment_duration = max(6.0, duration / num_segments)
         segments = []
         current_time = 0.0
         for i in range(num_segments):
@@ -445,15 +446,15 @@ def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBound
                 end_time = min(current_time + min_segment_duration, duration)
                 seg_duration = end_time - current_time
             
-            # Ensure duration is at least 3s (or as close as possible)
-            if seg_duration < 3.0 and i < num_segments - 1:
-                end_time = min(current_time + 3.0, duration)
+            # Ensure duration is at least 6s (or as close as possible)
+            if seg_duration < 6.0 and i < num_segments - 1:
+                end_time = min(current_time + 6.0, duration)
                 seg_duration = end_time - current_time
             
-            # Ensure duration doesn't exceed 7s
-            if seg_duration > 7.0:
-                end_time = current_time + 7.0
-                seg_duration = 7.0
+            # Ensure duration doesn't exceed 15s
+            if seg_duration > 15.0:
+                end_time = current_time + 15.0
+                seg_duration = 15.0
             
             segments.append(ClipBoundary(
                 start=current_time,
@@ -469,14 +470,14 @@ def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBound
     # For longer songs, create equal segments
     segment_duration = duration / num_segments
     
-    # Ensure segment duration is in 3-7s range
-    if segment_duration < 3.0:
+    # Ensure segment duration is in 6-15s range (prefer ~10s)
+    if segment_duration < 6.0:
         # If segments would be too short, reduce number of segments
-        num_segments = max(3, int(duration / 3.0))
+        num_segments = max(3, int(duration / 6.0))
         segment_duration = duration / num_segments
-    elif segment_duration > 7.0:
+    elif segment_duration > 15.0:
         # If segments would be too long, increase number of segments
-        num_segments = max(3, int(duration / 7.0))
+        num_segments = max(3, int(duration / 15.0))
         segment_duration = duration / num_segments
     
     return [
