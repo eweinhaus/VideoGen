@@ -9,6 +9,83 @@ if (typeof window !== "undefined") {
   console.log("🔧 NEXT_PUBLIC_API_URL env:", process.env.NEXT_PUBLIC_API_URL)
 }
 
+/**
+ * Make a public request without authentication (for public endpoints)
+ */
+async function publicRequest<T>(
+  endpoint: string,
+  options: RequestInit = {},
+  timeoutMs: number = 10000
+): Promise<T> {
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string>),
+  }
+
+  // Don't set Content-Type for FormData (browser will set it with boundary)
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json"
+  }
+
+  try {
+    const fullUrl = `${API_BASE_URL}${endpoint}`
+    // Debug: Log full URL being requested
+    if (typeof window !== "undefined") {
+      console.log("🌐 Making public request to:", fullUrl)
+    }
+    
+    // Add timeout to prevent hanging
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+    
+    const response = await fetch(fullUrl, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    })
+    
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      let errorMessage = "An error occurred"
+      let retryable = false
+
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("retry-after")
+        errorMessage = `Too many requests. Please try again${retryAfter ? ` after ${retryAfter} seconds` : ""}`
+        retryable = true
+      } else if (response.status === 400) {
+        const data = await response.json().catch(() => ({}))
+        errorMessage = data.error || data.message || "Validation error"
+        retryable = false
+      } else if (response.status >= 500) {
+        errorMessage = "Server error. Please try again later"
+        retryable = true
+      }
+
+      throw new APIError(errorMessage, response.status, retryable)
+    }
+
+    // Handle empty responses
+    const contentType = response.headers.get("content-type")
+    if (contentType?.includes("application/json")) {
+      return await response.json()
+    }
+
+    return response as unknown as T
+  } catch (error) {
+    if (error instanceof APIError) {
+      throw error
+    }
+    // Handle abort (timeout)
+    if (error instanceof Error && error.name === "AbortError") {
+      console.error("❌ Request timeout:", endpoint)
+      throw new APIError("Request timeout - server took too long to respond", 0, true)
+    }
+    console.error("❌ Request error:", endpoint, error)
+    throw new APIError("Connection error", 0, true)
+  }
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {},
@@ -136,11 +213,24 @@ async function request<T>(
   }
 }
 
+export async function getModelAspectRatios(
+  modelKey: string
+): Promise<import("@/types/api").ModelAspectRatiosResponse> {
+  // This is a public endpoint, use publicRequest without auth
+  // Use 10 second timeout for metadata requests
+  return publicRequest<import("@/types/api").ModelAspectRatiosResponse>(
+    `/api/v1/models/${modelKey}/aspect-ratios`,
+    { method: "GET" },
+    10000 // 10 second timeout
+  )
+}
+
 export async function uploadAudio(
   audioFile: File,
   userPrompt: string,
   stopAtStage: string | null = null,
-  videoModel: string = "kling_v21"
+  videoModel: string = "kling_v21",
+  aspectRatio: string = "16:9"
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -149,11 +239,18 @@ export async function uploadAudio(
     formData.append("stop_at_stage", stopAtStage)
   }
   formData.append("video_model", videoModel)
+  formData.append("aspect_ratio", aspectRatio)
 
-  return request<UploadResponse>("/api/v1/upload-audio", {
-    method: "POST",
-    body: formData,
-  })
+  // Use longer timeout for upload (180 seconds = 3 minutes)
+  // Backend has 150s timeout for storage upload, plus buffer for validation, DB ops, etc.
+  return request<UploadResponse>(
+    "/api/v1/upload-audio",
+    {
+      method: "POST",
+      body: formData,
+    },
+    180000 // 3 minutes timeout
+  )
 }
 
 export async function getJob(jobId: string): Promise<JobResponse> {

@@ -8,12 +8,14 @@ interface UploadState {
   userPrompt: string
   stopAtStage: PipelineStage | null
   videoModel: VideoModel
+  aspectRatio: string
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   setAudioFile: (file: File | null) => void
   setUserPrompt: (prompt: string) => void
   setStopAtStage: (stage: PipelineStage | null) => void
   setVideoModel: (model: VideoModel) => void
+  setAspectRatio: (aspectRatio: string) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -62,6 +64,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   userPrompt: "",
   stopAtStage: getDefaultStopAtStage(),
   videoModel: "kling_v25_turbo", // Default model
+  aspectRatio: "16:9", // Default aspect ratio
   isSubmitting: false,
   errors: {},
 
@@ -118,6 +121,10 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ videoModel: model })
   },
 
+  setAspectRatio: (aspectRatio: string) => {
+    set({ aspectRatio })
+  },
+
   validate: () => {
     const { audioFile, userPrompt } = get()
     const errors: { audio?: string; prompt?: string } = {}
@@ -165,7 +172,8 @@ export const uploadStore = create<UploadState>((set, get) => ({
         ? "composer" 
         : get().stopAtStage || "composer"
       
-      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel)
+      const { aspectRatio } = get()
+      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio)
       // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
       // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
@@ -195,6 +203,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       userPrompt: "",
       stopAtStage: getDefaultStopAtStage(), // Reset to default (composer)
       videoModel: "kling_v25_turbo", // Reset to default model
+      aspectRatio: "16:9", // Reset to default aspect ratio
       errors: {},
       isSubmitting: false,
     })

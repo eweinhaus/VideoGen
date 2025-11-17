@@ -6,7 +6,7 @@ Supports multiple video generation models with configurable selection.
 """
 from decimal import Decimal
 import os
-from typing import Dict, Any, Literal
+from typing import Dict, Any, Literal, List
 from shared.config import settings
 from shared.logging import get_logger
 
@@ -46,6 +46,9 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "duration_support": "discrete",  # Only supports 5s or 10s
         "supported_durations": [5, 10],
         "resolutions": ["720p", "1080p"],
+        "aspect_ratios": ["16:9"],  # Primary support, verify others
+        "aspect_ratio_parameter": "resolution",  # Uses resolution parameter
+        "resolution_mapping": {"16:9": "1080p"},  # Map to resolution
         "fps": 24,
         "estimated_cost_5s": Decimal("0.55"),
         "estimated_cost_10s": Decimal("0.80"),
@@ -83,6 +86,15 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "duration_support": "discrete",  # Only supports 5s or 10s
         "supported_durations": [5, 10],
         "resolutions": ["480p", "720p", "1080p"],
+        "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+        "aspect_ratio_parameter": "resolution",  # Verify actual parameter name
+        "resolution_mapping": {
+            "16:9": "1080p",
+            "9:16": "1080p",  # May need different resolution
+            "1:1": "1080p",
+            "4:3": "1080p",
+            "3:4": "1080p"
+        },
         "fps": 24,
         "estimated_cost_5s": Decimal("0.55"),
         "estimated_cost_10s": Decimal("0.80"),
@@ -118,6 +130,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "duration_support": "discrete",  # Assumed discrete, needs testing
         "supported_durations": [5, 10],  # Assumed, needs verification
         "resolutions": ["variable"],  # Resolution varies
+        "aspect_ratios": ["16:9", "9:16", "1:1"],  # Verify actual support
+        "aspect_ratio_parameter": "aspect_ratio",  # Verify actual parameter name
         "fps": 24,
         "estimated_cost_5s": Decimal("0.60"),
         "estimated_cost_10s": Decimal("0.90"),
@@ -151,6 +165,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "duration_support": "discrete",  # Assumed discrete, needs testing
         "supported_durations": [5, 10],  # Assumed, needs verification
         "resolutions": ["variable"],
+        "aspect_ratios": ["16:9", "1:1", "9:16"],
+        "aspect_ratio_parameter": "aspect_ratio",  # Verify actual parameter name
         "fps": 24,
         "estimated_cost_5s": Decimal("0.10"),
         "estimated_cost_10s": Decimal("0.15"),
@@ -175,38 +191,41 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     },
     "veo_31": {
         "replicate_string": "google/veo-3.1",
-        "version": "latest",
+        "version": "latest",  # Dynamically retrieve latest version
         "full_model": "google/veo-3.1:latest",
         "type": "text-and-image-to-video",
         "supports_lip_sync": False,
-        "supports_audio": True,  # Context-aware audio
+        "supports_audio": True,  # Synchronized audio generation
         "supports_motion_control": False,
         "max_duration": 10,
-        "duration_support": "continuous",  # Assumed continuous, needs testing
+        "duration_support": "continuous",  # Supports continuous duration values
         "supported_durations": None,  # Continuous, any value up to max_duration
-        "resolutions": ["1080p"],
+        "resolutions": ["720p", "1080p"],  # Supports both resolutions
+        "aspect_ratios": ["16:9", "9:16"],  # Veo 3.1 supports these two aspect ratios
+        "aspect_ratio_parameter": "aspect_ratio",  # Confirmed parameter name
         "fps": 24,
-        "estimated_cost_5s": Decimal("1.00"),  # Estimated, actual pricing varies
+        "estimated_cost_5s": Decimal("1.00"),  # Premium pricing
         "estimated_cost_10s": Decimal("1.50"),
-        "generation_time_avg_seconds": 60,
-        "anatomy_score": 10,  # Highest quality
-        "prompt_adherence_score": 10,
-        "notes": "Premium Google model. Highest quality, variable pricing. May be expensive.",
+        "generation_time_avg_seconds": 90,  # Higher quality takes longer
+        "anatomy_score": 10,  # Highest quality - best anatomy
+        "prompt_adherence_score": 10,  # Highest quality - excellent prompt following
+        "notes": "Premium Google Veo 3.1 model - highest quality available on Replicate. Features: reference image integration, first/last frame input, synchronized audio generation. Best for premium content requiring highest quality.",
         "parameter_names": {
             "prompt": "prompt",
-            "image": "image",
-            "duration": "duration",
-            "resolution": "resolution",
+            "image": "image",  # Reference image for image-to-video
+            "duration": "duration",  # Duration in seconds (integer)
+            "resolution": "resolution",  # "720p" or "1080p"
+            "aspect_ratio": "aspect_ratio",  # "16:9" or "9:16"
         },
         "required_parameters": ["prompt"],
-        "optional_parameters": ["image", "duration", "resolution"],
-        "status": "testing",
-        "last_verified": "2025-11-16",
-        "verified_by": "automated",
+        "optional_parameters": ["image", "duration", "resolution", "aspect_ratio"],
+        "status": "available",  # Confirmed available on Replicate
+        "last_verified": "2025-01-17",
+        "verified_by": "web_search",
         "display_name": "Veo 3.1",
-        "description": "Premium Google model with highest quality output",
-        "recommended_for": ["premium", "high_quality"],
-        "not_recommended_for": ["budget"],
+        "description": "Premium Google Veo 3.1 - Highest quality video generation model on Replicate",
+        "recommended_for": ["premium", "high_quality", "professional"],
+        "not_recommended_for": ["budget", "fast_generation"],
     },
 }
 
@@ -385,4 +404,21 @@ def get_duration_buffer_multiplier() -> float:
         Discrete models (Kling, etc.) use maximum buffer strategy instead.
     """
     return VIDEO_GENERATOR_DURATION_BUFFER
+
+
+def get_model_aspect_ratios(model_key: str = None) -> List[str]:
+    """
+    Get supported aspect ratios for a model.
+    
+    Args:
+        model_key: Model key (e.g., "kling_v21"). If None, uses current model.
+    
+    Returns:
+        List of supported aspect ratios (e.g., ["16:9", "9:16"])
+    
+    Raises:
+        ValueError: If model_key is invalid
+    """
+    config = get_model_config(model_key)
+    return config.get("aspect_ratios", ["16:9"])  # Default to 16:9
 

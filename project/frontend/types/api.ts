@@ -44,6 +44,12 @@ export interface JobResponse {
   }
 }
 
+export interface ModelAspectRatiosResponse {
+  model_key: string
+  aspect_ratios: string[]
+  default: string
+}
+
 export class APIError extends Error {
   constructor(
     message: string,

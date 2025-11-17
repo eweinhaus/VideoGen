@@ -110,6 +110,7 @@ async def process(
     plan: Optional[ScenePlan] = None,
     event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     video_model: str = None,
+    aspect_ratio: str = "16:9",
 ) -> Tuple[Clips, list[dict]]:
     """
     Generate all video clips in parallel.
@@ -121,6 +122,7 @@ async def process(
         event_publisher: Optional async callback(event_type, data) to publish events in real-time
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
                     If None, falls back to VIDEO_MODEL environment variable
+        aspect_ratio: Aspect ratio for video generation (default: "16:9")
         
     Returns:
         Clips model with all generated clips
@@ -348,6 +350,7 @@ async def process(
                         extra_context=None,
                         progress_callback=progress_callback,
                         video_model=selected_model_key,
+                        aspect_ratio=aspect_ratio,
                     )
                     
                     logger.info(
@@ -628,6 +631,7 @@ async def process(
                         extra_context=None,
                         progress_callback=None,  # Skip progress updates for retries
                         video_model=selected_model_key,
+                        aspect_ratio=aspect_ratio,
                     )
                     
                     logger.info(

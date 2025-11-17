@@ -5,7 +5,7 @@ Centralized environment variable management and validation.
 """
 
 import os
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from shared.errors import ConfigError
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # REDIS_QUEUE_NAME: Optional override for queue name (defaults to "video_generation_{environment}")
     # If not set, queue name will be derived from environment (e.g., "video_generation_development")
     # This ensures local workers only process local jobs and production workers only process production jobs
-    redis_queue_name: str | None = None
+    redis_queue_name: Optional[str] = None
     
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

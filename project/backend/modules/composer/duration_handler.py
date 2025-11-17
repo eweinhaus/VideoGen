@@ -72,14 +72,23 @@ async def handle_clip_duration(
         str(output_path)
     ]
     
-    # If too short: use as-is (shortfall will be handled by cascading compensation)
-    else:
-        logger.debug(
-            f"Clip {clip.clip_index} is short ({clip.actual_duration:.2f}s vs {clip.target_duration:.2f}s), "
-            f"shortfall will be handled by cascading compensation",
+    # Execute the trim command
+    try:
+        await run_ffmpeg_command(ffmpeg_cmd, job_id=job_id, timeout=300)
+        
+        if not output_path.exists():
+            raise CompositionError(f"Trimmed clip not created: {output_path}")
+        
+        logger.info(
+            f"Clip {clip.clip_index} trimmed successfully",
             extra={"job_id": str(job_id), "clip_index": clip.clip_index}
         )
-        return clip_path, False, False
+        
+        return output_path, True, False
+    except Exception as e:
+        if isinstance(e, CompositionError):
+            raise
+        raise CompositionError(f"Failed to trim clip {clip.clip_index}: {e}") from e
 
 
 async def handle_cascading_durations(

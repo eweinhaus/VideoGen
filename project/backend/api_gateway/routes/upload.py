@@ -34,6 +34,7 @@ async def upload_audio(
     user_prompt: str = Form(...),
     stop_at_stage: str = Form(None),
     video_model: str = Form("kling_v21"),
+    aspect_ratio: str = Form("16:9"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -206,7 +207,7 @@ async def upload_audio(
         })
         
         # Enqueue job to queue (pass stop_at_stage and video_model to orchestrator)
-        await enqueue_job(job_id, user_id, audio_url, user_prompt, stop_at_stage, video_model)
+        await enqueue_job(job_id, user_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio)
         
         logger.info(
             "Job created and enqueued",
