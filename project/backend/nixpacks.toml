@@ -1,9 +1,0 @@
-# Nixpacks configuration for Railway deployment
-# Installs FFmpeg for video processing (composer module)
-
-[phases.setup]
-nixPkgs = ["python3", "ffmpeg"]
-
-[phases.install]
-cmds = ["pip install -r requirements.txt"]
-
