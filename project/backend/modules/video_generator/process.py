@@ -7,6 +7,8 @@ import asyncio
 import os
 import time
 import io
+import random
+import re
 from typing import Optional, Dict, List, Union, Tuple, Callable, Any
 from uuid import UUID
 from decimal import Decimal
@@ -107,6 +109,7 @@ async def process(
     clip_prompts: ClipPrompts,
     plan: Optional[ScenePlan] = None,
     event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    video_model: str = None,
 ) -> Tuple[Clips, list[dict]]:
     """
     Generate all video clips in parallel.
@@ -116,6 +119,8 @@ async def process(
         clip_prompts: ClipPrompts from Prompt Generator
         plan: Optional ScenePlan for context
         event_publisher: Optional async callback(event_type, data) to publish events in real-time
+        video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
+                    If None, falls back to VIDEO_MODEL environment variable
         
     Returns:
         Clips model with all generated clips
@@ -127,9 +132,14 @@ async def process(
     environment = settings.environment
     settings_dict = get_generation_settings(environment)
     
+    # Use provided video_model or fall back to environment variable
+    if video_model is None:
+        selected_model_key = get_selected_model()
+    else:
+        selected_model_key = video_model
+    
     # Validate model configuration before starting
     try:
-        selected_model_key = get_selected_model()
         model_config = get_model_config(selected_model_key)
         is_valid, error_msg = await validate_model_config(selected_model_key, model_config)
         if not is_valid:
@@ -337,6 +347,7 @@ async def process(
                         environment=environment,
                         extra_context=None,
                         progress_callback=progress_callback,
+                        video_model=selected_model_key,
                     )
                     
                     logger.info(
@@ -365,14 +376,40 @@ async def process(
                     
                 except RetryableError as e:
                     if attempt < 2:
-                        delay = 2 * (2 ** attempt)  # 2s, 4s, 8s
+                        # Parse Retry-After from error message if present
+                        # Format: "Rate limit error (retry after 30s): ..."
+                        retry_after = None
+                        error_msg = str(e)
+                        retry_after_match = re.search(r'retry after ([\d.]+)s', error_msg, re.IGNORECASE)
+                        if retry_after_match:
+                            try:
+                                retry_after = float(retry_after_match.group(1))
+                            except (ValueError, AttributeError):
+                                pass
+                        
+                        # Use Retry-After if available, otherwise exponential backoff
+                        if retry_after is not None:
+                            # Add jitter (10-20% of retry_after) to desynchronize concurrent retries
+                            jitter = random.uniform(0.1, 0.2) * retry_after
+                            delay = retry_after + jitter
+                            logger.info(
+                                f"Using Retry-After header: {retry_after}s + {jitter:.1f}s jitter = {delay:.1f}s",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                            )
+                        else:
+                            # Exponential backoff with jitter: 2s, 4s, 8s + random 0-2s
+                            base_delay = 2 * (2 ** attempt)
+                            jitter = random.uniform(0, 2)
+                            delay = base_delay + jitter
+                        
                         logger.warning(
-                            f"Clip {clip_prompt.clip_index} failed (retryable), retrying in {delay}s",
+                            f"Clip {clip_prompt.clip_index} failed (retryable), retrying in {delay:.1f}s",
                             extra={
                                 "job_id": str(job_id),
                                 "clip_index": clip_prompt.clip_index,
                                 "attempt": attempt + 1,
-                                "error": str(e)
+                                "error": str(e),
+                                "delay": delay
                             }
                         )
                         # Emit retry event
@@ -449,20 +486,72 @@ async def process(
     # Generate all clips in parallel
     start_time = time.time()
     tasks = [generate_with_retry(cp, image_cache) for cp in clip_prompts.clip_prompts]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Filter successful clips
-    successful = [r for r in results if r is not None]
-    failed = len(results) - len(successful)
+    # Separate successful clips, failed clips, and track errors
+    # Note: generate_with_retry returns None on failure, not an exception
+    successful = []
+    failed_clips = []  # List of (clip_prompt, error_info) tuples
+    rate_limit_failures = 0
     
+    for i, result in enumerate(results):
+        clip_prompt = clip_prompts.clip_prompts[i]
+        
+        if isinstance(result, Exception):
+            # Exception propagated (shouldn't happen, but handle it)
+            error_str = str(result).lower()
+            is_rate_limit = (
+                "rate limit" in error_str or 
+                "429" in error_str or
+                "retry after" in error_str
+            )
+            if is_rate_limit:
+                rate_limit_failures += 1
+            failed_clips.append((clip_prompt, {
+                "error": str(result),
+                "is_rate_limit": is_rate_limit,
+                "error_type": type(result).__name__
+            }))
+        elif result is not None:
+            successful.append(result)
+        else:
+            # None returned - clip failed after retries
+            # Check events for error classification
+            error_info = {"error": "Generation failed after retries", "is_rate_limit": False, "error_type": "Unknown"}
+            
+            # Look for rate limit errors in events
+            for event in events:
+                if event.get("event_type") == "video_generation_failed":
+                    event_data = event.get("data", {})
+                    if event_data.get("clip_index") == clip_prompt.clip_index:
+                        error_msg = event_data.get("error", "")
+                        error_str = str(error_msg).lower()
+                        is_rate_limit = (
+                            "rate limit" in error_str or 
+                            "429" in error_str or
+                            "retry after" in error_str
+                        )
+                        if is_rate_limit:
+                            rate_limit_failures += 1
+                        error_info = {
+                            "error": error_msg,
+                            "is_rate_limit": is_rate_limit,
+                            "error_type": "RetryableError" if is_rate_limit else "GenerationError"
+                        }
+                        break
+            
+            failed_clips.append((clip_prompt, error_info))
+    
+    failed = len(failed_clips)
     total_generation_time = time.time() - start_time
     
     logger.info(
-        f"Generation complete: {len(successful)} successful, {failed} failed",
+        f"Generation complete: {len(successful)} successful, {failed} failed (rate_limit: {rate_limit_failures})",
         extra={
             "job_id": str(job_id),
             "successful": len(successful),
             "failed": failed,
+            "rate_limit_failures": rate_limit_failures,
             "total_time": total_generation_time
         }
     )
@@ -470,6 +559,91 @@ async def process(
     # Validate minimum clips (configurable)
     min_clips = int(os.getenv("VIDEO_GENERATOR_MIN_CLIPS", "3"))
     require_all_clips = os.getenv("VIDEO_GENERATOR_REQUIRE_ALL_CLIPS", "false").lower() == "true"
+    auto_retry_on_failure = os.getenv("VIDEO_GENERATOR_AUTO_RETRY_ON_FAILURE", "true").lower() == "true"
+    
+    # If we have insufficient clips, try automatic retry (regardless of error type)
+    # This prevents the "Insufficient clips" crash by giving failed clips another chance
+    if len(successful) < min_clips and len(failed_clips) > 0 and auto_retry_on_failure:
+        logger.warning(
+            f"Insufficient clips ({len(successful)} < {min_clips}) with {len(failed_clips)} failures. "
+            f"Attempting automatic retry with reduced concurrency... (rate_limit_failures: {rate_limit_failures})",
+            extra={
+                "job_id": str(job_id),
+                "successful": len(successful),
+                "min_required": min_clips,
+                "total_failures": len(failed_clips),
+                "rate_limit_failures": rate_limit_failures
+            }
+        )
+        
+        # Reduce concurrency for retry (half of original, minimum 2)
+        retry_concurrency = max(2, concurrency // 2)
+        retry_semaphore = asyncio.Semaphore(retry_concurrency)
+        
+        logger.info(
+            f"Retrying {len(failed_clips)} failed clips with reduced concurrency: {retry_concurrency}",
+            extra={"job_id": str(job_id), "retry_concurrency": retry_concurrency}
+        )
+        
+        # Retry only the failed clips
+        async def retry_failed_clip(clip_prompt: ClipPrompt, error_info: dict) -> Optional[Clip]:
+            async with retry_semaphore:
+                try:
+                    # Re-download image if needed
+                    image_url = None
+                    if use_references and clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+                        character_ref_url = clip_prompt.character_reference_urls[0]
+                        image_url = image_cache.get(character_ref_url)
+                        if not image_url and clip_prompt.scene_reference_url:
+                            image_url = image_cache.get(clip_prompt.scene_reference_url)
+                    elif use_references and clip_prompt.scene_reference_url:
+                        image_url = image_cache.get(clip_prompt.scene_reference_url)
+                    
+                    # Generate with single retry attempt (we already tried 3 times)
+                    clip = await generate_video_clip(
+                        clip_prompt=clip_prompt,
+                        image_url=image_url,
+                        settings=settings_dict,
+                        job_id=job_id,
+                        environment=environment,
+                        extra_context=None,
+                        progress_callback=None,  # Skip progress updates for retries
+                        video_model=selected_model_key,
+                    )
+                    
+                    logger.info(
+                        f"Retry successful for clip {clip_prompt.clip_index}",
+                        extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                    )
+                    return clip
+                except Exception as e:
+                    logger.warning(
+                        f"Retry failed for clip {clip_prompt.clip_index}: {e}",
+                        extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index, "error": str(e)}
+                    )
+                    return None
+        
+        # Retry failed clips with reduced concurrency
+        retry_tasks = [retry_failed_clip(cp, err) for cp, err in failed_clips]
+        retry_results = await asyncio.gather(*retry_tasks, return_exceptions=True)
+        
+        # Add successful retries to successful list
+        retry_successful = [r for r in retry_results if r is not None and not isinstance(r, Exception)]
+        successful.extend(retry_successful)
+        
+        retry_failed = len(failed_clips) - len(retry_successful)
+        logger.info(
+            f"Retry complete: {len(retry_successful)} additional clips succeeded, {retry_failed} still failed",
+            extra={
+                "job_id": str(job_id),
+                "retry_successful": len(retry_successful),
+                "retry_failed": retry_failed,
+                "total_successful": len(successful)
+            }
+        )
+    
+    # Final validation after retry - with dynamic fallback
+    allow_partial_failure = os.getenv("VIDEO_GENERATOR_ALLOW_PARTIAL_FAILURE", "true").lower() == "true"
     
     if require_all_clips:
         # Require ALL clips to succeed before composition
@@ -478,16 +652,40 @@ async def process(
             raise PipelineError(
                 f"Not all clips generated: {len(successful)}/{expected_clips} successful. "
                 f"All clips must succeed when VIDEO_GENERATOR_REQUIRE_ALL_CLIPS=true. "
-                f"Failed clips: {failed}"
+                f"Failed clips: {len(failed_clips) - len(retry_successful) if 'retry_successful' in locals() else failed}"
             )
     else:
-        # Only require minimum clips (default behavior)
-        if len(successful) < min_clips:
+        # Check if we have ANY successful clips
+        if len(successful) == 0:
+            # Absolute failure - no clips generated at all
             raise PipelineError(
-                f"Insufficient clips generated: {len(successful)} < {min_clips} (minimum required). "
-                f"Failed clips: {failed}. "
-                f"Set VIDEO_GENERATOR_REQUIRE_ALL_CLIPS=true to require all clips to succeed."
+                f"Complete failure: 0 clips generated successfully out of {len(clip_prompts.clip_prompts)} clips. "
+                f"All clips failed. Check API credentials, rate limits, and model availability."
             )
+        elif len(successful) < min_clips:
+            # Insufficient clips, but we have at least 1
+            if allow_partial_failure:
+                # SAFETY VALVE: Continue with fewer clips instead of crashing
+                logger.warning(
+                    f"Insufficient clips ({len(successful)} < {min_clips}), but continuing with partial success "
+                    f"(VIDEO_GENERATOR_ALLOW_PARTIAL_FAILURE=true). Video quality may be reduced.",
+                    extra={
+                        "job_id": str(job_id),
+                        "successful": len(successful),
+                        "min_required": min_clips,
+                        "total_clips": len(clip_prompts.clip_prompts)
+                    }
+                )
+                # Continue execution - don't crash
+            else:
+                # Strict mode: crash on insufficient clips
+                rate_limit_msg = f" ({rate_limit_failures} rate limit failures detected)" if rate_limit_failures > 0 else ""
+                raise PipelineError(
+                    f"Insufficient clips generated: {len(successful)} < {min_clips} (minimum required). "
+                    f"Failed clips: {len(failed_clips) - len(retry_successful) if 'retry_successful' in locals() else failed}.{rate_limit_msg} "
+                    f"Set VIDEO_GENERATOR_ALLOW_PARTIAL_FAILURE=true to continue with fewer clips. "
+                    f"Set VIDEO_GENERATOR_AUTO_RETRY_ON_FAILURE=false to disable automatic retry."
+                )
     
     # Calculate total cost and check budget
     total_cost = sum(c.cost for c in successful)

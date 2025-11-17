@@ -33,17 +33,19 @@ graph TB
         Module4["[4] Scene Planner<br/>GPT-4o / Claude 3.5"]
         Module5["[5] Reference Generator<br/>SDXL via Replicate"]
         Module6["[6] Prompt Generator<br/>LLM Optimization"]
-        Module7["[7] Video Generator<br/>Stable Video Diffusion<br/>(Parallel: 5 concurrent)<br/>1024x576 → 1080p"]
+        Module7["[7] Video Generator<br/>Stable Video Diffusion<br/>(Parallel: 5 concurrent)<br/>1024x576 → 1080p<br/>+ LoRA Application"]
         Module8["[8] Composer<br/>FFmpeg<br/>Upscale + Transitions"]
+        LoRA_Trainer["[LoRA] LoRA Trainer<br/>RunPod Integration<br/>Async Training<br/>30-60 min"]
     end
     
     %% External Services
     subgraph External["☁️ External Services"]
         Supabase_Auth[Supabase Auth]
         Supabase_DB[(Supabase PostgreSQL)]
-        Supabase_Storage[Supabase Storage<br/>audio-uploads<br/>reference-images<br/>video-clips<br/>video-outputs]
+        Supabase_Storage[Supabase Storage<br/>audio-uploads<br/>reference-images<br/>video-clips<br/>video-outputs<br/>lora-models<br/>lora-validation-images]
         OpenAI[OpenAI API<br/>Whisper + GPT-4o]
         Replicate[Replicate API<br/>SDXL + SVD]
+        RunPod[RunPod API<br/>GPU Instances<br/>LoRA Training]
     end
     
     %% User Flow
@@ -67,9 +69,13 @@ graph TB
     Module4 -->|plan| Module5
     Orchestrator -->|Step 3: 30%| Module5
     Module5 -->|reference_images| Module6
+    Module5 -.->|character_images| LoRA_Trainer
+    LoRA_Trainer -.->|async training| RunPod
     Orchestrator -->|Step 4: 40%| Module6
     Module6 -->|clip_prompts| Module7
     Orchestrator -->|Step 5: 85%| Module7
+    Module7 -->|LoRA check| Supabase_DB
+    Supabase_DB -->|LoRA URL| Module7
     Module7 -->|clips| Module8
     Orchestrator -->|Step 6: 100%| Module8
     Module8 -->|final_video| Supabase_Storage
@@ -82,6 +88,10 @@ graph TB
     Module6 -->|Prompt Optimization| OpenAI
     Module7 -->|Video Generation| Replicate
     Module7 -->|Reference Images| Supabase_Storage
+    Module7 -->|LoRA-enhanced Images| Replicate
+    LoRA_Trainer -->|Training| RunPod
+    LoRA_Trainer -->|Store LoRA| Supabase_Storage
+    LoRA_Trainer -->|Validation Images| Replicate
     
     %% Data Storage
     REST -->|Store Job| Supabase_DB
@@ -91,6 +101,9 @@ graph TB
     Module4 -->|Store Plan| Supabase_DB
     Module5 -->|Store Images| Supabase_Storage
     Module7 -->|Store Clips| Supabase_Storage
+    LoRA_Trainer -->|Store LoRA Metadata| Supabase_DB
+    LoRA_Trainer -->|Store LoRA Files| Supabase_Storage
+    LoRA_Trainer -->|Store Validation Images| Supabase_Storage
     
     %% Authentication
     UI -->|Login| Supabase_Auth
@@ -116,7 +129,7 @@ graph TB
     
     class UI,Progress,Player,SSE_Client frontend
     class REST,SSE_Server,Queue_Manager,Orchestrator,Budget_Guard,Rate_Limit api
-    class Module3,Module4,Module5,Module6,Module7,Module8 pipeline
-    class Supabase_Auth,Supabase_DB,Supabase_Storage,OpenAI,Replicate external
+    class Module3,Module4,Module5,Module6,Module7,Module8,LoRA_Trainer pipeline
+    class Supabase_Auth,Supabase_DB,Supabase_Storage,OpenAI,Replicate,RunPod external
     class Job_Queue,Worker1,Worker2 queue
 

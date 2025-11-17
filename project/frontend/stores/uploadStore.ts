@@ -1,16 +1,19 @@
 import { create } from "zustand"
 import { uploadAudio } from "@/lib/api"
 import type { PipelineStage } from "@/components/StepSelector"
+import type { VideoModel } from "@/components/ModelSelector"
 
 interface UploadState {
   audioFile: File | null
   userPrompt: string
   stopAtStage: PipelineStage | null
+  videoModel: VideoModel
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   setAudioFile: (file: File | null) => void
   setUserPrompt: (prompt: string) => void
   setStopAtStage: (stage: PipelineStage | null) => void
+  setVideoModel: (model: VideoModel) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -58,6 +61,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   audioFile: null,
   userPrompt: "",
   stopAtStage: getDefaultStopAtStage(),
+  videoModel: "kling_v21", // Default model
   isSubmitting: false,
   errors: {},
 
@@ -110,6 +114,10 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ stopAtStage: stage })
   },
 
+  setVideoModel: (model: VideoModel) => {
+    set({ videoModel: model })
+  },
+
   validate: () => {
     const { audioFile, userPrompt } = get()
     const errors: { audio?: string; prompt?: string } = {}
@@ -138,7 +146,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   },
 
   submit: async () => {
-    const { audioFile, userPrompt, validate } = get()
+    const { audioFile, userPrompt, videoModel, validate } = get()
 
     if (!validate()) {
       throw new Error("Validation failed")
@@ -157,7 +165,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
         ? "composer" 
         : get().stopAtStage || "composer"
       
-      const response = await uploadAudio(audioFile, userPrompt, stopAtStage)
+      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel)
       // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
       // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
@@ -186,6 +194,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       audioFile: null,
       userPrompt: "",
       stopAtStage: getDefaultStopAtStage(), // Reset to default (composer)
+      videoModel: "kling_v21", // Reset to default model
       errors: {},
       isSubmitting: false,
     })

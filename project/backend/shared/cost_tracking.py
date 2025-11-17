@@ -102,8 +102,33 @@ class CostTracker:
                         "total_cost": float(new_total)
                     }).eq("id", str(job_id)).execute()
                     
-                    # Note: cost_update SSE events are published by the orchestrator
-                    # to avoid circular dependency issues (api_gateway imports shared)
+                    # Publish cost_update SSE event immediately for live cost updates
+                    # Use lazy import to avoid circular dependency (api_gateway imports shared)
+                    try:
+                        from api_gateway.services.event_publisher import publish_event
+                        # Publish cost update event asynchronously (fire and forget)
+                        # Use create_task to avoid blocking cost tracking
+                        import asyncio
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(publish_event(
+                                str(job_id),
+                                "cost_update",
+                                {
+                                    "stage": stage_name,
+                                    "cost": float(cost),  # Incremental cost
+                                    "total": float(new_total)  # Total cost
+                                }
+                            ))
+                        except RuntimeError:
+                            # No event loop running (e.g., in tests), skip event publishing
+                            logger.debug(f"No event loop running, skipping cost_update event (may be test scenario)")
+                    except ImportError:
+                        # If event_publisher is not available (e.g., in tests), just log
+                        logger.debug(f"Event publisher not available, skipping cost_update event (may be test scenario)")
+                    except Exception as e:
+                        # Don't fail cost tracking if event publishing fails
+                        logger.debug(f"Failed to publish cost_update event: {e}", extra={"job_id": str(job_id)})
                 else:
                     logger.debug(f"Job {job_id} not found when updating total_cost (may be test scenario)")
                 
