@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # Environment
     environment: Literal["development", "staging", "production"] = "development"
     
+    # Redis Queue configuration
+    # REDIS_QUEUE_NAME: Optional override for queue name (defaults to "video_generation_{environment}")
+    # If not set, queue name will be derived from environment (e.g., "video_generation_development")
+    # This ensures local workers only process local jobs and production workers only process production jobs
+    redis_queue_name: str | None = None
+    
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     
@@ -163,6 +169,23 @@ class Settings(BaseSettings):
         if not v.startswith(("http://", "https://")):
             raise ConfigError("FRONTEND_URL must be a valid HTTP/HTTPS URL")
         return v
+    
+    @property
+    def queue_name(self) -> str:
+        """
+        Get the Redis queue name, environment-aware.
+        
+        If REDIS_QUEUE_NAME is set, use that. Otherwise, derive from environment:
+        - development -> "video_generation_development"
+        - staging -> "video_generation_staging"
+        - production -> "video_generation_production"
+        
+        This ensures local workers only process local jobs and production workers
+        only process production jobs, preventing cross-environment job consumption.
+        """
+        if self.redis_queue_name:
+            return self.redis_queue_name
+        return f"video_generation_{self.environment}"
 
 
 # Singleton instance
