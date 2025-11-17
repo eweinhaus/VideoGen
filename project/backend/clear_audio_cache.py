@@ -35,9 +35,13 @@ async def clear_audio_cache():
         client = redis_client.client
         
         # Pattern to match all audio cache keys (old and new versions)
+        # Note: RedisClient adds "videogen:cache:" prefix automatically
+        # But we also need to check for old double-prefixed keys (legacy bug)
         patterns = [
-            "videogen:cache:audio_cache:*",  # Old format (no version)
-            "videogen:cache:audio_cache:v*:*",  # New format (with version)
+            "videogen:cache:audio_cache:*",  # Correct format (single prefix)
+            "videogen:cache:audio_cache:v*:*",  # Correct format with version
+            "videogen:cache:videogen:cache:audio_cache:*",  # Legacy double-prefixed (bug)
+            "videogen:cache:videogen:cache:audio_cache:v*:*",  # Legacy double-prefixed with version
         ]
         
         total_deleted = 0

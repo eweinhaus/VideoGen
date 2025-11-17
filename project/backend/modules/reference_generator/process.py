@@ -194,8 +194,10 @@ async def process(
             events_callback=publish_event_data
         )
         elapsed_time = time.time() - start_time
-        successful_count = sum(1 for r in results if isinstance(r, dict) and r.get("success", False))
-        failed_count = len(results) - successful_count
+        # Filter out skipped variations (they're not failures, just not generated)
+        non_skipped_results = [r for r in results if isinstance(r, dict) and not r.get("skipped", False)]
+        successful_count = sum(1 for r in non_skipped_results if r.get("success", False))
+        failed_count = len(non_skipped_results) - successful_count
         
         logger.info(
             f"generate_all_references completed for job {job_id}",
@@ -332,6 +334,10 @@ async def process(
     completed_images = 0
     
     for result in results:
+        # Skip skipped variations (they're not failures, just not generated for consistency)
+        if result.get("skipped", False):
+            continue
+        
         if not result.get("success", False):
             # Handle failed results
             events.append({
