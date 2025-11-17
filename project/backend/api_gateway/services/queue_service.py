@@ -54,12 +54,14 @@ async def enqueue_job(
     
     try:
         # Add to queue (using Redis list as queue)
+        # Encode as bytes since Redis client has decode_responses=False
         queue_key = f"{QUEUE_NAME}:queue"
-        await redis_client.client.lpush(queue_key, json.dumps(job_data))
+        job_json = json.dumps(job_data)
+        await redis_client.client.lpush(queue_key, job_json.encode('utf-8'))
         
         # Store job data for worker to retrieve
         job_key = f"{QUEUE_NAME}:job:{job_id}"
-        await redis_client.client.set(job_key, json.dumps(job_data), ex=900)  # 15 min TTL
+        await redis_client.client.set(job_key, job_json.encode('utf-8'), ex=900)  # 15 min TTL
         
         logger.info("Job enqueued", extra={"job_id": job_id, "user_id": user_id})
         

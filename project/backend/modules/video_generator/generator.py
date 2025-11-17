@@ -200,6 +200,25 @@ def get_video_duration(video_bytes: bytes) -> float:
                 logger.warning(f"Failed to delete temporary file {tmp_path}: {e}")
 
 
+def map_to_nearest_valid_duration(target_duration: float, valid_durations: list) -> int:
+    """
+    Map target duration to nearest valid duration value.
+    
+    Args:
+        target_duration: Target duration in seconds
+        valid_durations: List of valid duration values (e.g., [4, 6, 8])
+        
+    Returns:
+        Nearest valid duration as integer
+    """
+    if not valid_durations:
+        return int(round(target_duration))
+    
+    # Find the closest valid duration
+    closest = min(valid_durations, key=lambda x: abs(x - target_duration))
+    return int(closest)
+
+
 async def generate_video_clip(
     clip_prompt: ClipPrompt,
     image_url: Optional[str],
@@ -288,13 +307,7 @@ async def generate_video_clip(
         requested_duration = min(target_duration * buffer_multiplier, 10.0)
         
         # For continuous models, use the calculated duration directly
-        if selected_model_key == "veo_31":
-            # Veo 3.1: Continuous duration support - apply percentage buffer
-            # Veo3 requires duration as integer (seconds), so round it
-            input_data["duration"] = int(round(requested_duration))
-        else:
-            # Other continuous models (if any)
-            input_data["duration"] = requested_duration
+        input_data["duration"] = requested_duration
         
         buffer_strategy = "percentage"
         logger.info(
@@ -306,6 +319,29 @@ async def generate_video_clip(
                 "requested_duration": requested_duration,
                 "buffer_strategy": buffer_strategy,
                 "buffer_multiplier": buffer_multiplier,
+                "model": selected_model_key
+            }
+        )
+    elif selected_model_key == "veo_31":
+        # Veo 3.1: Discrete duration support (4s/6s/8s) - map to nearest valid value
+        # Apply buffer first, then map to nearest valid duration
+        requested_duration = min(target_duration * buffer_multiplier, 8.0)  # Cap at 8s (max for Veo 3.1)
+        supported_durations = model_config.get("supported_durations", [4, 6, 8])
+        mapped_duration = map_to_nearest_valid_duration(requested_duration, supported_durations)
+        input_data["duration"] = mapped_duration
+        
+        buffer_strategy = "nearest_valid"
+        logger.info(
+            f"Buffer calculation for clip {clip_prompt.clip_index} (Veo 3.1 discrete model)",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_prompt.clip_index,
+                "original_target_duration": original_target_duration,
+                "requested_duration": requested_duration,
+                "mapped_duration": mapped_duration,
+                "buffer_strategy": buffer_strategy,
+                "buffer_multiplier": buffer_multiplier,
+                "valid_durations": supported_durations,
                 "model": selected_model_key
             }
         )

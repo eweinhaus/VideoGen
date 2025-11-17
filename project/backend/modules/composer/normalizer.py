@@ -10,7 +10,7 @@ from uuid import UUID
 from shared.errors import CompositionError
 from shared.logging import get_logger
 from .utils import run_ffmpeg_command, get_video_properties
-from .config import FFMPEG_THREADS, FFMPEG_PRESET, FFMPEG_CRF, OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS
+from .config import FFMPEG_THREADS, FFMPEG_PRESET, FFMPEG_CRF, OUTPUT_FPS
 
 logger = get_logger("composer.normalizer")
 
@@ -19,10 +19,12 @@ async def normalize_clip(
     clip_bytes: bytes,
     clip_index: int,
     temp_dir: Path,
-    job_id: UUID
+    job_id: UUID,
+    target_width: int,
+    target_height: int
 ) -> Path:
     """
-    Normalize clip to 1080p, 30 FPS if needed.
+    Normalize clip to target resolution and 30 FPS if needed.
     
     Checks video properties first and only re-encodes if resolution or FPS
     don't match target. Uses stream copy when possible for speed.
@@ -32,6 +34,8 @@ async def normalize_clip(
         clip_index: Clip index for naming
         temp_dir: Temporary directory for output
         job_id: Job ID for logging
+        target_width: Target output width in pixels
+        target_height: Target output height in pixels
         
     Returns:
         Path to normalized clip file (may be same as input if already normalized)
@@ -47,7 +51,7 @@ async def normalize_clip(
     
     # Check if normalization is needed
     props = await get_video_properties(input_path)
-    needs_resize = (props.get("width") != OUTPUT_WIDTH or props.get("height") != OUTPUT_HEIGHT)
+    needs_resize = (props.get("width") != target_width or props.get("height") != target_height)
     needs_fps_change = (props.get("fps") is not None and abs(props.get("fps") - OUTPUT_FPS) > 0.5)
     
     if not needs_resize and not needs_fps_change:
@@ -61,7 +65,16 @@ async def normalize_clip(
     # Build filter based on what's needed
     filters = []
     if needs_resize:
-        filters.append(f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:flags=lanczos")
+        # Use aspect-ratio-preserving scale with letterboxing/pillarboxing
+        # This ensures videos maintain their aspect ratio and are padded if needed
+        # force_original_aspect_ratio=decrease: scales down to fit, adds padding
+        # force_original_aspect_ratio=increase: scales up to fill, may crop (we use decrease for safety)
+        filters.append(
+            f"scale={target_width}:{target_height}:"
+            f"force_original_aspect_ratio=decrease:"
+            f"flags=lanczos,"
+            f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
     if needs_fps_change:
         filters.append(f"fps={OUTPUT_FPS}")
     
@@ -86,8 +99,8 @@ async def normalize_clip(
     ])
     
     logger.info(
-        f"Normalizing clip {clip_index} ({props.get('width')}x{props.get('height')} @ {props.get('fps')}fps → {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} @ {OUTPUT_FPS}fps)",
-        extra={"job_id": str(job_id), "clip_index": clip_index}
+        f"Normalizing clip {clip_index} ({props.get('width')}x{props.get('height')} @ {props.get('fps')}fps → {target_width}x{target_height} @ {OUTPUT_FPS}fps)",
+        extra={"job_id": str(job_id), "clip_index": clip_index, "target_width": target_width, "target_height": target_height}
     )
     
     try:

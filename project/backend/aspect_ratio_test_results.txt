@@ -1,0 +1,75 @@
+Traceback (most recent call last):
+  File "/Users/user/Desktop/Github/VideoGen/project/backend/shared/config.py", line 193, in <module>
+    settings = Settings()
+  File "/Users/user/Desktop/Github/VideoGen/venv/lib/python3.9/site-packages/pydantic_settings/main.py", line 193, in __init__
+    super().__init__(
+  File "/Users/user/Desktop/Github/VideoGen/venv/lib/python3.9/site-packages/pydantic/main.py", line 250, in __init__
+    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
+pydantic_core._pydantic_core.ValidationError: 9 validation errors for Settings
+supabase_url
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+supabase_service_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+supabase_anon_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+redis_url
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+openai_api_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+replicate_api_token
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+jwt_secret_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+supabase_jwt_secret
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+frontend_url
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/user/Desktop/Github/VideoGen/project/backend/test_aspect_ratio_validation.py", line 17, in <module>
+    from modules.video_generator.config import get_model_config, MODEL_CONFIGS
+  File "/Users/user/Desktop/Github/VideoGen/project/backend/modules/video_generator/__init__.py", line 9, in <module>
+    from modules.video_generator.process import process
+  File "/Users/user/Desktop/Github/VideoGen/project/backend/modules/video_generator/process.py", line 18, in <module>
+    from shared.config import settings
+  File "/Users/user/Desktop/Github/VideoGen/project/backend/shared/config.py", line 198, in <module>
+    raise ConfigError(f"Failed to load configuration: {str(e)}") from e
+shared.errors.ConfigError: Failed to load configuration: 9 validation errors for Settings
+supabase_url
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+supabase_service_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+supabase_anon_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+redis_url
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+openai_api_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+replicate_api_token
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+jwt_secret_key
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+supabase_jwt_secret
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing
+frontend_url
+  Field required [type=missing, input_value={}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.12/v/missing

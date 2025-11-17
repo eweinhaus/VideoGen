@@ -25,7 +25,7 @@ from api_gateway.services.sse_manager import broadcast_event
 from shared.database import DatabaseClient
 from shared.redis_client import RedisClient
 
-from .config import VIDEO_OUTPUTS_BUCKET
+from .config import VIDEO_OUTPUTS_BUCKET, get_output_dimensions_from_aspect_ratio
 from .utils import check_ffmpeg_available, get_video_duration
 from .downloader import download_all_clips, download_audio
 from .normalizer import normalize_clip
@@ -106,7 +106,8 @@ async def process(
     clips: Clips,
     audio_url: str,
     transitions: List[Transition],
-    beat_timestamps: Optional[List[float]] = None
+    beat_timestamps: Optional[List[float]] = None,
+    aspect_ratio: str = "16:9"
 ) -> VideoOutput:
     """
     Main composition function.
@@ -117,6 +118,7 @@ async def process(
         audio_url: Original audio file URL
         transitions: Transition definitions from Scene Planner (ignored in MVP)
         beat_timestamps: Beat timestamps from Audio Parser (optional, not used in MVP)
+        aspect_ratio: Aspect ratio for final video output (default: "16:9")
         
     Returns:
         VideoOutput with final video URL and metadata
@@ -128,6 +130,21 @@ async def process(
     # Convert job_id to UUID for internal use
     job_id_uuid = UUID(job_id) if isinstance(job_id, str) else job_id
     start_time = time.time()
+    
+    # Calculate output dimensions from aspect ratio
+    try:
+        output_width, output_height = get_output_dimensions_from_aspect_ratio(aspect_ratio)
+        logger.info(
+            f"Using aspect ratio '{aspect_ratio}' -> {output_width}x{output_height}",
+            extra={"job_id": str(job_id_uuid), "aspect_ratio": aspect_ratio, "width": output_width, "height": output_height}
+        )
+    except ValueError as e:
+        logger.warning(
+            f"Invalid aspect ratio '{aspect_ratio}', falling back to 16:9 (1920x1080): {e}",
+            extra={"job_id": str(job_id_uuid), "aspect_ratio": aspect_ratio}
+        )
+        output_width, output_height = 1920, 1080
+        aspect_ratio = "16:9"  # Reset to default
     
     # Initialize timing tracking
     timings = {
@@ -242,12 +259,12 @@ async def process(
             )
             
             # Step 3: Normalize all clips - 88-91%
-            await publish_progress(job_id_uuid, "Normalizing clips to 1080p, 30fps...", 88)
+            await publish_progress(job_id_uuid, f"Normalizing clips to {output_width}x{output_height}, 30fps...", 88)
             step_start = time.time()
             normalized_paths = []
             for clip_bytes, clip in zip(clip_bytes_list, sorted_clips):
                 normalized_path = await normalize_clip(
-                    clip_bytes, clip.clip_index, temp_dir, job_id_uuid
+                    clip_bytes, clip.clip_index, temp_dir, job_id_uuid, output_width, output_height
                 )
                 normalized_paths.append(normalized_path)
             timings["normalize_clips"] = time.time() - step_start
@@ -402,7 +419,7 @@ async def process(
             await publish_progress(job_id_uuid, "Padding video to match audio length...", 97)
             step_start = time.time()
             padded_video_path = await pad_video_to_audio(
-                concatenated_path, audio_bytes, temp_dir, job_id_uuid
+                concatenated_path, audio_bytes, temp_dir, job_id_uuid, output_width, output_height
             )
             timings["pad_video"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Video padded", 98)
@@ -437,7 +454,7 @@ async def process(
             await publish_progress(job_id_uuid, "Encoding final video...", 99)
             step_start = time.time()
             final_video_path = await encode_final_video(
-                video_with_audio_path, temp_dir, job_id_uuid
+                video_with_audio_path, temp_dir, job_id_uuid, output_width, output_height
             )
             timings["encode_final"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Video encoded", 99)

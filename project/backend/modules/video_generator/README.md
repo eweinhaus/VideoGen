@@ -58,11 +58,11 @@ The video generator supports user-selectable aspect ratios that vary by model. A
 
 ### Supported Aspect Ratios by Model
 
-- **Kling v2.1**: 16:9 (uses resolution parameter)
+- **Kling v2.1**: 16:9 (uses resolution parameter) ⚠️ LIMITED
 - **Kling v2.5 Turbo**: 16:9, 9:16, 1:1, 4:3, 3:4 (uses resolution parameter)
 - **Hailuo 2.3**: 16:9, 9:16, 1:1 (uses aspect_ratio parameter)
 - **Wan 2.5 i2v**: 16:9, 1:1, 9:16 (uses aspect_ratio parameter)
-- **Veo 3.1**: 16:9, 9:16, 1:1, 4:3, 3:4 (uses aspect_ratio parameter)
+- **Veo 3.1**: 16:9, 9:16 (uses aspect_ratio parameter) ⚠️ LIMITED - ONLY these two ratios supported
 
 ### Parameter Mapping
 
@@ -77,6 +77,16 @@ The generator automatically maps aspect ratios to the correct format based on ea
 - Aspect ratio is validated against model's supported list before generation
 - Raises `ValidationError` if aspect ratio not supported for selected model
 - Default aspect ratio: "16:9" (used if not specified)
+
+### Important Notes
+
+⚠️ **Critical**: If an unsupported aspect ratio is selected, **ALL clips will fail immediately** with `ValidationError`. This prevents wasted API calls but requires frontend validation to prevent user confusion.
+
+**Limited Support Models:**
+- **Kling v2.1**: Only supports 16:9
+- **Veo 3.1**: Only supports 16:9 and 9:16
+
+Always verify the selected model supports the desired aspect ratio before starting generation.
 
 
 

@@ -140,6 +140,18 @@ async def process(
     else:
         selected_model_key = video_model
     
+    # Validate aspect ratio before starting (fail fast if invalid)
+    from shared.errors import ValidationError
+    from modules.video_generator.config import get_model_config
+    model_config = get_model_config(selected_model_key)
+    supported_aspect_ratios = model_config.get("aspect_ratios", ["16:9"])
+    if aspect_ratio not in supported_aspect_ratios:
+        raise ValidationError(
+            f"Aspect ratio '{aspect_ratio}' not supported for model '{selected_model_key}'. "
+            f"Supported: {supported_aspect_ratios}. "
+            f"This error prevents all clips from being generated."
+        )
+    
     # Validate model configuration before starting
     try:
         model_config = get_model_config(selected_model_key)

@@ -9,7 +9,7 @@ from uuid import UUID
 from shared.errors import CompositionError
 from shared.logging import get_logger
 from .utils import run_ffmpeg_command, get_video_duration, get_audio_duration
-from .config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS
+from .config import OUTPUT_FPS
 
 logger = get_logger("composer.video_padder")
 
@@ -18,7 +18,9 @@ async def pad_video_to_audio(
     video_path: Path,
     audio_bytes: bytes,
     temp_dir: Path,
-    job_id: UUID
+    job_id: UUID,
+    target_width: int,
+    target_height: int
 ) -> Path:
     """
     Pad video with frozen last frame + fade-out if video is shorter than audio.
@@ -28,6 +30,8 @@ async def pad_video_to_audio(
         audio_bytes: Original audio file bytes
         temp_dir: Temporary directory for output
         job_id: Job ID for logging
+        target_width: Target output width in pixels
+        target_height: Target output height in pixels
         
     Returns:
         Path to padded video file (or original if no padding needed)
@@ -88,7 +92,7 @@ async def pad_video_to_audio(
             "ffmpeg",
             "-loop", "1",  # Loop the image
             "-i", str(last_frame_path),
-            "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},fps={OUTPUT_FPS},fade=t=out:st={fade_start}:d={fade_duration}",
+            "-vf", f"scale={target_width}:{target_height},fps={OUTPUT_FPS},fade=t=out:st={fade_start}:d={fade_duration}",
             "-t", str(duration_diff),
             "-c:v", "libx264",
             "-preset", "medium",

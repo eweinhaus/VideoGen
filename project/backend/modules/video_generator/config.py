@@ -197,9 +197,9 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "supports_lip_sync": False,
         "supports_audio": True,  # Synchronized audio generation
         "supports_motion_control": False,
-        "max_duration": 10,
-        "duration_support": "continuous",  # Supports continuous duration values
-        "supported_durations": None,  # Continuous, any value up to max_duration
+        "max_duration": 8,
+        "duration_support": "discrete",  # Only supports discrete duration values: 4, 6, 8
+        "supported_durations": [4, 6, 8],  # Veo 3.1 only accepts these three values
         "resolutions": ["720p", "1080p"],  # Supports both resolutions
         "aspect_ratios": ["16:9", "9:16"],  # Veo 3.1 supports these two aspect ratios
         "aspect_ratio_parameter": "aspect_ratio",  # Confirmed parameter name

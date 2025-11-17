@@ -1806,7 +1806,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 clips,
                 audio_url,
                 transitions,
-                beat_timestamps
+                beat_timestamps,
+                aspect_ratio
             )
         except ImportError:
             logger.warning("Composer module not found, using stub", extra={"job_id": job_id})
