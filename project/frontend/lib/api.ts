@@ -11,7 +11,8 @@ if (typeof window !== "undefined") {
 
 async function request<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs: number = 30000
 ): Promise<T> {
   const token = authStore.getState().token
   const headers: Record<string, string> = {
@@ -59,9 +60,10 @@ async function request<T>(
       console.log("🌐 Making request to:", fullUrl)
     }
     
-    // Add timeout to prevent hanging (30 seconds)
+    // Add timeout to prevent hanging (configurable, default 30 seconds)
+    // Use longer timeout for job status requests during long operations
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 30000)
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
     
     const response = await fetch(fullUrl, {
       ...options,
@@ -155,7 +157,9 @@ export async function uploadAudio(
 }
 
 export async function getJob(jobId: string): Promise<JobResponse> {
-  return request<JobResponse>(`/api/v1/jobs/${jobId}`)
+  // Use longer timeout for job status requests (5 minutes) to handle long uploads
+  // The composer stage can take several minutes for large video uploads
+  return request<JobResponse>(`/api/v1/jobs/${jobId}`, {}, 300000) // 5 minutes
 }
 
 export async function downloadVideo(jobId: string): Promise<Blob> {

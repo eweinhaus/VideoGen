@@ -66,15 +66,22 @@ def generate_clip_scripts(
     
     # Generate ClipScript objects
     clip_scripts = []
+    total_clips = len(clip_boundaries)
+    
     for i, (llm_script, boundary) in enumerate(zip(llm_clip_scripts, clip_boundaries)):
         # Align to boundary (use boundary times, but allow ±0.5s tolerance)
         start = boundary.start
         end = boundary.end
         
-        # Extract lyrics for this clip - filter by clip time range
+        # Determine if this is the last clip for proper boundary handling
+        is_last_clip = (i == total_clips - 1)
+        
+        # Extract lyrics for this clip - filter by clip time range with mutually exclusive assignment
         # ALWAYS use filtered lyrics (from audio parser) rather than LLM output
         # to ensure only lyrics within clip start/end times are included
-        lyrics_context = _align_lyrics_to_clip(start, end, lyrics)
+        # Uses half-open interval [start, end) except for last clip which uses [start, end]
+        # This ensures mutually exclusive, complete coverage of all lyrics
+        lyrics_context = _align_lyrics_to_clip(start, end, lyrics, is_last_clip=is_last_clip)
         
         # If no lyrics found in this clip's time range, check if LLM provided
         # lyrics_context as fallback, but verify it's actually relevant to this clip
@@ -128,14 +135,20 @@ def generate_clip_scripts(
 def _align_lyrics_to_clip(
     clip_start: float,
     clip_end: float,
-    lyrics: List[Lyric]
+    lyrics: List[Lyric],
+    is_last_clip: bool = False
 ) -> Optional[str]:
     """
     Find lyrics within clip time range and return combined text with only words in the clip.
     
-    Only includes lyrics whose timestamps fall within the clip's start and end times.
-    This ensures each clip only gets the exact words spoken during that specific time range,
-    rather than entire phrases that may span multiple clips.
+    Uses half-open interval [clip_start, clip_end) for mutually exclusive assignment:
+    - For all clips except the last: [start, end) - includes start, excludes end
+    - For the last clip: [start, end] - includes both start and end to ensure complete coverage
+    
+    This ensures:
+    1. Mutually exclusive: Each word is assigned to exactly one clip (no overlap)
+    2. Complete coverage: All words are assigned to a clip (no gaps)
+    3. Accurate alignment: Words match exactly what's spoken in that clip's time range
     
     Builds lyrics string from individual words (not formatted_text) to ensure precise alignment.
     Words are joined with spaces, preserving natural phrase grouping when consecutive.
@@ -144,28 +157,39 @@ def _align_lyrics_to_clip(
         clip_start: Clip start time in seconds
         clip_end: Clip end time in seconds
         lyrics: List of lyrics with timestamps and formatted_text
+        is_last_clip: If True, use inclusive end boundary [start, end]. Otherwise use [start, end).
         
     Returns:
         Combined lyrics text (only words within clip range) or None if no lyrics in range
         
     Example:
-        For a clip from 10.0s to 15.0s:
-        - Includes words with timestamp >= 10.0s and <= 15.0s
-        - Excludes all words outside this range, even if they're part of the same phrase
-        - If phrase "Hello world this is" has words at [8s, 9s, 11s, 12s, 16s]:
-          - Clip 10-15s gets only: "this is" (words at 11s and 12s)
-          - Clip 0-10s gets: "Hello world" (words at 8s and 9s)
+        For clips [0-12s] and [12-24s]:
+        - Clip 1 [0, 12): Includes words with timestamp >= 0.0 and < 12.0 (excludes word at exactly 12.0)
+        - Clip 2 [12, 24): Includes words with timestamp >= 12.0 and < 24.0 (includes word at 12.0)
+        - Last clip [24, 30]: Includes words with timestamp >= 24.0 and <= 30.0 (inclusive end)
+        
+        This ensures word at 12.0s goes to Clip 2, not both clips.
     """
     if not lyrics:
         return None
     
-    # Find lyrics within clip time range
-    # Only include lyrics whose timestamp falls within [clip_start, clip_end]
-    clip_lyrics = [
-        lyric
-        for lyric in lyrics
-        if clip_start <= lyric.timestamp <= clip_end
-    ]
+    # Use half-open interval [start, end) for all clips except the last
+    # Last clip uses [start, end] to ensure complete coverage
+    if is_last_clip:
+        # Last clip: inclusive end boundary [clip_start, clip_end]
+        clip_lyrics = [
+            lyric
+            for lyric in lyrics
+            if clip_start <= lyric.timestamp <= clip_end
+        ]
+    else:
+        # All other clips: half-open interval [clip_start, clip_end)
+        # Includes words at clip_start, excludes words at clip_end
+        clip_lyrics = [
+            lyric
+            for lyric in lyrics
+            if clip_start <= lyric.timestamp < clip_end
+        ]
     
     if not clip_lyrics:
         logger.debug(

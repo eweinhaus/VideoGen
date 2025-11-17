@@ -337,12 +337,55 @@ async def process(
             storage = StorageClient()
             final_video_bytes = final_video_path.read_bytes()
             storage_path = f"{job_id_uuid}/final_video.mp4"
-            video_url = await storage.upload_file(
-                bucket=VIDEO_OUTPUTS_BUCKET,
-                path=storage_path,
-                file_data=final_video_bytes,
-                content_type="video/mp4"
+            
+            # Calculate file size for logging
+            file_size_mb = len(final_video_bytes) / (1024 * 1024)
+            logger.info(
+                f"Starting upload of {file_size_mb:.2f} MB video file",
+                extra={"job_id": str(job_id_uuid), "file_size_mb": file_size_mb}
             )
+            
+            # Send periodic "still uploading" messages during long uploads
+            # This helps prevent frontend timeouts by showing the upload is still active
+            upload_start = time.time()
+            
+            async def send_periodic_updates():
+                """Send periodic progress updates during upload."""
+                update_count = 0
+                while True:
+                    await asyncio.sleep(30)  # Send update every 30 seconds
+                    elapsed = time.time() - upload_start
+                    update_count += 1
+                    # Send message to keep connection alive and show progress
+                    await publish_progress(
+                        job_id_uuid,
+                        f"Uploading final video... ({elapsed:.0f}s elapsed, {file_size_mb:.1f} MB)",
+                        99  # Keep at 99% until upload completes
+                    )
+                    logger.debug(
+                        f"Upload progress update: {elapsed:.1f}s elapsed",
+                        extra={"job_id": str(job_id_uuid), "elapsed": elapsed, "update_count": update_count}
+                    )
+            
+            # Start periodic update task
+            update_task = asyncio.create_task(send_periodic_updates())
+            
+            try:
+                # Perform the actual upload (this is blocking but runs in executor)
+                video_url = await storage.upload_file(
+                    bucket=VIDEO_OUTPUTS_BUCKET,
+                    path=storage_path,
+                    file_data=final_video_bytes,
+                    content_type="video/mp4"
+                )
+            finally:
+                # Cancel the periodic update task once upload completes
+                update_task.cancel()
+                try:
+                    await update_task
+                except asyncio.CancelledError:
+                    pass
+            
             timings["upload_final"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Upload complete", 100)
             

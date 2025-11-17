@@ -302,10 +302,20 @@ def _build_clip_contexts(
         scene_desc = [
             scenes[scene_id].description for scene_id in script.scenes if scene_id in scenes
         ]
+
+        # CHARACTER CONSISTENCY FIX: Pass Character objects (not just descriptions)
+        # This allows build_character_identity_block to format from structured features
+        clip_characters = [
+            characters[char_id]
+            for char_id in script.characters
+            if char_id in characters
+        ]
+
+        # Keep legacy char_desc for backward compatibility
         char_desc = [
             characters[char_id].description
             for char_id in script.characters
-            if char_id in characters
+            if char_id in characters and characters[char_id].description
         ]
 
         # Extract beat timing metadata for this clip
@@ -333,7 +343,7 @@ def _build_clip_contexts(
                 scene_ids=list(script.scenes),
                 character_ids=list(script.characters),
                 scene_descriptions=scene_desc,
-                character_descriptions=char_desc,
+                character_descriptions=char_desc,  # Keep for backward compatibility
                 primary_scene_id=mapping.scene_id if mapping else None,
                 lyrics_context=script.lyrics_context,
                 beat_metadata=beat_metadata,  # Add beat metadata
@@ -343,6 +353,8 @@ def _build_clip_contexts(
                 lighting_full=plan.style.lighting,
                 cinematography_full=plan.style.cinematography,
                 color_palette_full=plan.style.color_palette,
+                # CHARACTER CONSISTENCY FIX: Pass Character objects for structured formatting
+                characters=clip_characters,
             )
         )
     return contexts
