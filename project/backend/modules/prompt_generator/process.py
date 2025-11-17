@@ -19,6 +19,7 @@ from .prompt_synthesizer import (
     ClipContext,
     build_comprehensive_style_block,
     build_character_identity_block,
+    build_lyrics_block,
     compute_word_count
 )
 from .reference_mapper import map_references
@@ -76,6 +77,10 @@ async def process(
     # CHARACTER IDENTITY BLOCKS: Append character identity blocks AFTER style blocks
     # This ensures identical, immutable character descriptions across all clips
     final_prompts = _append_identity_blocks(final_prompts, clip_contexts)
+
+    # LYRICS BLOCKS: Append lyrics blocks AFTER character identity blocks
+    # This ensures exact lyrics (filtered to clip time range) are preserved and not modified by LLM
+    final_prompts = _append_lyrics_blocks(final_prompts, clip_contexts)
 
     clip_prompts = _assemble_clip_prompts(
         base_templates=base_templates,
@@ -191,6 +196,52 @@ def _append_identity_blocks(prompts: List[str], contexts: List[ClipContext]) -> 
     logger.debug(
         "Appended character identity blocks to all prompts",
         extra={"clip_count": len(final_prompts)}
+    )
+
+    return final_prompts
+
+
+def _append_lyrics_blocks(prompts: List[str], contexts: List[ClipContext]) -> List[str]:
+    """
+    Append lyrics blocks to prompts after LLM optimization and character identity blocks.
+
+    This mirrors _append_identity_blocks() - ensures exact lyrics (filtered to clip time range)
+    are preserved and not modified by the LLM. Each clip gets only the lyrics spoken during
+    that specific clip's time range, as extracted by the audio parser and filtered by the scene planner.
+
+    Args:
+        prompts: List of optimized prompts (with style and identity blocks already appended)
+        contexts: List of ClipContext objects (for building lyrics blocks)
+
+    Returns:
+        List of prompts with lyrics blocks appended
+    """
+    if len(prompts) != len(contexts):
+        logger.warning(
+            "Prompt count mismatch when appending lyrics blocks",
+            extra={"prompt_count": len(prompts), "context_count": len(contexts)}
+        )
+        # Return as-is if mismatch (shouldn't happen, but safety)
+        return prompts
+
+    final_prompts = []
+    for prompt, context in zip(prompts, contexts):
+        # Build lyrics block for this clip
+        lyrics_block = build_lyrics_block(context)
+
+        if lyrics_block:
+            # Append lyrics block after character identity block
+            # Format: "[optimized action + style + character]. LYRICS REFERENCE: \"...\""
+            final_prompt = f"{prompt.strip()}\n\n{lyrics_block}"
+        else:
+            # No lyrics for this clip, keep original prompt
+            final_prompt = prompt
+
+        final_prompts.append(final_prompt)
+
+    logger.debug(
+        "Appended lyrics blocks to all prompts",
+        extra={"clip_count": len(final_prompts), "clips_with_lyrics": sum(1 for ctx in contexts if ctx.lyrics_context)}
     )
 
     return final_prompts

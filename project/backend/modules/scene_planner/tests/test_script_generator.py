@@ -93,16 +93,18 @@ def test_generate_clip_scripts(sample_llm_output, sample_clip_boundaries, sample
 
 
 def test_align_lyrics_to_clip(sample_lyrics):
-    """Test aligning lyrics to clip time range with formatted text."""
-    # Lyrics within range - should use formatted_text
+    """Test aligning lyrics to clip time range - builds from individual words."""
+    # Lyrics within range - builds from individual words within clip time range
+    # Words at 1.0s and 2.0s are within [0.5, 2.5], result: "Hello world"
     lyrics = _align_lyrics_to_clip(0.5, 2.5, sample_lyrics)
-    assert lyrics == "Hello world"  # Uses formatted phrase, not individual words
+    assert lyrics == "Hello world"  # Built from individual words, not formatted_text
     
     # No lyrics in range
     lyrics = _align_lyrics_to_clip(20.0, 25.0, sample_lyrics)
     assert lyrics is None
     
-    # Single lyric in range - should use formatted_text
+    # Single lyric in range - builds from individual word within clip time range
+    # Word at 6.0s is within [5.5, 7.0], result: "test"
     lyrics = _align_lyrics_to_clip(5.5, 7.0, sample_lyrics)
-    assert lyrics == "test"  # Uses formatted phrase
+    assert lyrics == "test"  # Built from individual word within clip range
 
