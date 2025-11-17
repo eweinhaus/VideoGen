@@ -308,6 +308,7 @@ export function ProgressTracker({
     setRemainingTime(initialValues.estimatedRemaining)
     setTimerStarted(false)
     setHasStarted(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]) // Removed initialValues.estimatedRemaining to prevent resetting reference images
   
   // Restore audio results from job data or stage metadata when page loads/refreshes
@@ -479,6 +480,7 @@ export function ProgressTracker({
     } else {
       console.log("✅ Prompt data already restored")
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentJob?.stages, scenePlanResults, promptResults, jobId])
   
   // Restore reference images state when job data is loaded on refresh

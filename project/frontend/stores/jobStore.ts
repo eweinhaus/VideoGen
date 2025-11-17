@@ -63,12 +63,14 @@ export const jobStore = create<JobState>((set, get) => ({
       console.log("🔍 Job stages in response:", response.stages)
       if (response.stages) {
         Object.keys(response.stages).forEach(stageName => {
-          const stage = response.stages[stageName]
-          console.log(`🔍 Stage ${stageName}:`, {
-            status: stage.status,
-            hasMetadata: !!stage.metadata,
-            metadata: stage.metadata
-          })
+          const stage = response.stages?.[stageName]
+          if (stage) {
+            console.log(`🔍 Stage ${stageName}:`, {
+              status: stage.status,
+              hasMetadata: !!stage.metadata,
+              metadata: stage.metadata
+            })
+          }
         })
       }
       
