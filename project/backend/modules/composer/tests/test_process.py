@@ -177,7 +177,7 @@ class TestProcessInputValidation:
              patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
              patch('modules.composer.downloader.download_audio', new_callable=AsyncMock) as mock_download_audio, \
              patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
-             patch('modules.composer.duration_handler.handle_clip_duration', new_callable=AsyncMock) as mock_duration, \
+             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
              patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
              patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
              patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
@@ -193,7 +193,12 @@ class TestProcessInputValidation:
             mock_download.return_value = [b"clip0", b"clip1", b"clip2"]
             mock_download_audio.return_value = b"audio"
             mock_normalize.return_value = mock_path
-            mock_duration.return_value = (mock_path, False, False)
+            # Mock cascading compensation (returns paths and metrics)
+            mock_cascading.return_value = ([mock_path, mock_path, mock_path], {
+                "clips_trimmed": 0,
+                "total_shortfall": 0.0,
+                "compensation_applied": []
+            })
             mock_transitions.return_value = mock_path
             mock_sync.return_value = (mock_path, 0.0)
             mock_encode.return_value = mock_path
@@ -259,6 +264,170 @@ class TestProcessInputValidation:
         clips = sample_clips(job_id, num_clips=3)
         
         with pytest.raises(CompositionError, match="FFmpeg not found"):
+                await process(
+                    job_id=str(job_id),
+                    clips=clips,
+                    audio_url="https://project.supabase.co/storage/v1/object/public/audio-uploads/audio.mp3",
+                    transitions=[]
+                )
+
+
+class TestCascadingCompensationIntegration:
+    """Integration tests for cascading compensation in composer process."""
+    
+    @pytest.mark.asyncio
+    @patch('modules.composer.utils.check_ffmpeg_available', return_value=True)
+    async def test_small_shortfall_accepted(self, mock_check_ffmpeg):
+        """Test that small shortfall (<10%) is accepted without extension."""
+        import importlib
+        import sys
+        if 'modules.composer.process' in sys.modules:
+            importlib.reload(sys.modules['modules.composer.process'])
+        from modules.composer.process import process
+        
+        job_id = uuid4()
+        clips = sample_clips(job_id, num_clips=3)
+        
+        process_module_reloaded = sys.modules.get('modules.composer.process')
+        with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
+             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
+             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock), \
+             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
+             patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch('shared.storage.StorageClient') as mock_storage, \
+             patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
+            
+            from pathlib import Path
+            mock_path = MagicMock(spec=Path)
+            mock_path.exists.return_value = True
+            mock_path.stat.return_value = MagicMock(st_size=1024 * 1024 * 10)
+            
+            mock_download.return_value = [b"clip0", b"clip1", b"clip2"]
+            mock_normalize.return_value = mock_path
+            # Small shortfall: 0.5s out of 15s total = 3.3% (<10%)
+            mock_cascading.return_value = ([mock_path, mock_path, mock_path], {
+                "clips_trimmed": 0,
+                "total_shortfall": 0.5,
+                "compensation_applied": []
+            })
+            mock_transitions.return_value = mock_path
+            mock_sync.return_value = (mock_path, 0.0)
+            mock_encode.return_value = mock_path
+            mock_get_duration.return_value = 15.0
+            
+            mock_storage_instance = MagicMock()
+            mock_storage_instance.upload_file = AsyncMock(return_value="https://example.com/video.mp4")
+            mock_storage.return_value = mock_storage_instance
+            
+            result = await process(
+                job_id=str(job_id),
+                clips=clips,
+                audio_url="https://project.supabase.co/storage/v1/object/public/audio-uploads/audio.mp3",
+                transitions=[]
+            )
+            
+            assert isinstance(result, VideoOutput)
+            assert result.clips_looped == 0
+            assert result.total_shortfall == 0.5
+            # Should not call extend_last_clip (shortfall <10%)
+            assert mock_cascading.called
+    
+    @pytest.mark.asyncio
+    @patch('modules.composer.utils.check_ffmpeg_available', return_value=True)
+    async def test_large_shortfall_extends_last_clip(self, mock_check_ffmpeg):
+        """Test that large shortfall (>20%) extends last clip."""
+        import importlib
+        import sys
+        if 'modules.composer.process' in sys.modules:
+            importlib.reload(sys.modules['modules.composer.process'])
+        from modules.composer.process import process
+        
+        job_id = uuid4()
+        clips = sample_clips(job_id, num_clips=3)
+        
+        process_module_reloaded = sys.modules.get('modules.composer.process')
+        with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
+             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
+             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock), \
+             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
+             patch('modules.composer.duration_handler.extend_last_clip', new_callable=AsyncMock) as mock_extend, \
+             patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch('shared.storage.StorageClient') as mock_storage, \
+             patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
+            
+            from pathlib import Path
+            mock_path = MagicMock(spec=Path)
+            mock_path.exists.return_value = True
+            mock_path.stat.return_value = MagicMock(st_size=1024 * 1024 * 10)
+            
+            mock_download.return_value = [b"clip0", b"clip1", b"clip2"]
+            mock_normalize.return_value = mock_path
+            # Large shortfall: 4.0s out of 15s total = 26.7% (>20%)
+            mock_cascading.return_value = ([mock_path, mock_path, mock_path], {
+                "clips_trimmed": 0,
+                "total_shortfall": 4.0,
+                "compensation_applied": []
+            })
+            mock_extend.return_value = mock_path
+            mock_transitions.return_value = mock_path
+            mock_sync.return_value = (mock_path, 0.0)
+            mock_encode.return_value = mock_path
+            mock_get_duration.return_value = 15.0
+            
+            mock_storage_instance = MagicMock()
+            mock_storage_instance.upload_file = AsyncMock(return_value="https://example.com/video.mp4")
+            mock_storage.return_value = mock_storage_instance
+            
+            result = await process(
+                job_id=str(job_id),
+                clips=clips,
+                audio_url="https://project.supabase.co/storage/v1/object/public/audio-uploads/audio.mp3",
+                transitions=[]
+            )
+            
+            assert isinstance(result, VideoOutput)
+            assert mock_extend.called  # Should call extend_last_clip
+            assert result.total_shortfall == 4.0
+    
+    @pytest.mark.asyncio
+    @patch('modules.composer.utils.check_ffmpeg_available', return_value=True)
+    async def test_very_large_shortfall_fails_job(self, mock_check_ffmpeg):
+        """Test that very large shortfall (>50%) fails job."""
+        import importlib
+        import sys
+        if 'modules.composer.process' in sys.modules:
+            importlib.reload(sys.modules['modules.composer.process'])
+        from modules.composer.process import process
+        
+        job_id = uuid4()
+        clips = sample_clips(job_id, num_clips=3)
+        
+        process_module_reloaded = sys.modules.get('modules.composer.process')
+        with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
+             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock), \
+             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock), \
+             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading:
+            
+            from pathlib import Path
+            mock_path = MagicMock(spec=Path)
+            mock_path.exists.return_value = True
+            
+            mock_normalize.return_value = mock_path
+            # Very large shortfall: 8.0s out of 15s total = 53.3% (>50%)
+            mock_cascading.return_value = ([mock_path, mock_path, mock_path], {
+                "clips_trimmed": 0,
+                "total_shortfall": 8.0,
+                "compensation_applied": []
+            })
+            
+            with pytest.raises(CompositionError, match="Shortfall too large"):
                 await process(
                     job_id=str(job_id),
                     clips=clips,

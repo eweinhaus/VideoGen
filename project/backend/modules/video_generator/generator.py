@@ -26,7 +26,8 @@ from shared.logging import get_logger
 from shared.config import settings
 from modules.video_generator.config import (
     SVD_MODEL, COGVIDEOX_MODEL, get_generation_settings,
-    get_selected_model, get_model_config, get_model_replicate_string
+    get_selected_model, get_model_config, get_model_replicate_string,
+    get_duration_buffer_multiplier
 )
 from modules.video_generator.model_validator import get_latest_version_hash, validate_model_config
 from modules.video_generator.cost_estimator import estimate_clip_cost
@@ -256,21 +257,101 @@ async def generate_video_clip(
         "prompt": clip_prompt.prompt,
     }
 
-    # Map duration to model-specific format
+    # Extract original target duration (preserve for Part 2 compensation algorithm)
+    original_target_duration = clip_prompt.duration
     target_duration = clip_prompt.duration
-    if selected_model_key.startswith("kling"):
-        # Kling models support 5 or 10 seconds
-        if target_duration <= 7.5:
-            input_data["duration"] = 5
+
+    # Get buffer multiplier for continuous models
+    buffer_multiplier = get_duration_buffer_multiplier()
+
+    # Get model configuration to determine duration support type
+    duration_support_type = model_config.get("duration_support", "discrete")  # Default to discrete for safety
+
+    # Calculate buffer duration based on model type
+    if duration_support_type == "continuous":
+        # Continuous models: Apply percentage buffer (25% default, capped at 10s)
+        requested_duration = min(target_duration * buffer_multiplier, 10.0)
+        
+        # For continuous models, use the calculated duration directly
+        if selected_model_key == "veo_31":
+            # Veo 3.1: Continuous duration support - apply percentage buffer
+            input_data["duration"] = requested_duration
         else:
-            input_data["duration"] = 10
+            # Other continuous models (if any)
+            input_data["duration"] = requested_duration
+        
+        buffer_strategy = "percentage"
+        logger.info(
+            f"Buffer calculation for clip {clip_prompt.clip_index} (continuous model)",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_prompt.clip_index,
+                "original_target_duration": original_target_duration,
+                "requested_duration": requested_duration,
+                "buffer_strategy": buffer_strategy,
+                "buffer_multiplier": buffer_multiplier,
+                "model": selected_model_key
+            }
+        )
+    elif selected_model_key.startswith("kling"):
+        # Kling models: Discrete duration support (5s/10s) - use maximum buffer strategy
+        if target_duration <= 5.0:
+            input_data["duration"] = 5  # No buffer possible for ≤5s targets
+            buffer_strategy = "maximum"
+            logger.warning(
+                f"Buffer cannot be applied for target {target_duration}s (Kling only supports 5s/10s)",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_prompt.clip_index,
+                    "target_duration": target_duration,
+                    "requested": 5,
+                    "buffer_strategy": "none_possible"
+                }
+            )
+        else:
+            input_data["duration"] = 10  # Maximum buffer for >5s targets
+            buffer_strategy = "maximum"
+            logger.info(
+                f"Buffer calculation for clip {clip_prompt.clip_index} (discrete model, maximum buffer)",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_prompt.clip_index,
+                    "original_target_duration": original_target_duration,
+                    "requested_duration": 10,
+                    "buffer_strategy": buffer_strategy,
+                    "model": selected_model_key
+                }
+            )
     else:
-        # Other models may accept duration as-is or need different mapping
-        # For now, use closest supported value (5 or 10)
-        if target_duration <= 7.5:
+        # Other discrete models: Similar to Kling (maximum buffer strategy)
+        if target_duration <= 5.0:
             input_data["duration"] = 5
+            buffer_strategy = "maximum"
+            logger.warning(
+                f"Buffer cannot be applied for target {target_duration}s ({selected_model_key} only supports 5s/10s)",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_prompt.clip_index,
+                    "target_duration": target_duration,
+                    "requested": 5,
+                    "buffer_strategy": "none_possible",
+                    "model": selected_model_key
+                }
+            )
         else:
-            input_data["duration"] = 10
+            input_data["duration"] = 10  # Maximum buffer for >5s targets
+            buffer_strategy = "maximum"
+            logger.info(
+                f"Buffer calculation for clip {clip_prompt.clip_index} (discrete model, maximum buffer)",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_prompt.clip_index,
+                    "original_target_duration": original_target_duration,
+                    "requested_duration": 10,
+                    "buffer_strategy": buffer_strategy,
+                    "model": selected_model_key
+                }
+            )
 
     # Map resolution based on model's supported resolutions
     resolution = settings.get("resolution", "1024x576")
@@ -596,7 +677,8 @@ async def generate_video_clip(
                 clip_index=clip_prompt.clip_index,
                 video_url=final_url,
                 actual_duration=actual_duration,
-                target_duration=clip_prompt.duration,
+                target_duration=clip_prompt.duration,  # This is the original target (before buffer)
+                original_target_duration=original_target_duration,  # Preserved for Part 2 compensation
                 duration_diff=actual_duration - clip_prompt.duration,
                 status="success",
                 cost=cost,

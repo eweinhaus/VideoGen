@@ -8,6 +8,7 @@ import asyncio
 import time
 import tempfile
 import shutil
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID
@@ -28,7 +29,7 @@ from .config import VIDEO_OUTPUTS_BUCKET
 from .utils import check_ffmpeg_available, get_video_duration
 from .downloader import download_all_clips, download_audio
 from .normalizer import normalize_clip
-from .duration_handler import handle_clip_duration
+from .duration_handler import handle_cascading_durations, extend_last_clip
 from .transition_applier import apply_transitions
 from .audio_syncer import sync_audio
 from .encoder import encode_final_video
@@ -138,6 +139,14 @@ async def process(
         "upload_final": 0.0,
         "total": 0.0
     }
+    
+    # Initialize compensation metrics (will be populated during duration handling)
+    duration_metrics = {
+        "clips_trimmed": 0,
+        "total_shortfall": 0.0,
+        "compensation_applied": []
+    }
+    total_intended = 0.0
     
     try:
         # Step 1: Input validation
@@ -251,30 +260,121 @@ async def process(
                 }
             )
             
-            # Step 4: Handle duration mismatches - 91-94%
+            # Step 4: Handle duration mismatches with cascading compensation - 91-94%
             await publish_progress(job_id_uuid, "Handling duration mismatches...", 91)
             step_start = time.time()
-            duration_handled_paths = []
-            clips_trimmed = 0
-            clips_looped = 0
-            for normalized_path, clip in zip(normalized_paths, sorted_clips):
-                result_path, was_trimmed, was_looped = await handle_clip_duration(
-                    normalized_path, clip, temp_dir, job_id_uuid
+            
+            # Check feature flag for cascading compensation
+            from .config import USE_CASCADING_COMPENSATION
+            
+            if not USE_CASCADING_COMPENSATION:
+                raise CompositionError(
+                    "Cascading compensation is disabled via USE_CASCADING_COMPENSATION=false. "
+                    "This feature is required for proper duration handling."
                 )
-                duration_handled_paths.append(result_path)
-                if was_trimmed:
-                    clips_trimmed += 1
-                if was_looped:
-                    clips_looped += 1
+            
+            # Use cascading compensation instead of per-clip handling
+            final_clip_paths, duration_metrics = await handle_cascading_durations(
+                normalized_paths,
+                sorted_clips,
+                temp_dir,
+                job_id_uuid
+            )
+            
+            # Safety check: ensure we have the same number of clips
+            if len(final_clip_paths) != len(sorted_clips):
+                raise CompositionError(
+                    f"Clip count mismatch after cascading compensation: "
+                    f"expected {len(sorted_clips)}, got {len(final_clip_paths)}"
+                )
+            
+            # Check if final shortfall is acceptable
+            MAX_SHORTFALL_PERCENTAGE = float(os.getenv("MAX_SHORTFALL_PERCENTAGE", "10.0"))
+            EXTEND_LAST_CLIP_THRESHOLD = float(os.getenv("EXTEND_LAST_CLIP_THRESHOLD", "20.0"))
+            FAIL_JOB_THRESHOLD = float(os.getenv("FAIL_JOB_THRESHOLD", "50.0"))
+            MAX_LAST_CLIP_EXTENSION = float(os.getenv("MAX_LAST_CLIP_EXTENSION", "5.0"))
+            
+            # Use original_target_duration for total intended (before buffer was applied)
+            total_intended = sum(
+                (c.original_target_duration if c.original_target_duration is not None else c.target_duration)
+                for c in sorted_clips
+            )
+            shortfall_pct = (duration_metrics["total_shortfall"] / total_intended * 100) if total_intended > 0 else 0.0
+            total_shortfall = duration_metrics["total_shortfall"]
+            
+            if shortfall_pct >= FAIL_JOB_THRESHOLD:
+                # Shortfall too large - likely generation failure
+                raise CompositionError(
+                    f"Shortfall too large: {total_shortfall:.2f}s ({shortfall_pct:.1f}%) - "
+                    f"exceeds failure threshold ({FAIL_JOB_THRESHOLD}%)"
+                )
+            elif shortfall_pct >= EXTEND_LAST_CLIP_THRESHOLD:
+                # Check if shortfall exceeds maximum extension limit
+                if total_shortfall > MAX_LAST_CLIP_EXTENSION:
+                    # Shortfall too large to extend - fail job
+                    raise CompositionError(
+                        f"Shortfall {total_shortfall:.2f}s ({shortfall_pct:.1f}%) exceeds maximum extension "
+                        f"{MAX_LAST_CLIP_EXTENSION}s. This indicates a significant video generation failure. "
+                        f"Please check video generation settings and model configuration."
+                    )
+                
+                # Extend last clip to cover shortfall
+                # Safety check: ensure we're only extending the actual last clip
+                if len(final_clip_paths) == 0:
+                    raise CompositionError("Cannot extend last clip: no clips available")
+                
+                last_clip_index = len(final_clip_paths) - 1
+                expected_last_clip_index = len(sorted_clips) - 1
+                
+                if last_clip_index != expected_last_clip_index:
+                    raise CompositionError(
+                        f"Safety check failed: attempting to extend clip at index {last_clip_index}, "
+                        f"but expected last clip index is {expected_last_clip_index}"
+                    )
+                
+                logger.warning(
+                    f"Large shortfall: {total_shortfall:.2f}s ({shortfall_pct:.1f}%) - extending last clip (index {last_clip_index})",
+                    extra={
+                        "job_id": str(job_id_uuid),
+                        "total_shortfall": total_shortfall,
+                        "shortfall_percentage": shortfall_pct,
+                        "last_clip_index": last_clip_index,
+                        "total_clips": len(final_clip_paths)
+                    }
+                )
+                extended_path = await extend_last_clip(
+                    final_clip_paths[-1],
+                    total_shortfall,
+                    temp_dir,
+                    job_id_uuid
+                )
+                final_clip_paths[-1] = extended_path
+            elif shortfall_pct >= MAX_SHORTFALL_PERCENTAGE:
+                # Log warning but accept
+                logger.warning(
+                    f"Shortfall: {total_shortfall:.2f}s ({shortfall_pct:.1f}%) - within tolerance",
+                    extra={
+                        "job_id": str(job_id_uuid),
+                        "total_shortfall": total_shortfall,
+                        "shortfall_percentage": shortfall_pct
+                    }
+                )
+            
+            clips_trimmed = duration_metrics["clips_trimmed"]
+            clips_looped = 0  # Always 0 with cascading compensation (backward compatibility)
+            
             timings["handle_durations"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Durations handled", 94)
             
             logger.info(
-                f"Handled durations: {clips_trimmed} trimmed, {clips_looped} looped in {timings['handle_durations']:.2f}s",
+                f"Handled durations: {clips_trimmed} trimmed, final shortfall: {total_shortfall:.2f}s "
+                f"({shortfall_pct:.1f}%) in {timings['handle_durations']:.2f}s",
                 extra={
                     "job_id": str(job_id_uuid),
                     "clips_trimmed": clips_trimmed,
-                    "clips_looped": clips_looped,
+                    "total_shortfall": total_shortfall,
+                    "shortfall_percentage": shortfall_pct,
+                    "compensation_applied": len(duration_metrics["compensation_applied"]),
                     "duration_handling_time": timings["handle_durations"]
                 }
             )
@@ -283,7 +383,7 @@ async def process(
             await publish_progress(job_id_uuid, "Applying transitions...")
             step_start = time.time()
             concatenated_path = await apply_transitions(
-                duration_handled_paths, transitions, temp_dir, job_id_uuid, beat_timestamps
+                final_clip_paths, transitions, temp_dir, job_id_uuid, beat_timestamps
             )
             timings["apply_transitions"] = time.time() - step_start
             await publish_progress(job_id_uuid, "Transitions applied", 97)
@@ -362,10 +462,19 @@ async def process(
             file_size_mb = final_video_path.stat().st_size / 1024 / 1024
             
             # Get audio duration from original audio if available (or calculate from clips)
-            # For MVP, use sum of target durations as approximation
-            audio_duration = sum(clip.target_duration for clip in sorted_clips)
+            # Use original_target_duration (before buffer was applied) for accurate audio duration
+            audio_duration = sum(
+                (clip.original_target_duration if clip.original_target_duration is not None else clip.target_duration)
+                for clip in sorted_clips
+            )
+            
+            # Get compensation metrics
+            compensation_applied = duration_metrics.get("compensation_applied", [])
+            total_shortfall = duration_metrics.get("total_shortfall", 0.0)
+            shortfall_percentage = (total_shortfall / total_intended * 100) if total_intended > 0 else 0.0
         
         # Create VideoOutput after temp directory cleanup
+        
         video_output = VideoOutput(
             job_id=job_id_uuid,
             video_url=video_url,
@@ -374,7 +483,10 @@ async def process(
             sync_drift=sync_drift,
             clips_used=len(sorted_clips),
             clips_trimmed=clips_trimmed,
-            clips_looped=clips_looped,
+            clips_looped=0,  # Always 0 with cascading compensation (backward compatibility)
+            compensation_applied=compensation_applied,
+            total_shortfall=total_shortfall,
+            shortfall_percentage=shortfall_percentage,
             transitions_applied=len(sorted_clips) - 1,  # N clips = N-1 transitions
             file_size_mb=file_size_mb,
             composition_time=composition_time,
