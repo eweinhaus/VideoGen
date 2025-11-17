@@ -16,7 +16,15 @@ from .script_generator import generate_clip_scripts
 from .transition_planner import plan_transitions
 from .style_analyzer import analyze_style_consistency, refine_style
 from .validator import validate_scene_plan
-from .character_description_validator import validate_and_reformat_character_description, validate_character_specificity
+from .character_description_validator import (
+    extract_character_features,
+    validate_and_reformat_character_description,
+    validate_character_specificity
+)
+from .character_analyzer import (
+    analyze_clips_for_implicit_characters,
+    update_clip_scripts_with_characters
+)
 
 logger = get_logger("scene_planner")
 
@@ -88,6 +96,9 @@ async def plan_scenes(
             song_structure=audio_data.song_structure
         )
         logger.debug(f"Planned {len(transitions)} transitions")
+
+        # PHASE 2: Analyze clips for implicit/background characters
+        # This happens BEFORE character extraction to ensure we catch all mentioned characters
         
         # Step 5: Extract other components from LLM output
         characters = []
@@ -97,13 +108,14 @@ async def plan_scenes(
         
         if "characters" in llm_output:
             from shared.models.scene import Character
-            # Create characters and post-process descriptions
+            # Create characters and extract structured features
             characters = []
             for char_data in llm_output["characters"]:
                 # Extract character name from description if format is "Name - FIXED CHARACTER IDENTITY:"
                 # Otherwise use the character ID as fallback
                 description = char_data.get("description", "")
                 char_id = char_data.get("id", "unknown")
+                char_role = char_data.get("role", "character")
 
                 # Try to extract character name from description
                 character_name = char_id
@@ -115,29 +127,66 @@ async def plan_scenes(
                     if len(first_word) <= 20 and first_word[0].isupper():
                         character_name = first_word
 
-                # POST-PROCESS: Validate and reformat character description
-                # This ensures it matches the FIXED CHARACTER IDENTITY format
-                validated_description = validate_and_reformat_character_description(
+                # EXTRACT structured features (does NOT format into text)
+                features, extracted_name = extract_character_features(
                     character_id=char_id,
                     character_name=character_name,
                     description=description
                 )
 
-                # Validate specificity (log warnings if not specific enough)
-                specificity_check = validate_character_specificity(validated_description)
-                if not specificity_check["is_specific"]:
-                    logger.warning(
-                        f"Character {char_id} description lacks specificity",
-                        extra={
-                            "character_id": char_id,
-                            "warnings": specificity_check["warnings"]
-                        }
-                    )
+                # Use extracted name if available
+                if extracted_name:
+                    character_name = extracted_name
 
-                # Create character with validated description
-                char_data_copy = char_data.copy()
-                char_data_copy["description"] = validated_description
-                characters.append(Character(**char_data_copy))
+                # Validate specificity if features were extracted
+                if features:
+                    # Build a temporary formatted description for specificity check
+                    temp_description = f"{character_name} - Hair: {features.hair}, Face: {features.face}, Eyes: {features.eyes}, Clothing: {features.clothing}, Accessories: {features.accessories}, Build: {features.build}, Age: {features.age}"
+                    specificity_check = validate_character_specificity(temp_description)
+                    if not specificity_check["is_specific"]:
+                        logger.warning(
+                            f"Character {char_id} description lacks specificity",
+                            extra={
+                                "character_id": char_id,
+                                "warnings": specificity_check["warnings"]
+                            }
+                        )
+
+                # Create character with structured features
+                # Keep description for backward compatibility (will be populated from features when needed)
+                character = Character(
+                    id=char_id,
+                    role=char_role,
+                    features=features,
+                    name=character_name,
+                    description=description  # Keep original for backward compatibility
+                )
+                characters.append(character)
+
+        # PHASE 2: Analyze clip scripts for implicit/background characters
+        # Scan clip descriptions for mentions of characters not in the character list
+        implicit_characters = analyze_clips_for_implicit_characters(
+            clip_scripts=clip_scripts,
+            existing_characters=characters
+        )
+
+        if implicit_characters:
+            logger.info(
+                f"Found {len(implicit_characters)} implicit/background characters in clip scripts",
+                extra={
+                    "job_id": str(job_id),
+                    "implicit_character_ids": [char.id for char in implicit_characters]
+                }
+            )
+            # Add implicit characters to the character list
+            characters.extend(implicit_characters)
+
+            # Update clip scripts to include implicit character IDs
+            clip_scripts = update_clip_scripts_with_characters(
+                clip_scripts=clip_scripts,
+                all_characters=characters
+            )
+            logger.debug("Updated clip scripts with implicit character IDs")
         
         if "scenes" in llm_output:
             from shared.models.scene import Scene

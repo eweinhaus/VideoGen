@@ -4,6 +4,7 @@ Job endpoints.
 Job status, list, and cancellation.
 """
 
+import asyncio
 import json
 from typing import Optional
 from fastapi import APIRouter, Path, Query, Depends, HTTPException, status
@@ -116,17 +117,22 @@ async def get_job_status(
         
         # For old jobs without metadata, try to reconstruct from Supabase Storage
         # This handles jobs created before metadata storage was implemented
+        # Use shorter timeout and non-blocking approach to avoid hanging
         if not stages.get("reference_generator", {}).get("metadata", {}).get("reference_images"):
             try:
                 from shared.storage import storage
                 import re
                 
                 # List files in reference-images bucket for this job
+                # Use shorter timeout (5s) to avoid blocking the endpoint
                 def _list_reference_files():
                     return storage.storage.from_("reference-images").list(job_id)
                 
                 try:
-                    reference_files = await storage._execute_sync(_list_reference_files, timeout=10.0)
+                    reference_files = await asyncio.wait_for(
+                        storage._execute_sync(_list_reference_files, timeout=5.0),
+                        timeout=5.0
+                    )
                     if reference_files and len(reference_files) > 0:
                         scene_refs = []
                         char_refs = []
@@ -182,12 +188,17 @@ async def get_job_status(
                                 "status": "success"
                             }
                             logger.info(f"Reconstructed reference images metadata from storage for job {job_id}")
+                except asyncio.TimeoutError:
+                    logger.debug(f"Timeout listing reference images from storage for job {job_id}")
                 except Exception as storage_error:
                     logger.debug(f"Could not list reference images from storage (may not exist): {storage_error}")
+            except asyncio.TimeoutError:
+                logger.debug(f"Timeout during reference images reconstruction for job {job_id}")
             except Exception as e:
                 logger.debug(f"Failed to reconstruct reference images from storage: {e}")
         
         # Reconstruct video clips from storage if metadata is missing
+        # Use shorter timeout to avoid blocking the endpoint
         if not stages.get("video_generator", {}).get("metadata", {}).get("clips"):
             try:
                 from shared.storage import storage
@@ -196,7 +207,10 @@ async def get_job_status(
                     return storage.storage.from_("video-clips").list(job_id)
                 
                 try:
-                    clip_files = await storage._execute_sync(_list_video_clips, timeout=10.0)
+                    clip_files = await asyncio.wait_for(
+                        storage._execute_sync(_list_video_clips, timeout=5.0),
+                        timeout=5.0
+                    )
                     if clip_files and len(clip_files) > 0:
                         clips = []
                         completed = 0
@@ -250,8 +264,12 @@ async def get_job_status(
                                 "total_generation_time": 0
                             }
                             logger.info(f"Reconstructed video clips metadata from storage for job {job_id}")
+                except asyncio.TimeoutError:
+                    logger.debug(f"Timeout listing video clips from storage for job {job_id}")
                 except Exception as storage_error:
                     logger.debug(f"Could not list video clips from storage (may not exist): {storage_error}")
+            except asyncio.TimeoutError:
+                logger.debug(f"Timeout during video clips reconstruction for job {job_id}")
             except Exception as e:
                 logger.debug(f"Failed to reconstruct video clips from storage: {e}")
         

@@ -293,6 +293,43 @@ Generate a complete scene plan that:
 
 {CHARACTER_DESCRIPTION_GUIDELINES}
 
+## CHARACTER GENERATION RULES (CRITICAL)
+
+You MUST generate character profiles for ALL characters that appear in ANY clip, including:
+
+1. **MAIN CHARACTERS:** Generate for all protagonists, antagonists, love interests
+   - These are the primary focus of the video
+   - Should appear in 60-80% of clips
+
+2. **SUPPORTING CHARACTERS:** Generate for all named/speaking characters
+   - Any character with a specific role or dialogue
+   - Examples: friends, companions, bandmates
+
+3. **BACKGROUND CHARACTERS (CRITICAL):** Generate for ANY recurring background roles:
+   - Bartenders (if bar appears in multiple clips)
+   - Band members (if band appears in multiple clips)
+   - Crowd members who are visible/prominent (if mentioned in multiple clips)
+   - Service workers (waiters, cashiers, etc.)
+   - Passersby (if they appear in multiple clips)
+
+4. **CHARACTER REUSE:** If a role appears in multiple clips, it MUST be the same character:
+   - "the bartender" in clip 1 = "the bartender" in clip 4 (same person)
+   - "crowd member" in clip 2 = "crowd member" in clip 5 (same people)
+
+5. **MINIMUM CHARACTERS by Scene Type:**
+   - Solo video: 1 main character
+   - Couple/duet: 2 main characters
+   - Bar/club scene: 2 main + 1 bartender + 2-3 background patrons
+   - Street scene: 2 main + 1-2 passersby (if mentioned in clips)
+   - Concert/performance scene: 2 main + 3 band members + 2-3 crowd members
+
+⚠️ **DO NOT** generate random background people in clip visual descriptions without creating character profiles for them first!
+
+If a clip mentions "bartender", "crowd", "band", "passersby", etc., you MUST:
+1. Create a character profile with full 7-feature description
+2. Assign a character ID (e.g., "bartender_1", "crowd_1", "band_guitarist")
+3. Include that character ID in the clip's "characters" field
+
 ## Output Format
 
 You must output a valid JSON object matching this exact structure:
