@@ -32,6 +32,7 @@ VERSION_CACHE_TTL = 3600  # 1 hour in seconds
 async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
     """
     Dynamically retrieve the latest version hash for a model from Replicate API.
+    Uses caching to avoid excessive API calls (1 hour TTL).
     
     Args:
         replicate_string: Model string (e.g., "kwaivgi/kling-v2.1", "minimax/hailuo-2.3")
@@ -42,6 +43,20 @@ async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
     if not client:
         logger.warning("Replicate client not available for version retrieval")
         return None
+    
+    # Check cache first
+    current_time = time.time()
+    if replicate_string in _version_hash_cache:
+        cached_hash, cached_time = _version_hash_cache[replicate_string]
+        if current_time - cached_time < VERSION_CACHE_TTL:
+            logger.debug(
+                f"Using cached version hash for {replicate_string}",
+                extra={"model": replicate_string, "version_hash": cached_hash, "cached": True}
+            )
+            return cached_hash
+        else:
+            # Cache expired, remove it
+            del _version_hash_cache[replicate_string]
     
     try:
         # Parse owner/model from replicate_string
@@ -62,6 +77,8 @@ async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
                 f"Retrieved latest version hash for {replicate_string}: {version_hash}",
                 extra={"model": replicate_string, "version_hash": version_hash}
             )
+            # Cache the result
+            _version_hash_cache[replicate_string] = (version_hash, current_time)
             return version_hash
         else:
             logger.warning(f"No latest version found for {replicate_string}")
