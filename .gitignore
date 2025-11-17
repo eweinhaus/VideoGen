@@ -43,6 +43,7 @@ htmlcov/
 *.md
 !README.md
 !planning/**/*.md
+!project/backend/data/**/*.md
 
 tasks/
 

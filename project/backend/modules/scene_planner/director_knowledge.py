@@ -23,20 +23,26 @@ def get_director_knowledge() -> str:
         IOError: If file cannot be read
     """
     # Path to director knowledge markdown file
-    # Located in planning/agent_prompts/scene_planner_director_knowledge.md
-    # Go up from: project/backend/modules/scene_planner/director_knowledge.py
-    # To root: ../../../../ (5 levels up)
-    knowledge_path = Path(__file__).parent.parent.parent.parent.parent / "planning" / "agent_prompts" / "scene_planner_director_knowledge.md"
+    # Located in project/backend/data/scene_planner_director_knowledge.md
+    # This ensures it's available in production (Railway Root Directory is project/backend)
+    
+    # Calculate path relative to this file: go up to backend root, then into data/
+    # __file__ is at: project/backend/modules/scene_planner/director_knowledge.py
+    # Need to go: ../.. to get to project/backend/, then /data/scene_planner_director_knowledge.md
+    backend_root = Path(__file__).parent.parent.parent  # project/backend/
+    knowledge_path = backend_root / "data" / "scene_planner_director_knowledge.md"
     
     try:
         with open(knowledge_path, "r", encoding="utf-8") as f:
             knowledge_text = f.read()
         
-        logger.debug(f"Loaded director knowledge base ({len(knowledge_text)} characters)")
+        logger.debug(f"Loaded director knowledge base from {knowledge_path} ({len(knowledge_text)} characters)")
         return knowledge_text
         
     except FileNotFoundError:
         logger.error(f"Director knowledge file not found: {knowledge_path}")
+        logger.error(f"Backend root: {backend_root}")
+        logger.error(f"Current working directory: {Path.cwd()}")
         raise FileNotFoundError(f"Director knowledge file not found: {knowledge_path}")
     except IOError as e:
         logger.error(f"Failed to read director knowledge file: {str(e)}")
