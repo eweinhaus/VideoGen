@@ -131,13 +131,14 @@ def _align_lyrics_to_clip(
     lyrics: List[Lyric]
 ) -> Optional[str]:
     """
-    Find lyrics within clip time range and return combined formatted text.
+    Find lyrics within clip time range and return combined text with only words in the clip.
     
     Only includes lyrics whose timestamps fall within the clip's start and end times.
-    This ensures each clip only gets the lyrics snippet relevant to that specific time range,
-    rather than the entire lyrics of the song.
+    This ensures each clip only gets the exact words spoken during that specific time range,
+    rather than entire phrases that may span multiple clips.
     
-    Uses formatted_text (sentences/phrases) when available for better readability.
+    Builds lyrics string from individual words (not formatted_text) to ensure precise alignment.
+    Words are joined with spaces, preserving natural phrase grouping when consecutive.
     
     Args:
         clip_start: Clip start time in seconds
@@ -145,12 +146,15 @@ def _align_lyrics_to_clip(
         lyrics: List of lyrics with timestamps and formatted_text
         
     Returns:
-        Combined lyrics text (formatted phrases) or None if no lyrics in range
+        Combined lyrics text (only words within clip range) or None if no lyrics in range
         
     Example:
-        For a clip from 10.0s to 20.0s:
-        - Includes lyrics with timestamp >= 10.0s and <= 20.0s
-        - Excludes all other lyrics from the song
+        For a clip from 10.0s to 15.0s:
+        - Includes words with timestamp >= 10.0s and <= 15.0s
+        - Excludes all words outside this range, even if they're part of the same phrase
+        - If phrase "Hello world this is" has words at [8s, 9s, 11s, 12s, 16s]:
+          - Clip 10-15s gets only: "this is" (words at 11s and 12s)
+          - Clip 0-10s gets: "Hello world" (words at 8s and 9s)
     """
     if not lyrics:
         return None
@@ -171,7 +175,7 @@ def _align_lyrics_to_clip(
         return None
     
     logger.debug(
-        f"Found {len(clip_lyrics)} lyrics in clip time range [{clip_start:.1f}s-{clip_end:.1f}s] "
+        f"Found {len(clip_lyrics)} words in clip time range [{clip_start:.1f}s-{clip_end:.1f}s] "
         f"(filtered from {len(lyrics)} total lyrics)",
         extra={
             "clip_start": clip_start,
@@ -179,35 +183,27 @@ def _align_lyrics_to_clip(
             "clip_lyrics_count": len(clip_lyrics),
             "total_lyrics": len(lyrics),
             "first_lyric": clip_lyrics[0].text if clip_lyrics else None,
-            "last_lyric": clip_lyrics[-1].text if clip_lyrics else None
+            "last_lyric": clip_lyrics[-1].text if clip_lyrics else None,
+            "first_timestamp": clip_lyrics[0].timestamp if clip_lyrics else None,
+            "last_timestamp": clip_lyrics[-1].timestamp if clip_lyrics else None
         }
     )
     
-    # Use formatted_text if available, otherwise fall back to individual words
-    if clip_lyrics[0].formatted_text:
-        # Group by unique phrases to avoid repetition
-        # formatted_text groups words into sentences/phrases
-        seen_phrases = set()
-        phrases = []
-        for lyric in clip_lyrics:
-            if lyric.formatted_text and lyric.formatted_text not in seen_phrases:
-                seen_phrases.add(lyric.formatted_text)
-                phrases.append(lyric.formatted_text)
-        result = " ".join(phrases) if phrases else None
-        if result:
-            logger.debug(
-                f"Extracted {len(phrases)} unique phrases from {len(clip_lyrics)} lyrics",
-                extra={"phrases_count": len(phrases), "result_preview": result[:100]}
-            )
-        return result
-    else:
-        # Fallback: use individual words
-        words = [lyric.text for lyric in clip_lyrics]
-        result = " ".join(words) if words else None
-        if result:
-            logger.debug(
-                f"Extracted {len(words)} words from {len(clip_lyrics)} lyrics",
-                extra={"words_count": len(words), "result_preview": result[:100]}
-            )
-        return result
+    # Build lyrics string from individual words (not formatted_text)
+    # This ensures we only include words actually within the clip's time range,
+    # even if they're part of a phrase that spans multiple clips
+    words = [lyric.text for lyric in clip_lyrics]
+    result = " ".join(words) if words else None
+    
+    if result:
+        logger.debug(
+            f"Extracted {len(words)} words from clip time range [{clip_start:.1f}s-{clip_end:.1f}s]: '{result[:100]}'",
+            extra={
+                "words_count": len(words),
+                "result_preview": result[:100],
+                "full_result_length": len(result)
+            }
+        )
+    
+    return result
 

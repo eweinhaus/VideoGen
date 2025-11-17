@@ -142,8 +142,8 @@ def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = 
             f"Scene context: {', '.join(context.scene_descriptions)}"
         )
 
-    if context.lyrics_context:
-        fragments.append(f"Lyrics reference: \"{context.lyrics_context.strip()}\"")
+    # NOTE: Lyrics are now appended AFTER LLM optimization (similar to character identity blocks)
+    # to ensure they are not modified by the LLM and remain exactly as extracted from audio parser
 
     # PHASE 2: Conditionally include comprehensive style block
     # When include_comprehensive_style=False (for LLM optimization), use condensed style
@@ -298,6 +298,32 @@ def build_character_identity_block(context: ClipContext) -> str:
         )
 
     return identity_block
+
+
+def build_lyrics_block(context: ClipContext) -> str:
+    """
+    Build lyrics block with exact lyrics for this clip's time range.
+
+    This ensures lyrics are appended AFTER LLM optimization, preserving the exact
+    words spoken during this clip's time range as extracted by the audio parser.
+    
+    Similar to build_character_identity_block(), lyrics are appended after optimization
+    to prevent the LLM from modifying or paraphrasing them.
+
+    Args:
+        context: ClipContext with lyrics_context
+
+    Returns:
+        Formatted lyrics block with exact lyrics for this clip, or empty string if none
+    """
+    if not context.lyrics_context:
+        return ""
+
+    # Lyrics are already filtered to clip's exact time range by scene planner
+    # Format as a clear reference block
+    lyrics_block = f"LYRICS REFERENCE: \"{context.lyrics_context.strip()}\""
+
+    return lyrics_block
 
 
 def summarize_color_palette(color_palette: List[str]) -> str:
