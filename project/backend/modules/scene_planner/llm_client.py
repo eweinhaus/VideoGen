@@ -340,7 +340,7 @@ You must output a valid JSON object matching this exact structure:
   "characters": [
     {{
       "id": "protagonist",
-      "description": "MUST follow CHARACTER_DESCRIPTION_GUIDELINES above. Use the FIXED CHARACTER IDENTITY format with all 7 required features (Hair, Face, Eyes, Clothing, Accessories, Build, Age). Be extremely specific with colors, measurements, and details.",
+      "description": "MUST start with 'CharacterName - FIXED CHARACTER IDENTITY:' then list all 7 features (Hair, Face, Eyes, Clothing, Accessories, Build, Age) using the format shown in CHARACTER_DESCRIPTION_GUIDELINES. Example: 'Sarah - FIXED CHARACTER IDENTITY:\n- Hair: long auburn hair...\n- Face: fair skin...' Be extremely specific with colors, measurements, and details.",
       "role": "main character"
     }}
   ],

@@ -122,9 +122,14 @@ async def plan_scenes(
                 if " - FIXED CHARACTER IDENTITY:" in description:
                     character_name = description.split(" - FIXED CHARACTER IDENTITY:")[0].strip()
                 elif description:
-                    # Use first word of description as name fallback
+                    # Use first word of description as name fallback (but not feature keys)
                     first_word = description.split()[0] if description.split() else char_id
-                    if len(first_word) <= 20 and first_word[0].isupper():
+                    # Don't use feature keys like "Hair:", "Face:", etc. as names
+                    feature_keys = ["Hair:", "Face:", "Eyes:", "Clothing:", "Accessories:", "Build:", "Age:"]
+                    if (len(first_word) <= 20 and
+                        first_word[0].isupper() and
+                        first_word not in feature_keys and
+                        not first_word.startswith("-")):
                         character_name = first_word
 
                 # EXTRACT structured features (does NOT format into text)
