@@ -58,15 +58,20 @@ def _build_system_prompt(style_keywords: List[str], clip_count: int) -> str:
 
 Guidelines:
 - Respect clip order and durations exactly as provided.
-- Output concise prompts (<200 words) optimized for Stable Video Diffusion and CogVideoX.
+- Provide detailed, descriptive ACTION and SCENE descriptions (max 500 words per prompt).
+- Note: Style and character details will be appended separately after optimization (~200-300 additional words).
+- Focus on what's happening in the scene - action, motion, camera work, atmosphere.
 - Do not include shot lists or numbered steps.
 - Integrate the shared style vocabulary so every prompt feels cohesive.
-- Mention action → motion → camera → style → color → lighting → quality modifiers.
+- Describe action → motion → camera → atmosphere naturally and with detail.
 - Never include actual URLs; reference images are passed separately.
 - Enforce consistent tone using style keywords: {style_phrase}.
+- If character descriptions are present, preserve them EXACTLY as written (do not summarize or modify).
+- Be descriptive and specific to give the video model rich detail, but stay within 500 words.
 
 CRITICAL: You MUST return exactly {clip_count} prompts, one for each clip_index from 0 to {clip_count - 1}.
 Do not skip any clips. If you cannot generate all prompts, return the base prompts unchanged.
+Each prompt should be detailed but not exceed 500 words (style/character blocks will be added later).
 
 Output JSON with the following shape:
 {{

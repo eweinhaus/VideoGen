@@ -16,6 +16,7 @@ from .script_generator import generate_clip_scripts
 from .transition_planner import plan_transitions
 from .style_analyzer import analyze_style_consistency, refine_style
 from .validator import validate_scene_plan
+from .character_description_validator import validate_and_reformat_character_description, validate_character_specificity
 
 logger = get_logger("scene_planner")
 
@@ -96,10 +97,47 @@ async def plan_scenes(
         
         if "characters" in llm_output:
             from shared.models.scene import Character
-            characters = [
-                Character(**char_data)
-                for char_data in llm_output["characters"]
-            ]
+            # Create characters and post-process descriptions
+            characters = []
+            for char_data in llm_output["characters"]:
+                # Extract character name from description if format is "Name - FIXED CHARACTER IDENTITY:"
+                # Otherwise use the character ID as fallback
+                description = char_data.get("description", "")
+                char_id = char_data.get("id", "unknown")
+
+                # Try to extract character name from description
+                character_name = char_id
+                if " - FIXED CHARACTER IDENTITY:" in description:
+                    character_name = description.split(" - FIXED CHARACTER IDENTITY:")[0].strip()
+                elif description:
+                    # Use first word of description as name fallback
+                    first_word = description.split()[0] if description.split() else char_id
+                    if len(first_word) <= 20 and first_word[0].isupper():
+                        character_name = first_word
+
+                # POST-PROCESS: Validate and reformat character description
+                # This ensures it matches the FIXED CHARACTER IDENTITY format
+                validated_description = validate_and_reformat_character_description(
+                    character_id=char_id,
+                    character_name=character_name,
+                    description=description
+                )
+
+                # Validate specificity (log warnings if not specific enough)
+                specificity_check = validate_character_specificity(validated_description)
+                if not specificity_check["is_specific"]:
+                    logger.warning(
+                        f"Character {char_id} description lacks specificity",
+                        extra={
+                            "character_id": char_id,
+                            "warnings": specificity_check["warnings"]
+                        }
+                    )
+
+                # Create character with validated description
+                char_data_copy = char_data.copy()
+                char_data_copy["description"] = validated_description
+                characters.append(Character(**char_data_copy))
         
         if "scenes" in llm_output:
             from shared.models.scene import Scene

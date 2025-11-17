@@ -54,10 +54,22 @@ def validate_clip_prompts(
         if not word_count:
             word_count = len(clip_prompt.prompt.split())
             metadata["word_count"] = word_count
-        if word_count > 200:
-            metadata["word_count"] = 200
-            words = clip_prompt.prompt.split()
-            clip_prompt.prompt = " ".join(words[:200]) + "..."
+
+        # UPDATED: Increased word limit to 1000 words to accommodate:
+        # - Detailed action descriptions (more context is better)
+        # - Character identity blocks (100-200 words)
+        # - Style blocks (50-100 words)
+        # Log warning if over limit but don't truncate (truncation breaks character identity)
+        if word_count > 1000:
+            logger.warning(
+                f"Prompt exceeds recommended word count",
+                extra={
+                    "clip_index": clip_prompt.clip_index,
+                    "word_count": word_count,
+                    "limit": 1000
+                }
+            )
+            # Note: NOT truncating to preserve character identity blocks and full context
 
         style_keywords = metadata.get("style_keywords")
         if style_keywords:

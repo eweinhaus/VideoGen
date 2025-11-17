@@ -66,10 +66,22 @@ class ClipContext:
     lyrics_context: Optional[str] = None
     beat_metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # PHASE 2: Full style information from scene planner (not just keywords)
+    visual_style_full: str = ""
+    mood_full: str = ""
+    lighting_full: str = ""
+    cinematography_full: str = ""
+    color_palette_full: List[str] = field(default_factory=list)
 
-def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
+
+def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = True) -> Tuple[str, str]:
     """
     Build deterministic prompt/negative prompt pair for a clip.
+
+    Args:
+        context: ClipContext with all prompt data
+        include_comprehensive_style: If True, include comprehensive style block.
+                                     If False, only include condensed style (for LLM optimization).
     """
     fragments: List[str] = []
     
@@ -133,18 +145,21 @@ def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
     if context.lyrics_context:
         fragments.append(f"Lyrics reference: \"{context.lyrics_context.strip()}\"")
 
-    if context.style_keywords:
-        fragments.append(
-            f"Style: {' ,'.join(context.style_keywords[:4])}"
-        )
-
-    color_phrase = summarize_color_palette(context.color_palette)
-    if color_phrase:
-        fragments.append(color_phrase)
-
-    fragments.append(
-        f"Mood: {context.mood}. Lighting: {context.lighting}. Cinematography: {context.cinematography}."
-    )
+    # PHASE 2: Conditionally include comprehensive style block
+    # When include_comprehensive_style=False (for LLM optimization), use condensed style
+    # When include_comprehensive_style=True (final prompts), use full structured style block
+    if include_comprehensive_style:
+        style_block = build_comprehensive_style_block(context)
+        if style_block:
+            # Insert comprehensive style block AFTER core description but BEFORE quality boosters
+            # This gives it prominence without overwhelming the core visual description
+            fragments.append(style_block)
+        else:
+            # Fallback to condensed style for backward compatibility (if no full style available)
+            _add_condensed_style(fragments, context)
+    else:
+        # For LLM optimization: use condensed style (LLM will rewrite this naturally)
+        _add_condensed_style(fragments, context)
 
     fragments.append("cinematic lighting, highly detailed, professional cinematography, 4K, 16:9 aspect ratio")
 
@@ -157,9 +172,132 @@ def build_clip_prompt(context: ClipContext) -> Tuple[str, str]:
         fragments.append("REMINDER: Scene and background must come from the prompt description above, not from the character reference image")
 
     prompt = ", ".join(fragment for fragment in fragments if fragment)
-    prompt = _enforce_word_limit(prompt, 200)
+    # Note: Removed word limit enforcement - more context is better for video generation
+    # Character identity blocks and style blocks will be appended later
+    # Final prompt can be up to 1000 words (validated in validator.py)
 
     return prompt, DEFAULT_NEGATIVE_PROMPT
+
+
+def _add_condensed_style(fragments: List[str], context: ClipContext) -> None:
+    """
+    Add condensed style information to fragments (for LLM optimization input).
+
+    This is used when we want the LLM to optimize the prompt naturally,
+    but will append the comprehensive style block afterward.
+    """
+    if context.style_keywords:
+        fragments.append(
+            f"Style: {', '.join(context.style_keywords[:4])}"
+        )
+
+    color_phrase = summarize_color_palette(context.color_palette)
+    if color_phrase:
+        fragments.append(color_phrase)
+
+    fragments.append(
+        f"Mood: {context.mood}. Lighting: {context.lighting}. Cinematography: {context.cinematography}."
+    )
+
+
+def build_comprehensive_style_block(context: ClipContext) -> str:
+    """
+    Build comprehensive style block with full scene planner style information.
+
+    PHASE 2: This provides the video generation model with complete artistic direction,
+    including visual style, mood, lighting, cinematography, and color palette with hex codes.
+
+    Args:
+        context: ClipContext with full style fields
+
+    Returns:
+        Formatted multi-line style block
+    """
+    lines: List[str] = []
+
+    # Visual Style
+    if context.visual_style_full:
+        lines.append(f"VISUAL STYLE: {context.visual_style_full}")
+
+    # Mood (prefer full version, fallback to keyword version)
+    if context.mood_full:
+        lines.append(f"MOOD: {context.mood_full}")
+    elif context.mood:
+        lines.append(f"MOOD: {context.mood}")
+
+    # Lighting (prefer full version, fallback to keyword version)
+    if context.lighting_full:
+        lines.append(f"LIGHTING: {context.lighting_full}")
+    elif context.lighting:
+        lines.append(f"LIGHTING: {context.lighting}")
+
+    # Cinematography (prefer full version, fallback to keyword version)
+    if context.cinematography_full:
+        lines.append(f"CINEMATOGRAPHY: {context.cinematography_full}")
+    elif context.cinematography:
+        lines.append(f"CINEMATOGRAPHY: {context.cinematography}")
+
+    # Color Palette with hex codes
+    if context.color_palette_full:
+        color_entries: List[str] = []
+        for hex_code in context.color_palette_full:
+            # Strip # if present
+            hex_clean = hex_code.replace("#", "").upper()
+
+            # Get color name from lookup or generate descriptive name
+            color_name = HEX_NAME_LOOKUP.get(hex_clean, f"color_{hex_clean[:6]}")
+
+            color_entries.append(f"#{hex_clean} ({color_name})")
+
+        colors_str = ", ".join(color_entries)
+        lines.append(f"COLOR PALETTE: {colors_str}")
+
+    # Join with comma + space for prompt-friendly format (models handle this well)
+    return ", ".join(lines)
+
+
+def build_character_identity_block(context: ClipContext) -> str:
+    """
+    Build character identity block with immutable character descriptions.
+
+    This ensures identical character descriptions across all clips, preventing
+    the LLM from modifying or paraphrasing character features.
+
+    Similar to build_comprehensive_style_block(), but for character identity.
+    This is appended AFTER LLM optimization to ensure the model cannot rewrite
+    or deviate from the precise character specifications.
+
+    Args:
+        context: ClipContext with character descriptions
+
+    Returns:
+        Formatted character identity block with emphasis on immutability
+    """
+    if not context.character_descriptions:
+        return ""
+
+    # Join all character descriptions
+    # Note: character_descriptions is a list of strings from ScenePlan
+    char_desc = ', '.join(context.character_descriptions)
+
+    # Check if character description already has CRITICAL statement
+    # (from Scene Planner's FIXED CHARACTER IDENTITY format)
+    has_critical_statement = "CRITICAL:" in char_desc and "IMMUTABLE features" in char_desc
+
+    if has_critical_statement:
+        # Character description already includes CRITICAL statement, don't duplicate
+        identity_block = f"CHARACTER IDENTITY: {char_desc}"
+    else:
+        # Add CRITICAL statement if not present in character description
+        identity_block = (
+            f"CHARACTER IDENTITY: {char_desc}. "
+            "CRITICAL: These are EXACT, FIXED features - do not modify, reinterpret, "
+            "or deviate from these specific details. This is the same character "
+            "appearing in all video clips - maintain precise consistency with these "
+            "physical descriptions."
+        )
+
+    return identity_block
 
 
 def summarize_color_palette(color_palette: List[str]) -> str:

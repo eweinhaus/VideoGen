@@ -25,8 +25,19 @@ def build_base_prompt(
     context: ClipContext,
     mapping: ClipReferenceMapping,
     style_keywords: List[str],
+    include_comprehensive_style: bool = True,
 ) -> BasePromptTemplate:
-    prompt, negative_prompt = build_clip_prompt(context)
+    """
+    Build base prompt template for a clip.
+
+    Args:
+        context: ClipContext with all prompt data
+        mapping: Reference image mapping for this clip
+        style_keywords: Style keywords for consistency
+        include_comprehensive_style: If True, include full style block.
+                                     If False, use condensed style (for LLM optimization input).
+    """
+    prompt, negative_prompt = build_clip_prompt(context, include_comprehensive_style=include_comprehensive_style)
     payload = {
         "clip_index": context.clip_index,
         "visual_description": context.visual_description,
@@ -57,7 +68,18 @@ def build_base_prompt_batch(
     contexts: List[ClipContext],
     reference_mapping: Dict[int, ClipReferenceMapping],
     style_keywords: List[str],
+    include_comprehensive_style: bool = True,
 ) -> List[BasePromptTemplate]:
+    """
+    Build batch of base prompt templates.
+
+    Args:
+        contexts: List of ClipContext objects
+        reference_mapping: Mapping of clip indices to reference images
+        style_keywords: Style keywords for consistency
+        include_comprehensive_style: If True, include full style block.
+                                     If False, use condensed style (for LLM optimization input).
+    """
     batch: List[BasePromptTemplate] = []
     for context in contexts:
         mapping = reference_mapping.get(
@@ -70,7 +92,7 @@ def build_base_prompt_batch(
                 reference_mode="text_only",
             ),
         )
-        batch.append(build_base_prompt(context, mapping, style_keywords))
+        batch.append(build_base_prompt(context, mapping, style_keywords, include_comprehensive_style))
     return batch
 
 

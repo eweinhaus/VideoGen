@@ -44,8 +44,8 @@ async def get_job_status(
             cached_data = json.loads(cached)
             # Verify ownership from cached data (quick check)
             if cached_data.get("user_id") == current_user["user_id"]:
-                # If cached data doesn't have stages, fetch them (for backward compatibility with old cache)
-                if "stages" not in cached_data:
+                # If cached data doesn't have stages or stages don't have metadata, fetch them (for backward compatibility with old cache)
+                if "stages" not in cached_data or not any(s.get("metadata") for s in cached_data.get("stages", {}).values()):
                     try:
                         stages_result = await db_client.table("job_stages").select("*").eq("job_id", job_id).execute()
                         stages = {}
@@ -53,17 +53,28 @@ async def get_job_status(
                             for stage in stages_result.data:
                                 stage_name = stage.get("stage_name")
                                 if stage_name:
-                                    stages[stage_name] = {
+                                    stage_info = {
                                         "status": stage.get("status", "pending"),
                                         "duration": stage.get("duration_seconds"),
                                         "progress": None,
                                     }
+                                    # Include metadata if available
+                                    metadata = stage.get("metadata")
+                                    if metadata:
+                                        try:
+                                            if isinstance(metadata, str):
+                                                metadata = json.loads(metadata)
+                                            stage_info["metadata"] = metadata
+                                        except (json.JSONDecodeError, TypeError):
+                                            pass
+                                    stages[stage_name] = stage_info
                         cached_data["stages"] = stages
                         # Update cache with stages included
                         await redis_client.set(cache_key, json.dumps(cached_data), ex=30)
                     except Exception as e:
                         logger.warning("Failed to fetch stages for cached job", exc_info=e, extra={"job_id": job_id})
-                        cached_data["stages"] = {}
+                        if "stages" not in cached_data:
+                            cached_data["stages"] = {}
                 logger.debug("Job status retrieved from cache", extra={"job_id": job_id})
                 return cached_data
             else:
@@ -77,7 +88,7 @@ async def get_job_status(
     # Verify ownership (this also fetches the job)
     job = await verify_job_ownership(job_id, current_user)
     
-    # Fetch stages from job_stages table
+    # Fetch stages from job_stages table, including metadata
     try:
         stages_result = await db_client.table("job_stages").select("*").eq("job_id", job_id).execute()
         stages = {}
@@ -85,11 +96,165 @@ async def get_job_status(
             for stage in stages_result.data:
                 stage_name = stage.get("stage_name")
                 if stage_name:
-                    stages[stage_name] = {
+                    stage_info = {
                         "status": stage.get("status", "pending"),
                         "duration": stage.get("duration_seconds"),
                         "progress": None,  # Not stored in job_stages table
                     }
+                    # Include metadata if available (for restoring section content)
+                    metadata = stage.get("metadata")
+                    if metadata:
+                        try:
+                            # Parse JSON metadata if it's a string
+                            if isinstance(metadata, str):
+                                metadata = json.loads(metadata)
+                            stage_info["metadata"] = metadata
+                        except (json.JSONDecodeError, TypeError):
+                            # If metadata is not valid JSON, skip it
+                            pass
+                    stages[stage_name] = stage_info
+        
+        # For old jobs without metadata, try to reconstruct from Supabase Storage
+        # This handles jobs created before metadata storage was implemented
+        if not stages.get("reference_generator", {}).get("metadata", {}).get("reference_images"):
+            try:
+                from shared.storage import storage
+                import re
+                
+                # List files in reference-images bucket for this job
+                def _list_reference_files():
+                    return storage.storage.from_("reference-images").list(job_id)
+                
+                try:
+                    reference_files = await storage._execute_sync(_list_reference_files, timeout=10.0)
+                    if reference_files and len(reference_files) > 0:
+                        scene_refs = []
+                        char_refs = []
+                        
+                        for file_info in reference_files:
+                            if not isinstance(file_info, dict):
+                                continue
+                            file_name = file_info.get("name", "")
+                            # Generate signed URL for the file
+                            try:
+                                signed_url = await storage.get_signed_url(
+                                    bucket="reference-images",
+                                    path=f"{job_id}/{file_name}",
+                                    expires_in=3600
+                                )
+                                
+                                # Determine if it's a scene or character reference based on filename
+                                if file_name.startswith("scene_"):
+                                    scene_id = file_name.replace("scene_", "").replace(".png", "")
+                                    scene_refs.append({
+                                        "scene_id": scene_id,
+                                        "image_url": signed_url,
+                                        "prompt_used": "",
+                                        "generation_time": 0,
+                                        "cost": "0"
+                                    })
+                                elif file_name.startswith("char_"):
+                                    char_id = file_name.replace("char_", "").replace(".png", "")
+                                    char_refs.append({
+                                        "character_id": char_id,
+                                        "image_url": signed_url,
+                                        "prompt_used": "",
+                                        "generation_time": 0,
+                                        "cost": "0"
+                                    })
+                            except Exception as url_error:
+                                logger.warning(f"Failed to generate signed URL for {file_name}", exc_info=url_error)
+                        
+                        if scene_refs or char_refs:
+                            # Reconstruct metadata from storage
+                            if "reference_generator" not in stages:
+                                stages["reference_generator"] = {"status": "completed"}
+                            
+                            if "metadata" not in stages["reference_generator"]:
+                                stages["reference_generator"]["metadata"] = {}
+                            
+                            stages["reference_generator"]["metadata"]["reference_images"] = {
+                                "scene_references": scene_refs,
+                                "character_references": char_refs,
+                                "total_references": len(scene_refs) + len(char_refs),
+                                "total_generation_time": 0,
+                                "total_cost": "0",
+                                "status": "success"
+                            }
+                            logger.info(f"Reconstructed reference images metadata from storage for job {job_id}")
+                except Exception as storage_error:
+                    logger.debug(f"Could not list reference images from storage (may not exist): {storage_error}")
+            except Exception as e:
+                logger.debug(f"Failed to reconstruct reference images from storage: {e}")
+        
+        # Reconstruct video clips from storage if metadata is missing
+        if not stages.get("video_generator", {}).get("metadata", {}).get("clips"):
+            try:
+                from shared.storage import storage
+                
+                def _list_video_clips():
+                    return storage.storage.from_("video-clips").list(job_id)
+                
+                try:
+                    clip_files = await storage._execute_sync(_list_video_clips, timeout=10.0)
+                    if clip_files and len(clip_files) > 0:
+                        clips = []
+                        completed = 0
+                        
+                        for file_info in clip_files:
+                            if not isinstance(file_info, dict):
+                                continue
+                            file_name = file_info.get("name", "")
+                            # Extract clip index from filename (e.g., "clip_0.mp4" -> 0)
+                            match = re.search(r"clip_(\d+)\.mp4", file_name)
+                            if match:
+                                clip_index = int(match.group(1))
+                                try:
+                                    signed_url = await storage.get_signed_url(
+                                        bucket="video-clips",
+                                        path=f"{job_id}/{file_name}",
+                                        expires_in=3600
+                                    )
+                                    clips.append({
+                                        "clip_index": clip_index,
+                                        "video_url": signed_url,
+                                        "actual_duration": 5.0,  # Unknown, use default
+                                        "target_duration": 5.0,
+                                        "duration_diff": 0.0,
+                                        "status": "success",
+                                        "cost": "0",
+                                        "retry_count": 0,
+                                        "generation_time": 0
+                                    })
+                                    completed += 1
+                                except Exception as url_error:
+                                    logger.warning(f"Failed to generate signed URL for {file_name}", exc_info=url_error)
+                        
+                        if clips:
+                            # Sort by clip_index
+                            clips.sort(key=lambda x: x["clip_index"])
+                            
+                            if "video_generator" not in stages:
+                                stages["video_generator"] = {"status": "completed"}
+                            
+                            if "metadata" not in stages["video_generator"]:
+                                stages["video_generator"]["metadata"] = {}
+                            
+                            stages["video_generator"]["metadata"]["clips"] = {
+                                "job_id": job_id,
+                                "clips": clips,
+                                "total_clips": len(clips),
+                                "successful_clips": completed,
+                                "failed_clips": 0,
+                                "total_cost": "0",
+                                "total_generation_time": 0
+                            }
+                            logger.info(f"Reconstructed video clips metadata from storage for job {job_id}")
+                except Exception as storage_error:
+                    logger.debug(f"Could not list video clips from storage (may not exist): {storage_error}")
+            except Exception as e:
+                logger.debug(f"Failed to reconstruct video clips from storage: {e}")
+        
         job["stages"] = stages
     except Exception as e:
         logger.warning("Failed to fetch job stages", exc_info=e, extra={"job_id": job_id})

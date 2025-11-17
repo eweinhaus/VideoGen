@@ -4,6 +4,7 @@ Model validation and version retrieval for video generation models.
 Validates model configurations and dynamically retrieves latest version hashes from Replicate.
 """
 import asyncio
+import time
 from typing import Optional, Dict, Any, Tuple
 from shared.config import settings
 from shared.logging import get_logger
@@ -19,21 +20,38 @@ except Exception as e:
     logger.error(f"Failed to initialize Replicate client for validation: {str(e)}")
     client = None
 
+# PHASE 3: Module-level cache for version hashes
+# Cache results for 1 hour to avoid excessive API calls
+_version_hash_cache: Dict[str, Tuple[str, float]] = {}  # {model_string: (hash, timestamp)}
+CACHE_TTL = 3600  # 1 hour in seconds
+
 
 async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
     """
     Dynamically retrieve the latest version hash for a model from Replicate API.
-    
+
+    PHASE 3: Caches results for 1 hour to avoid excessive API calls.
+
     Args:
         replicate_string: Model string (e.g., "kwaivgi/kling-v2.1", "minimax/hailuo-2.3")
-        
+
     Returns:
         Latest version hash string, or None if not found/error
     """
     if not client:
         logger.warning("Replicate client not available for version retrieval")
         return None
-    
+
+    # PHASE 3: Check cache first
+    if replicate_string in _version_hash_cache:
+        cached_hash, cached_time = _version_hash_cache[replicate_string]
+        if time.time() - cached_time < CACHE_TTL:
+            logger.debug(
+                f"Using cached version hash for {replicate_string}: {cached_hash}",
+                extra={"model": replicate_string, "cached_hash": cached_hash}
+            )
+            return cached_hash
+
     try:
         # Parse owner/model from replicate_string
         parts = replicate_string.split("/")
@@ -53,6 +71,10 @@ async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
                 f"Retrieved latest version hash for {replicate_string}: {version_hash}",
                 extra={"model": replicate_string, "version_hash": version_hash}
             )
+
+            # PHASE 3: Cache the result
+            _version_hash_cache[replicate_string] = (version_hash, time.time())
+
             return version_hash
         else:
             logger.warning(f"No latest version found for {replicate_string}")
