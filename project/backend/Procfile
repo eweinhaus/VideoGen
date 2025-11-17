@@ -1,3 +1,3 @@
 web: uvicorn api_gateway.main:app --host 0.0.0.0 --port $PORT
-worker: python -m api_gateway.worker
+# worker process removed - now runs in separate Railway service
 
