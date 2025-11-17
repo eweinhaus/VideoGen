@@ -1117,6 +1117,54 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 # Check if we already updated to 30% via incremental tracking
                 # If not, set it now
                 await update_progress(job_id, 30, "reference_generator", num_images=final_total)
+            
+            # Save reference images to database for persistence
+            if references:
+                try:
+                    from api_gateway.services.db_helpers import update_job_stage
+                    
+                    # Convert ReferenceImages to dict for storage
+                    reference_images_dict = {
+                        "job_id": str(references.job_id),
+                        "scene_references": [
+                            {
+                                "scene_id": ref.scene_id,
+                                "character_id": ref.character_id,
+                                "image_url": ref.image_url,
+                                "prompt_used": ref.prompt_used,
+                                "generation_time": ref.generation_time,
+                                "cost": str(ref.cost)
+                            }
+                            for ref in references.scene_references
+                        ],
+                        "character_references": [
+                            {
+                                "scene_id": ref.scene_id,
+                                "character_id": ref.character_id,
+                                "image_url": ref.image_url,
+                                "prompt_used": ref.prompt_used,
+                                "generation_time": ref.generation_time,
+                                "cost": str(ref.cost)
+                            }
+                            for ref in references.character_references
+                        ],
+                        "total_references": references.total_references,
+                        "total_generation_time": references.total_generation_time,
+                        "total_cost": str(references.total_cost),
+                        "status": references.status,
+                        "metadata": references.metadata or {}
+                    }
+                    
+                    await update_job_stage(
+                        job_id=job_id,
+                        stage_name="reference_generator",
+                        status="completed",
+                        metadata={"reference_images": reference_images_dict}
+                    )
+                    logger.info("Reference images saved to database", extra={"job_id": job_id})
+                except Exception as e:
+                    logger.error("Failed to save reference images to database", exc_info=e, extra={"job_id": job_id})
+                    # Don't fail the pipeline, but log the error
         except ImportError:
             logger.warning("Reference Generator module not found, using stub", extra={"job_id": job_id})
             # Publish failed event for stub case
@@ -1431,9 +1479,15 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                     event_type = event.get("event_type", "message")
                     event_data = event.get("data", {})
                     
-                    # Skip progress updates - these are already handled in real-time
-                    # Only publish non-progress events that might have been missed
-                    if event_type not in ["video_generation_progress"]:
+                    # Skip events that are already published in real-time to avoid double-counting
+                    # These events are published immediately when they occur, so we don't need to republish them
+                    if event_type not in [
+                        "video_generation_progress",
+                        "video_generation_complete",
+                        "video_generation_start",
+                        "video_generation_retry",
+                        "video_generation_failed"
+                    ]:
                         await publish_event(job_id, event_type, event_data)
             except Exception as e:
                 logger.warning("Failed to publish some video generation events", exc_info=e, extra={"job_id": job_id})
@@ -1478,6 +1532,45 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "video_generator",
             "status": "completed"
         })
+        
+        # Save video clips to database for persistence
+        try:
+            from api_gateway.services.db_helpers import update_job_stage
+            
+            # Convert Clips to dict for storage
+            clips_dict = {
+                "job_id": str(clips.job_id),
+                "clips": [
+                    {
+                        "clip_index": clip.clip_index,
+                        "video_url": clip.video_url,
+                        "actual_duration": clip.actual_duration,
+                        "target_duration": clip.target_duration,
+                        "duration_diff": clip.duration_diff,
+                        "status": clip.status,
+                        "cost": str(clip.cost),
+                        "retry_count": clip.retry_count,
+                        "generation_time": clip.generation_time
+                    }
+                    for clip in clips.clips
+                ],
+                "total_clips": clips.total_clips,
+                "successful_clips": clips.successful_clips,
+                "failed_clips": clips.failed_clips,
+                "total_cost": str(clips.total_cost),
+                "total_generation_time": clips.total_generation_time
+            }
+            
+            await update_job_stage(
+                job_id=job_id,
+                stage_name="video_generator",
+                status="completed",
+                metadata={"clips": clips_dict}
+            )
+            logger.info("Video clips saved to database", extra={"job_id": job_id})
+        except Exception as e:
+            logger.error("Failed to save video clips to database", exc_info=e, extra={"job_id": job_id})
+            # Don't fail the pipeline, but log the error
         
         # Check if should stop after video generator
         if await should_stop_after_stage("video_generator", stop_at_stage):

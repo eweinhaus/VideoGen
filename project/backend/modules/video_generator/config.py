@@ -45,6 +45,23 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "anatomy_score": 6,  # Out of 10 - prone to anatomy errors
         "prompt_adherence_score": 9,  # Out of 10 - excellent prompt following
         "notes": "Current baseline model. Good prompt adherence but anatomy issues (extra limbs). Requires reference images.",
+        # PHASE 3: Parameter mapping for Replicate API
+        "parameter_names": {
+            "prompt": "prompt",
+            "image": "start_image",
+            "duration": "duration",
+            "resolution": "resolution",
+        },
+        "required_parameters": ["prompt"],
+        "optional_parameters": ["start_image", "duration", "resolution"],
+        # PHASE 3: Status tracking
+        "status": "available",
+        "last_verified": "2025-11-16",
+        "verified_by": "manual",
+        "display_name": "Kling v2.1",
+        "description": "Fast and reliable video generation with good prompt adherence",
+        "recommended_for": ["general", "characters", "scenes"],
+        "not_recommended_for": ["complex_anatomy", "dance"],
     },
     "kling_v25_turbo": {
         "replicate_string": "kwaivgi/kling-v2.5-turbo-pro",
@@ -63,6 +80,21 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "anatomy_score": 8,  # Better than v2.1
         "prompt_adherence_score": 9,
         "notes": "Upgraded Kling with better anatomy. Smooth motion, cinematic depth. Direct upgrade path from v2.1.",
+        "parameter_names": {
+            "prompt": "prompt",
+            "image": "start_image",
+            "duration": "duration",
+            "resolution": "resolution",
+        },
+        "required_parameters": ["prompt"],
+        "optional_parameters": ["start_image", "duration", "resolution"],
+        "status": "testing",
+        "last_verified": "2025-11-16",
+        "verified_by": "automated",
+        "display_name": "Kling v2.5 Turbo",
+        "description": "Upgraded Kling with better anatomy and faster generation",
+        "recommended_for": ["general", "characters", "anatomy"],
+        "not_recommended_for": [],
     },
     "hailuo_23": {
         "replicate_string": "minimax/hailuo-2.3",
@@ -81,6 +113,19 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "anatomy_score": 9,  # Excellent for human anatomy
         "prompt_adherence_score": 8,
         "notes": "Best for realistic human motion and anatomy. Optimized for dancing/choreography. Physics-realistic.",
+        "parameter_names": {
+            "prompt": "prompt",
+            "duration": "duration",
+        },
+        "required_parameters": ["prompt"],
+        "optional_parameters": ["duration"],
+        "status": "testing",
+        "last_verified": "2025-11-16",
+        "verified_by": "automated",
+        "display_name": "Hailuo 2.3",
+        "description": "Best for realistic human motion and anatomy, optimized for dance",
+        "recommended_for": ["dance", "choreography", "human_anatomy"],
+        "not_recommended_for": [],
     },
     "wan_25_i2v": {
         "replicate_string": "wan-video/wan-2.5-i2v",
@@ -99,6 +144,20 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "anatomy_score": 6,
         "prompt_adherence_score": 7,
         "notes": "Budget option for testing. Open-source, very cheap. Lower quality than commercial models.",
+        "parameter_names": {
+            "prompt": "prompt",
+            "image": "image",
+            "duration": "duration",
+        },
+        "required_parameters": ["prompt"],
+        "optional_parameters": ["image", "duration"],
+        "status": "testing",
+        "last_verified": "2025-11-16",
+        "verified_by": "automated",
+        "display_name": "Wan 2.5 I2V",
+        "description": "Budget-friendly option for testing, open-source model",
+        "recommended_for": ["testing", "prototyping"],
+        "not_recommended_for": ["production"],
     },
     "veo_31": {
         "replicate_string": "google/veo-3.1",
@@ -117,6 +176,21 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "anatomy_score": 10,  # Highest quality
         "prompt_adherence_score": 10,
         "notes": "Premium Google model. Highest quality, variable pricing. May be expensive.",
+        "parameter_names": {
+            "prompt": "prompt",
+            "image": "image",
+            "duration": "duration",
+            "resolution": "resolution",
+        },
+        "required_parameters": ["prompt"],
+        "optional_parameters": ["image", "duration", "resolution"],
+        "status": "testing",
+        "last_verified": "2025-11-16",
+        "verified_by": "automated",
+        "display_name": "Veo 3.1",
+        "description": "Premium Google model with highest quality output",
+        "recommended_for": ["premium", "high_quality"],
+        "not_recommended_for": ["budget"],
     },
 }
 

@@ -28,6 +28,100 @@ logger = get_logger("scene_planner")
 _openai_client: Optional[AsyncOpenAI] = None
 
 
+# Character description guidelines for text-to-video character consistency
+CHARACTER_DESCRIPTION_GUIDELINES = """
+CRITICAL REQUIREMENT: Generate EXTREMELY SPECIFIC character descriptions.
+
+This is for text-to-video generation where precision is CRITICAL for character consistency
+across multiple video clips. Vague descriptions result in completely different people in each clip.
+
+Required details for EACH character (7+ specific features):
+
+1. Hair:
+   - Exact color with shade (e.g., "warm brown", "ash blonde", "jet black", NOT just "brown")
+   - Length with measurement (e.g., "shoulder-length", "buzzcut 1/4 inch", "waist-length")
+   - Texture (straight, wavy, curly, coily, kinky)
+   - Style (fade, ponytail, braids, loose, slicked back, etc.)
+
+2. Face:
+   - Skin tone (specific: olive, fair, deep brown, golden tan, NOT just "light" or "dark")
+   - Face shape (round, square, oval, heart-shaped, angular)
+   - Distinctive features (high cheekbones, square jaw, defined chin, freckles, etc.)
+   - Facial hair if applicable (clean shaven, stubble, full beard, goatee, mustache)
+
+3. Eyes:
+   - Color (dark brown, hazel, blue, green, gray - be specific)
+   - Eyebrows (thick, thin, arched, straight, defined)
+
+4. Clothing:
+   - Exact colors with modifiers (bright blue, navy blue, forest green, NOT just "blue" or "green")
+   - Style and type (hoodie, denim jacket, blazer, t-shirt, dress, etc.)
+   - Visible details (buttons, zippers, drawstrings, patterns, logos)
+   - The character wears the SAME OUTFIT in all scenes
+
+5. Accessories (if any):
+   - Glasses: shape and color (round tortoiseshell, rectangular black frames, aviator sunglasses)
+   - Jewelry: type and placement (gold chain necklace, silver hoop earrings, watch)
+   - Other: hats, scarves, belts, bags, etc.
+   - Write "None" if no accessories
+
+6. Build:
+   - Body type (athletic, slim, muscular, plus-size, stocky, lean)
+   - Approximate height (5'4", 6'2", etc.)
+   - Frame (broad shoulders, narrow waist, petite, etc.)
+
+7. Age:
+   - Apparent age range (appears early 20s, mid 30s, late 40s, etc.)
+
+FORMAT REQUIREMENT:
+
+[Character Name] - FIXED CHARACTER IDENTITY:
+- Hair: [specific description]
+- Face: [specific description]
+- Eyes: [specific description]
+- Clothing: [specific description]
+- Accessories: [specific description or "None"]
+- Build: [specific description]
+- Age: [specific description]
+
+CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance.
+
+GOOD EXAMPLES:
+
+"Alice - FIXED CHARACTER IDENTITY:
+- Hair: shoulder-length brown curly hair with natural texture and volume, parted in the middle
+- Face: olive skin tone, round face shape, defined cheekbones, no visible freckles
+- Eyes: dark brown eyes, thick arched eyebrows
+- Clothing: bright blue denim jacket with silver buttons and rolled sleeves, white crew-neck t-shirt underneath, dark blue jeans
+- Accessories: round tortoiseshell glasses with thick frames, silver hoop earrings (1 inch diameter)
+- Build: athletic build, approximately 5'6" height, medium frame
+- Age: appears mid-20s
+
+CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance."
+
+"Marcus - FIXED CHARACTER IDENTITY:
+- Hair: short black fade haircut with sharp line-up, tight curls on top (1/2 inch length)
+- Face: deep brown skin tone, square jaw, high cheekbones, clean shaven
+- Eyes: dark brown eyes, strong thick eyebrows
+- Clothing: burgundy hoodie with white drawstrings and kangaroo pocket, black straight-leg jeans, white Air Force 1 sneakers
+- Accessories: gold chain necklace (visible outside hoodie), silver watch on left wrist
+- Build: athletic muscular build, approximately 6'0" tall, broad shoulders
+- Age: appears early 30s
+
+CRITICAL: These are EXACT, IMMUTABLE features. Do not modify or reinterpret these specific details. This character appears in all scenes with this precise appearance."
+
+BAD EXAMPLES (TOO VAGUE - DO NOT DO THIS):
+
+❌ "Stylish young woman with cool vibe"
+❌ "Confident artist"
+❌ "Young man in casual clothes"
+❌ "Beautiful person with nice hair"
+❌ "Athletic guy"
+
+These vague descriptions will result in COMPLETELY DIFFERENT PEOPLE in each video clip.
+"""
+
+
 def _repair_json(json_str: str) -> str:
     """
     Attempt to repair truncated or malformed JSON.
@@ -190,6 +284,10 @@ Generate a complete scene plan that:
 5. **Plans transitions** - Generate {len(audio_data.clip_boundaries) - 1} transitions between clips based on beat intensity
 6. **Creates coherent narrative** - All clips should tell a visual story that makes sense
 
+## Character Description Guidelines
+
+{CHARACTER_DESCRIPTION_GUIDELINES}
+
 ## Output Format
 
 You must output a valid JSON object matching this exact structure:
@@ -200,7 +298,7 @@ You must output a valid JSON object matching this exact structure:
   "characters": [
     {{
       "id": "protagonist",
-      "description": "Detailed character description (age, appearance, clothing, style, signature elements)",
+      "description": "MUST follow CHARACTER_DESCRIPTION_GUIDELINES above. Use the FIXED CHARACTER IDENTITY format with all 7 required features (Hair, Face, Eyes, Clothing, Accessories, Build, Age). Be extremely specific with colors, measurements, and details.",
       "role": "main character"
     }}
   ],

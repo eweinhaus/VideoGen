@@ -15,7 +15,12 @@ from shared.models.scene import ReferenceImages, ScenePlan
 from shared.models.video import ClipPrompt, ClipPrompts
 
 from .llm_client import LLMResult, optimize_prompts
-from .prompt_synthesizer import ClipContext, compute_word_count
+from .prompt_synthesizer import (
+    ClipContext,
+    build_comprehensive_style_block,
+    build_character_identity_block,
+    compute_word_count
+)
 from .reference_mapper import map_references
 from .style_synthesizer import ensure_global_consistency, extract_style_keywords
 from .templates import BasePromptTemplate, build_base_prompt_batch, serialize_for_llm
@@ -48,13 +53,29 @@ async def process(
     reference_mapping = map_references(plan, references)
     clip_contexts = _build_clip_contexts(plan, reference_mapping, style_keywords, beat_timestamps)
 
-    base_templates = build_base_prompt_batch(clip_contexts, reference_mapping, style_keywords)
+    # Build base prompts WITHOUT comprehensive style block (for LLM optimization input)
+    # The LLM will optimize the action/description, then we'll append structured style afterward
+    base_templates = build_base_prompt_batch(
+        clip_contexts,
+        reference_mapping,
+        style_keywords,
+        include_comprehensive_style=False  # Action-only prompts for LLM
+    )
     llm_result = await _maybe_optimize_with_llm(job_uuid, base_templates, style_keywords)
 
+    # Get optimized or fallback prompts
     final_prompts = (
         llm_result.prompts if llm_result else [template.prompt for template in base_templates]
     )
     final_prompts = ensure_global_consistency(final_prompts, style_keywords)
+
+    # PHASE 2: Append comprehensive style block AFTER LLM optimization
+    # This ensures consistent structure across all clips (LLM can't rewrite it)
+    final_prompts = _append_style_blocks(final_prompts, clip_contexts)
+
+    # CHARACTER IDENTITY BLOCKS: Append character identity blocks AFTER style blocks
+    # This ensures identical, immutable character descriptions across all clips
+    final_prompts = _append_identity_blocks(final_prompts, clip_contexts)
 
     clip_prompts = _assemble_clip_prompts(
         base_templates=base_templates,
@@ -80,6 +101,99 @@ def _normalize_job_id(job_id: Union[str, UUID]) -> UUID:
         return UUID(str(job_id))
     except ValueError as exc:
         raise ValidationError("Invalid job_id", job_id=None) from exc
+
+
+def _append_style_blocks(prompts: List[str], contexts: List[ClipContext]) -> List[str]:
+    """
+    Append comprehensive style block to each prompt after LLM optimization.
+
+    This ensures consistent structured style information across all clips,
+    preventing the LLM from rewriting or omitting style details.
+
+    Args:
+        prompts: List of optimized prompts (action descriptions)
+        contexts: List of ClipContext objects (for building style blocks)
+
+    Returns:
+        List of prompts with structured style blocks appended
+    """
+    if len(prompts) != len(contexts):
+        logger.warning(
+            "Prompt count mismatch when appending style blocks",
+            extra={"prompt_count": len(prompts), "context_count": len(contexts)}
+        )
+        # Return as-is if mismatch (shouldn't happen, but safety)
+        return prompts
+
+    final_prompts = []
+    for prompt, context in zip(prompts, contexts):
+        # Build comprehensive style block for this clip
+        style_block = build_comprehensive_style_block(context)
+
+        if style_block:
+            # Append style block with separator for clarity
+            # Format: "action description. VISUAL STYLE: ..., MOOD: ..., etc."
+            final_prompt = f"{prompt.strip()}. {style_block}"
+        else:
+            # No style block available, keep original prompt
+            final_prompt = prompt
+
+        final_prompts.append(final_prompt)
+
+    logger.debug(
+        "Appended comprehensive style blocks to all prompts",
+        extra={"clip_count": len(final_prompts)}
+    )
+
+    return final_prompts
+
+
+def _append_identity_blocks(prompts: List[str], contexts: List[ClipContext]) -> List[str]:
+    """
+    Append character identity blocks to prompts after LLM optimization.
+
+    This mirrors _append_style_blocks() - ensures consistent character
+    descriptions that the LLM cannot modify or paraphrase.
+
+    Each clip gets the EXACT SAME character description, creating
+    immutable identity across all video clips.
+
+    Args:
+        prompts: List of optimized prompts (with style blocks already appended)
+        contexts: List of ClipContext objects (for building identity blocks)
+
+    Returns:
+        List of prompts with character identity blocks appended
+    """
+    if len(prompts) != len(contexts):
+        logger.warning(
+            "Prompt count mismatch when appending identity blocks",
+            extra={"prompt_count": len(prompts), "context_count": len(contexts)}
+        )
+        # Return as-is if mismatch (shouldn't happen, but safety)
+        return prompts
+
+    final_prompts = []
+    for prompt, context in zip(prompts, contexts):
+        # Build character identity block for this clip
+        identity_block = build_character_identity_block(context)
+
+        if identity_block:
+            # Append identity block after style block
+            # Format: "[optimized action + style]. CHARACTER IDENTITY: ..."
+            final_prompt = f"{prompt.strip()}\n\n{identity_block}"
+        else:
+            # No character descriptions available, keep original prompt
+            final_prompt = prompt
+
+        final_prompts.append(final_prompt)
+
+    logger.debug(
+        "Appended character identity blocks to all prompts",
+        extra={"clip_count": len(final_prompts)}
+    )
+
+    return final_prompts
 
 
 def extract_clip_beats(clip_start: float, clip_end: float, all_beat_timestamps: List[float]) -> Dict[str, Any]:
@@ -172,6 +286,12 @@ def _build_clip_contexts(
                 primary_scene_id=mapping.scene_id if mapping else None,
                 lyrics_context=script.lyrics_context,
                 beat_metadata=beat_metadata,  # Add beat metadata
+                # PHASE 2: Pass full style descriptions from scene planner
+                visual_style_full=plan.style.visual_style,
+                mood_full=plan.style.mood,
+                lighting_full=plan.style.lighting,
+                cinematography_full=plan.style.cinematography,
+                color_palette_full=plan.style.color_palette,
             )
         )
     return contexts

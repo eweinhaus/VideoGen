@@ -13,6 +13,7 @@ export interface Job {
     status: string
     duration?: number
     progress?: string
+    metadata?: Record<string, any>
   }>
   audioData?: {
     bpm: number
