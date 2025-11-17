@@ -88,7 +88,8 @@ class StorageClient:
         file_data: bytes,
         content_type: Optional[str] = None,
         max_size: Optional[int] = None,
-        overwrite: bool = False
+        overwrite: bool = False,
+        timeout: Optional[float] = None
     ) -> str:
         """
         Upload a file to Supabase Storage.
@@ -100,6 +101,7 @@ class StorageClient:
             content_type: Content type (auto-detected if not provided)
             max_size: Maximum file size in bytes (uses bucket default if not provided)
             overwrite: If True, delete existing file before uploading (default: False)
+            timeout: Upload timeout in seconds (default: 120s for small files, 300s for video-outputs bucket)
             
         Returns:
             Public URL of uploaded file
@@ -143,7 +145,17 @@ class StorageClient:
                         )
             
             # Upload file (wrap sync operation in executor with timeout)
-            # Use longer timeout for upload (120s) since file uploads can take time
+            # Use longer timeout for large video files (video-outputs bucket)
+            # Default: 120s for small files, 300s for video-outputs (large final videos)
+            upload_timeout = timeout
+            if upload_timeout is None:
+                if bucket == "video-outputs":
+                    # Large final videos need more time: ~1MB per second upload speed = 300s for 300MB files
+                    upload_timeout = 300.0
+                else:
+                    # Default timeout for smaller files (audio, images, clips)
+                    upload_timeout = 120.0
+            
             def _upload():
                 return self.storage.from_(bucket).upload(
                     path=path,
@@ -152,9 +164,9 @@ class StorageClient:
                 )
             
             try:
-                response = await self._execute_sync(_upload, timeout=120.0)
+                response = await self._execute_sync(_upload, timeout=upload_timeout)
             except asyncio.TimeoutError:
-                raise RetryableError(f"Storage upload timed out after 120s for {bucket}/{path}")
+                raise RetryableError(f"Storage upload timed out after {upload_timeout}s for {bucket}/{path}")
             
             # Get URL - use signed URL for private buckets, public URL for public buckets
             # For now, all buckets are private, so use signed URL

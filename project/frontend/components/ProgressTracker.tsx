@@ -568,7 +568,11 @@ export function ProgressTracker({
       return
     }
     
-    if (videoTotals.total > 0) {
+    // FIX: Check if clipStatuses is empty, not videoTotals.total
+    // videoTotals.total can be set from promptResults before clips are restored,
+    // causing a race condition where restoration is skipped even though clipStatuses is empty
+    const hasClipStatuses = Object.keys(clipStatuses).length > 0
+    if (hasClipStatuses) {
       console.log("✅ Video clips already in state, skipping restoration")
       return
     }
@@ -611,14 +615,14 @@ export function ProgressTracker({
           failed,
           retries
         })
-        console.log("✅ Restored video clips from metadata, total:", clipsMetadata.total_clips || clipsMetadata.clips.length)
+        console.log("✅ Restored video clips from metadata, total:", clipsMetadata.total_clips || clipsMetadata.clips.length, "completed:", completed)
       } catch (error) {
         console.error("❌ Failed to restore video clips from metadata:", error)
       }
     } else {
       console.log("⚠️ No video clips metadata found in stage")
     }
-  }, [currentJob, videoTotals.total])
+  }, [currentJob, clipStatuses])
   
   // Timer effect - starts when job begins and stops when complete/failed
   useEffect(() => {
