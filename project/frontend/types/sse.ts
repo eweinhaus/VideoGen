@@ -7,6 +7,7 @@ export interface StageUpdateEvent {
 export interface ProgressEvent {
   progress: number
   estimated_remaining?: number
+  total_cost?: number
 }
 
 export interface MessageEvent {

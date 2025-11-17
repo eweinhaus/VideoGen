@@ -554,6 +554,11 @@ export function ProgressTracker({
         // Update job store so header can display estimated time
         updateJob(jobId, { estimatedRemaining: data.estimated_remaining })
       }
+      // Handle cost from initial progress event (includes total_cost in initial state)
+      if (data.total_cost !== undefined && data.total_cost !== null) {
+        setCost(data.total_cost)
+        updateJob(jobId, { totalCost: data.total_cost })
+      }
     },
     onCostUpdate: (data: CostUpdateEvent) => {
       setCost(data.total)
@@ -652,11 +657,15 @@ export function ProgressTracker({
           <span className="text-base font-semibold text-muted-foreground">{displayProgress}%</span>
         </div>
         <Progress value={displayProgress} className="h-3" />
-        {remainingTime !== null && remainingTime !== undefined && (
+        {(remainingTime !== null && remainingTime !== undefined) || displayStage === "audio_parser" || displayStage === "audio_analysis" ? (
           <p className="text-sm text-muted-foreground mt-2">
-            {formatRemainingTime(remainingTime)}
+            {remainingTime !== null && remainingTime !== undefined
+              ? formatRemainingTime(remainingTime)
+              : (displayStage === "audio_parser" || displayStage === "audio_analysis")
+              ? "Estimating time remaining..."
+              : ""}
           </p>
-        )}
+        ) : null}
       </div>
 
       {displayCost !== null && (

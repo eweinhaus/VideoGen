@@ -204,6 +204,26 @@ async def update_progress(
         logger.error("Failed to update progress", exc_info=e, extra={"job_id": job_id})
 
 
+async def publish_cost_update(job_id: str, stage_name: str) -> None:
+    """
+    Publish cost_update SSE event with current total cost.
+    
+    Args:
+        job_id: Job ID
+        stage_name: Stage name that just completed
+    """
+    try:
+        total_cost = await cost_tracker.get_total_cost(UUID(job_id))
+        await publish_event(job_id, "cost_update", {
+            "stage": stage_name,
+            "cost": 0.0,  # Incremental cost not available here, just total
+            "total": float(total_cost)
+        })
+    except Exception as e:
+        # Don't fail pipeline if cost update publishing fails
+        logger.debug(f"Failed to publish cost_update event: {e}", extra={"job_id": job_id})
+
+
 async def enforce_budget(job_id: str) -> None:
     """
     Enforce budget limit for a job.
@@ -473,6 +493,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "status": "completed",
             "duration": audio_data.duration if hasattr(audio_data, 'duration') else (audio_data.beat_timestamps[-1] if audio_data.beat_timestamps else 0)
         })
+        await publish_cost_update(job_id, "audio_parser")
         
         # Save audio parser results to database for persistence and testing
         try:
@@ -719,6 +740,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "scene_planner",
             "status": "completed"
         })
+        await publish_cost_update(job_id, "scene_planner")
         
         # Save scene plan to database for persistence and testing
         # This allows the reference generator to access it even if pipeline restarts
@@ -1131,6 +1153,14 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             })
             references = None
         
+        # Publish reference generator completion and cost update
+        if references is not None:
+            await publish_event(job_id, "stage_update", {
+                "stage": "reference_generator",
+                "status": "completed"
+            })
+            await publish_cost_update(job_id, "reference_generator")
+        
         # Check if should stop after reference generator
         if await should_stop_after_stage("reference_generator", stop_at_stage):
             await stop_pipeline_gracefully(job_id, "reference_generator", 30)
@@ -1263,6 +1293,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "prompt_generator",
             "status": "completed"
         })
+        await publish_cost_update(job_id, "prompt_generator")
         
         # Check if should stop after prompt generator
         if await should_stop_after_stage("prompt_generator", stop_at_stage):
@@ -1437,6 +1468,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "video_generator",
             "status": "completed"
         })
+        await publish_cost_update(job_id, "video_generator")
         
         # Check if should stop after video generator
         if await should_stop_after_stage("video_generator", stop_at_stage):
@@ -1536,6 +1568,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stage": "composer",
             "status": "completed"
         })
+        await publish_cost_update(job_id, "composer")
         await publish_event(job_id, "completed", {
             "video_url": video_output.video_url,
             "total_cost": float(total_cost)
