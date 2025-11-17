@@ -5,7 +5,7 @@ Tests for queue service.
 import pytest
 import json
 from unittest.mock import AsyncMock, patch
-from api_gateway.services.queue_service import enqueue_job, remove_job, get_queue_size
+from api_gateway.services.queue_service import enqueue_job, remove_job, get_queue_size, QUEUE_NAME
 
 
 @pytest.mark.asyncio
@@ -29,7 +29,7 @@ async def test_enqueue_job(mock_redis_client):
         # Verify job was added to queue
         assert mock_redis_client.lpush.called
         lpush_call = mock_redis_client.lpush.call_args
-        assert "video_generation:queue" in lpush_call[0][0]
+        assert f"{QUEUE_NAME}:queue" in lpush_call[0][0]
         
         # Verify job data structure
         job_data_str = lpush_call[0][1]
@@ -69,4 +69,4 @@ async def test_get_queue_size(mock_redis_client):
         assert size == 5
         assert mock_redis_client.llen.called
         llen_call = mock_redis_client.llen.call_args
-        assert "video_generation:queue" in llen_call[0][0]
+        assert f"{QUEUE_NAME}:queue" in llen_call[0][0]
