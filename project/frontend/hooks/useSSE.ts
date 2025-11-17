@@ -148,7 +148,9 @@ export function useSSE(
 
     eventSource.addEventListener("cost_update", (e: MessageEvent) => {
       try {
+        console.log("💰 SSE cost_update event received:", e.data)
         const data = JSON.parse(e.data)
+        console.log("💰 SSE cost_update event parsed:", data)
         handlersRef.current.onCostUpdate?.(data)
       } catch (err) {
         console.error("Failed to parse cost_update event:", err)

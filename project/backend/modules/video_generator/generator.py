@@ -374,9 +374,11 @@ async def generate_video_clip(
                     ) from e
                 raise
         
-        # Poll for completion (fixed 3-second interval)
+        # Poll for completion with adaptive interval (faster when close to completion)
         start_time = time.time()
-        poll_interval = 3  # Fixed 3-second polling
+        base_poll_interval = 3  # Base polling interval (3 seconds)
+        fast_poll_interval = 1  # Fast polling when close to completion (1 second)
+        fast_poll_threshold = 0.8  # Switch to fast polling at 80% of estimated time
         
         # Get model-specific generation time estimate from config
         try:
@@ -399,9 +401,8 @@ async def generate_video_clip(
         progress_update_interval = 3  # Update progress every 3 seconds (more frequent than before)
         
         while prediction.status not in ["succeeded", "failed", "canceled"]:
-            await asyncio.sleep(poll_interval)
-            
             elapsed = time.time() - start_time
+            
             # Kling model can take longer - increase timeout to 240s (4 minutes) for reliable generation
             # Some clips may take 150-200s, so 240s provides buffer
             timeout_seconds = int(os.getenv("VIDEO_GENERATION_TIMEOUT_SECONDS", "240"))
@@ -409,8 +410,20 @@ async def generate_video_clip(
                 # Wrap TimeoutError as RetryableError so it can be retried
                 raise RetryableError(f"Clip generation timeout after {elapsed:.1f}s")
             
-            # Reload to get latest status
+            # Use adaptive polling: faster when close to estimated completion
+            if elapsed >= estimated_clip_time * fast_poll_threshold:
+                poll_interval = fast_poll_interval
+            else:
+                poll_interval = base_poll_interval
+            
+            await asyncio.sleep(poll_interval)
+            
+            # Reload to get latest status (check immediately after sleep for faster completion detection)
             prediction.reload()
+            
+            # Early exit: if status changed to success/failure, skip remaining loop
+            if prediction.status in ["succeeded", "failed", "canceled"]:
+                break
             
             # Emit progress updates during polling (more frequent updates)
             if progress_callback:

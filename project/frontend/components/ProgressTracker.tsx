@@ -676,6 +676,7 @@ export function ProgressTracker({
       }
     },
     onCostUpdate: (data: CostUpdateEvent) => {
+      console.log("💰 Cost update received in ProgressTracker:", data)
       setCost(data.total)
       updateJob(jobId, { totalCost: data.total })
     },

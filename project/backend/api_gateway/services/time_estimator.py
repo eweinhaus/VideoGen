@@ -5,6 +5,7 @@ Calculates estimated remaining time for video generation jobs based on
 environment, current stage, and job parameters.
 """
 
+import os
 from typing import Optional, Dict, Any
 from shared.config import settings
 
@@ -139,7 +140,9 @@ async def calculate_estimated_remaining(
                     # Default to 4 images (2 scenes + 2 characters)
                     num_images = 4
                 per_image = stage_defaults.get("per_image", 8)
-                concurrency = stage_defaults.get("concurrency", 4)
+                # Use env var if set, otherwise fall back to stage default
+                default_concurrency = stage_defaults.get("concurrency", 4)
+                concurrency = int(os.getenv("REFERENCE_GEN_CONCURRENCY", str(default_concurrency)))
                 stage_time = (per_image * num_images) / concurrency
                 total_remaining += stage_time * progress_ratio
                 
@@ -154,7 +157,9 @@ async def calculate_estimated_remaining(
                     # Estimate based on audio duration (assume 6s clips)
                     num_clips = max(3, int(audio_duration / 6))
                 per_clip = stage_defaults.get("per_clip", 30)
-                concurrency = stage_defaults.get("concurrency", 3)
+                # Use env var if set, otherwise fall back to stage default
+                default_concurrency = stage_defaults.get("concurrency", 3)
+                concurrency = int(os.getenv("VIDEO_GENERATOR_CONCURRENCY", str(default_concurrency)))
                 stage_time = (per_clip * num_clips) / concurrency
                 total_remaining += stage_time * progress_ratio
                 

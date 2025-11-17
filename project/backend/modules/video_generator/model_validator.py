@@ -4,6 +4,7 @@ Model validation and version retrieval for video generation models.
 Validates model configurations and dynamically retrieves latest version hashes from Replicate.
 """
 import asyncio
+import time
 from typing import Optional, Dict, Any, Tuple
 from shared.config import settings
 from shared.logging import get_logger
@@ -18,6 +19,10 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize Replicate client for validation: {str(e)}")
     client = None
+
+# Model validation cache (TTL: 5 minutes)
+_validation_cache: Dict[str, Tuple[bool, Optional[str], float]] = {}
+_cache_ttl = 300  # 5 minutes
 
 
 async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
@@ -81,6 +86,8 @@ async def validate_model_config(model_key: str, model_config: Dict[str, Any]) ->
     2. Version hash is valid (if pinned) or can retrieve latest (if "latest")
     3. Can access the model (permission check)
     
+    Uses caching to avoid repeated API calls (5 minute TTL).
+    
     Args:
         model_key: Model key (e.g., "kling_v21", "hailuo_23")
         model_config: Model configuration dict
@@ -92,6 +99,22 @@ async def validate_model_config(model_key: str, model_config: Dict[str, Any]) ->
     """
     if not client:
         return False, "Replicate client not initialized"
+    
+    # Check cache first
+    cache_key = f"{model_key}:{model_config.get('replicate_string')}:{model_config.get('version')}"
+    current_time = time.time()
+    
+    if cache_key in _validation_cache:
+        is_valid, error_msg, cached_time = _validation_cache[cache_key]
+        if current_time - cached_time < _cache_ttl:
+            logger.debug(
+                f"Using cached validation result for {model_key}",
+                extra={"model_key": model_key, "cached": True}
+            )
+            return is_valid, error_msg
+        else:
+            # Cache expired, remove it
+            del _validation_cache[cache_key]
     
     replicate_string = model_config.get("replicate_string")
     version = model_config.get("version")
@@ -138,13 +161,19 @@ async def validate_model_config(model_key: str, model_config: Dict[str, Any]) ->
             except Exception as e:
                 return False, f"Version hash {version} invalid for {replicate_string}: {str(e)}"
         
-        return True, None
+        result = (True, None)
+        # Cache successful validation
+        _validation_cache[cache_key] = (True, None, current_time)
+        return result
         
     except Exception as e:
         logger.error(
             f"Error validating model {model_key}: {str(e)}",
             extra={"model_key": model_key, "error": str(e)}
         )
-        return False, f"Validation error: {str(e)}"
+        error_msg = f"Validation error: {str(e)}"
+        # Cache failed validation (shorter TTL for failures - 1 minute)
+        _validation_cache[cache_key] = (False, error_msg, current_time)
+        return False, error_msg
 
 

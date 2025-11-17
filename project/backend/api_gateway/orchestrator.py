@@ -181,12 +181,22 @@ async def update_progress(
         cache_key = f"job_status:{job_id}"
         await redis_client.client.delete(cache_key)
         
+        # Get current total cost to include in progress event
+        try:
+            total_cost = await cost_tracker.get_total_cost(UUID(job_id))
+        except Exception:
+            # If cost tracking fails, just continue without cost
+            total_cost = None
+        
         # Publish progress event (both Redis pub/sub and direct SSE broadcast)
         progress_data = {
             "progress": progress,
             "estimated_remaining": estimated_remaining,
             "stage": stage_name
         }
+        if total_cost is not None:
+            progress_data["total_cost"] = float(total_cost)
+        
         await publish_event(job_id, "progress", progress_data)
         await broadcast_event(job_id, "progress", progress_data)
         

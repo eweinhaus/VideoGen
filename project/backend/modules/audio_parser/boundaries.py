@@ -261,8 +261,9 @@ def generate_boundaries(
         
         # Next clip starts exactly where this one ends (ensuring no gaps)
         current_start = end
-        # Move to the beat index after the end beat for next iteration
-        current_beat_idx = end_idx + 1
+        # Set current_beat_idx to end_idx so the next clip starts from the same beat
+        # The check below will ensure we find the correct starting beat
+        current_beat_idx = end_idx
         clip_index += 1
     
     # Ensure minimum 1 clip (for very short songs, we may have fewer than 3)
