@@ -259,12 +259,23 @@ async def process(
                     logger.warning(f"Failed to publish start event: {e}", extra={"job_id": str(job_id)})
             # Download and upload image if available (optional via env)
             # Priority: Character reference images > Scene reference images
+            # PHASE 1: Enforce text-only mode when USE_REFERENCE_IMAGES=false
+            # This defensive check ensures the flag is respected even if upstream
+            # reference mapping had issues or ClipPrompt contains reference URLs
             image_url = None
-            
-            if use_references and clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+
+            if not use_references:
+                # Force text-only mode - guarantee no reference images are used
+                logger.debug(
+                    f"Text-only mode enforced for clip {clip_prompt.clip_index}",
+                    extra={"job_id": str(job_id)}
+                )
+                image_url = None
+            elif clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+                # Character reference available (use_references must be True to reach here)
                 character_ref_url = clip_prompt.character_reference_urls[0]
                 image_url = image_cache_param.get(character_ref_url)
-                
+
                 if image_url:
                     logger.debug(
                         f"Using cached character reference for clip {clip_prompt.clip_index}",
@@ -277,15 +288,14 @@ async def process(
                         extra={"job_id": str(job_id)}
                     )
                     image_url = await download_and_upload_image(character_ref_url, job_id)
-                    
+
                     if not image_url and clip_prompt.scene_reference_url:
                         # Try scene reference as fallback
                         image_url = image_cache_param.get(clip_prompt.scene_reference_url)
                         if not image_url:
                             image_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
-            
-            # Use scene reference images if no character reference available
-            elif use_references and clip_prompt.scene_reference_url:
+
+            elif clip_prompt.scene_reference_url:
                 image_url = image_cache_param.get(clip_prompt.scene_reference_url)
                 
                 if image_url:
