@@ -24,6 +24,10 @@ except Exception as e:
 _validation_cache: Dict[str, Tuple[bool, Optional[str], float]] = {}
 _cache_ttl = 300  # 5 minutes
 
+# Version hash cache (TTL: 1 hour) - for get_latest_version_hash()
+_version_hash_cache: Dict[str, Tuple[str, float]] = {}  # {model_string: (hash, timestamp)}
+VERSION_CACHE_TTL = 3600  # 1 hour in seconds
+
 
 async def get_latest_version_hash(replicate_string: str) -> Optional[str]:
     """
