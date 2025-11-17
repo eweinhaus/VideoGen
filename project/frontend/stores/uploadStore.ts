@@ -139,7 +139,8 @@ export const uploadStore = create<UploadState>((set, get) => ({
         : get().stopAtStage || "composer"
       
       const response = await uploadAudio(audioFile, userPrompt, stopAtStage)
-      set({ isSubmitting: false })
+      // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
+      // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
     } catch (error: any) {
       let errorMessage = error.message || "Upload failed"
