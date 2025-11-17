@@ -1429,6 +1429,9 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 "clip_progress": {}  # Track sub-progress for each clip
             }
             
+            # Track clips incrementally for database persistence (allows status restoration on refresh)
+            accumulated_clips = {}  # {clip_index: clip_data}
+            
             # Create event publisher callback for real-time progress updates
             async def real_time_event_publisher(event_type: str, event_data: dict) -> None:
                 """Publish events immediately and update progress in real-time."""
@@ -1486,6 +1489,76 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                         if clip_index is not None:
                             # Remove sub-progress tracking for completed clip
                             video_progress_tracker["clip_progress"].pop(clip_index, None)
+                            
+                            # Accumulate clip data for incremental database persistence
+                            accumulated_clips[clip_index] = {
+                                "clip_index": clip_index,
+                                "video_url": event_data.get("video_url"),
+                                "actual_duration": event_data.get("duration", 0.0),
+                                "target_duration": event_data.get("target_duration", event_data.get("duration", 0.0)),  # Fallback to actual if not provided
+                                "duration_diff": event_data.get("duration_diff", 0.0),
+                                "status": "success",
+                                "cost": str(event_data.get("cost", "0.00")),
+                                "retry_count": event_data.get("retry_count", 0),
+                                "generation_time": event_data.get("generation_time", 0.0)
+                            }
+                            
+                            # Save clips incrementally to database for status persistence on refresh
+                            try:
+                                from api_gateway.services.db_helpers import update_job_stage
+                                
+                                # Get existing metadata or create new
+                                existing_stage = await db_client.table("job_stages").select("metadata").eq("job_id", job_id).eq("stage_name", "video_generator").execute()
+                                existing_metadata = {}
+                                if existing_stage.data and len(existing_stage.data) > 0:
+                                    metadata_str = existing_stage.data[0].get("metadata")
+                                    if metadata_str:
+                                        import json
+                                        if isinstance(metadata_str, str):
+                                            existing_metadata = json.loads(metadata_str)
+                                        elif isinstance(metadata_str, dict):
+                                            existing_metadata = metadata_str
+                                
+                                # Update clips in metadata
+                                if "clips" not in existing_metadata:
+                                    existing_metadata["clips"] = {"clips": []}
+                                
+                                # Update or add this clip
+                                clips_list = existing_metadata["clips"].get("clips", [])
+                                clip_exists = False
+                                for i, existing_clip in enumerate(clips_list):
+                                    if existing_clip.get("clip_index") == clip_index:
+                                        clips_list[i] = accumulated_clips[clip_index]
+                                        clip_exists = True
+                                        break
+                                
+                                if not clip_exists:
+                                    clips_list.append(accumulated_clips[clip_index])
+                                
+                                # Update totals
+                                existing_metadata["clips"]["clips"] = clips_list
+                                existing_metadata["clips"]["total_clips"] = video_progress_tracker["total"] or len(clips_list)
+                                existing_metadata["clips"]["successful_clips"] = sum(1 for c in clips_list if c.get("status") == "success")
+                                existing_metadata["clips"]["failed_clips"] = sum(1 for c in clips_list if c.get("status") == "failed")
+                                
+                                # Save to database
+                                await update_job_stage(
+                                    job_id=job_id,
+                                    stage_name="video_generator",
+                                    status="processing",  # Still processing, not completed yet
+                                    metadata={"clips": existing_metadata["clips"]}
+                                )
+                                logger.debug(
+                                    f"Incrementally saved clip {clip_index} to database",
+                                    extra={"job_id": job_id, "clip_index": clip_index}
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to incrementally save clip {clip_index} to database: {e}",
+                                    exc_info=e,
+                                    extra={"job_id": job_id, "clip_index": clip_index}
+                                )
+                                # Don't fail the pipeline, just log the warning
                         
                         # Only update progress if we know the total
                         if video_progress_tracker["total"]:
@@ -1501,6 +1574,71 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                                 "video_generator",
                                 num_clips=video_progress_tracker["total"]
                             )
+                    
+                    # Handle clip failures
+                    elif event_type == "video_generation_failed":
+                        clip_index = event_data.get("clip_index")
+                        if clip_index is not None:
+                            # Track failed clip for database persistence
+                            accumulated_clips[clip_index] = {
+                                "clip_index": clip_index,
+                                "video_url": None,
+                                "actual_duration": 0.0,
+                                "target_duration": event_data.get("target_duration", 0.0),
+                                "duration_diff": 0.0,
+                                "status": "failed",
+                                "cost": "0.00",
+                                "retry_count": event_data.get("retry_count", 0),
+                                "generation_time": 0.0,
+                                "error": event_data.get("error")
+                            }
+                            
+                            # Save failed clip incrementally to database
+                            try:
+                                from api_gateway.services.db_helpers import update_job_stage
+                                
+                                existing_stage = await db_client.table("job_stages").select("metadata").eq("job_id", job_id).eq("stage_name", "video_generator").execute()
+                                existing_metadata = {}
+                                if existing_stage.data and len(existing_stage.data) > 0:
+                                    metadata_str = existing_stage.data[0].get("metadata")
+                                    if metadata_str:
+                                        import json
+                                        if isinstance(metadata_str, str):
+                                            existing_metadata = json.loads(metadata_str)
+                                        elif isinstance(metadata_str, dict):
+                                            existing_metadata = metadata_str
+                                
+                                if "clips" not in existing_metadata:
+                                    existing_metadata["clips"] = {"clips": []}
+                                
+                                clips_list = existing_metadata["clips"].get("clips", [])
+                                clip_exists = False
+                                for i, existing_clip in enumerate(clips_list):
+                                    if existing_clip.get("clip_index") == clip_index:
+                                        clips_list[i] = accumulated_clips[clip_index]
+                                        clip_exists = True
+                                        break
+                                
+                                if not clip_exists:
+                                    clips_list.append(accumulated_clips[clip_index])
+                                
+                                existing_metadata["clips"]["clips"] = clips_list
+                                existing_metadata["clips"]["total_clips"] = video_progress_tracker["total"] or len(clips_list)
+                                existing_metadata["clips"]["successful_clips"] = sum(1 for c in clips_list if c.get("status") == "success")
+                                existing_metadata["clips"]["failed_clips"] = sum(1 for c in clips_list if c.get("status") == "failed")
+                                
+                                await update_job_stage(
+                                    job_id=job_id,
+                                    stage_name="video_generator",
+                                    status="processing",
+                                    metadata={"clips": existing_metadata["clips"]}
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to incrementally save failed clip {clip_index} to database: {e}",
+                                    exc_info=e,
+                                    extra={"job_id": job_id, "clip_index": clip_index}
+                                )
                     
                     # Publish the event to SSE
                     await publish_event(job_id, event_type, event_data)
