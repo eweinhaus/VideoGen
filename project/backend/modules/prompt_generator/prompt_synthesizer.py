@@ -285,16 +285,17 @@ def build_character_identity_block(context: ClipContext) -> str:
     """
     # Try to use structured Character objects first
     if context.characters:
-        return _build_identity_from_characters(context.characters)
+        # Pass character_reference_urls to conditionally add face reference note
+        return _build_identity_from_characters(context.characters, context.character_reference_urls)
 
     # Fallback: Use legacy character_descriptions if available
     if context.character_descriptions:
-        return _build_identity_from_descriptions(context.character_descriptions)
+        return _build_identity_from_descriptions(context.character_descriptions, context.character_reference_urls)
 
     return ""
 
 
-def _build_identity_from_characters(characters: List[Any]) -> str:
+def _build_identity_from_characters(characters: List[Any], character_reference_urls: List[str] = None) -> str:
     """
     Build character identity block from structured Character objects.
 
@@ -303,6 +304,7 @@ def _build_identity_from_characters(characters: List[Any]) -> str:
 
     Args:
         characters: List of Character objects with structured features
+        character_reference_urls: Optional list of character reference image URLs
 
     Returns:
         Formatted character identity block
@@ -347,8 +349,10 @@ Age: {features.age}"""
         return ""
 
     # PHASE 3: Proper multi-character formatting
-    # Enhanced with face preservation instructions for better face clarity
-    face_preservation_note = "\n\nFACE PRESERVATION: Preserve EXACT facial features - sharp face, clear eyes, defined nose, natural mouth, consistent facial structure, no face warping, no face distortion, no face blur."
+    # Instruction to use faces from reference images (only if reference images are available)
+    face_reference_note = ""
+    if character_reference_urls and len(character_reference_urls) > 0:
+        face_reference_note = "\n\nCRITICAL: Use the face from the character reference image for each character. Match the exact facial features, structure, and appearance from the reference image."
     
     if len(character_blocks) == 1:
         # Single character
@@ -356,7 +360,7 @@ Age: {features.age}"""
 
 {character_blocks[0]}
 
-CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character must maintain these precise features in every clip.{face_preservation_note}"""
+CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character must maintain these precise features in every clip.{face_reference_note}"""
     else:
         # Multiple characters - separate with double newlines
         characters_text = "\n\n".join(character_blocks)
@@ -365,20 +369,21 @@ CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character
 
 {characters_text}
 
-CRITICAL: These are EXACT, IMMUTABLE features for ALL {character_count} characters. Each character must maintain these precise features in every clip.{face_preservation_note}"""
+CRITICAL: These are EXACT, IMMUTABLE features for ALL {character_count} characters. Each character must maintain these precise features in every clip.{face_reference_note}"""
 
     return identity_block
 
 
-def _build_identity_from_descriptions(character_descriptions: List[str]) -> str:
+def _build_identity_from_descriptions(character_descriptions: List[str], character_reference_urls: List[str] = None) -> str:
     """
     DEPRECATED: Build character identity block from pre-formatted descriptions.
 
     This is a fallback for backward compatibility when Character objects
     don't have structured features yet.
-
+    
     Args:
         character_descriptions: List of pre-formatted character description strings
+        character_reference_urls: Optional list of character reference image URLs
 
     Returns:
         Formatted character identity block
@@ -392,9 +397,14 @@ def _build_identity_from_descriptions(character_descriptions: List[str]) -> str:
     # Check if character description already has CRITICAL statement
     has_critical_statement = "CRITICAL:" in char_desc and "IMMUTABLE features" in char_desc
 
+    # Instruction to use faces from reference images (only if reference images are available)
+    face_reference_note = ""
+    if character_reference_urls and len(character_reference_urls) > 0:
+        face_reference_note = " CRITICAL: Use the face from the character reference image for each character. Match the exact facial features, structure, and appearance from the reference image."
+
     if has_critical_statement:
         # Character description already includes CRITICAL statement, don't duplicate
-        identity_block = f"CHARACTER IDENTITY: {char_desc}"
+        identity_block = f"CHARACTER IDENTITY: {char_desc}{face_reference_note}"
     else:
         # Add CRITICAL statement if not present in character description
         identity_block = (
@@ -402,7 +412,7 @@ def _build_identity_from_descriptions(character_descriptions: List[str]) -> str:
             "CRITICAL: These are EXACT, FIXED features - do not modify, reinterpret, "
             "or deviate from these specific details. This is the same character "
             "appearing in all video clips - maintain precise consistency with these "
-            "physical descriptions."
+            f"physical descriptions.{face_reference_note}"
         )
 
     return identity_block
