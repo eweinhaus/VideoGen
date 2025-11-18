@@ -754,6 +754,27 @@ async def generate_video_clip(
                 content_type="video/mp4"
             )
             
+            # Fire-and-forget thumbnail generation (async, non-blocking)
+            try:
+                from modules.video_generator.thumbnail_generator import generate_clip_thumbnail
+                asyncio.create_task(
+                    generate_clip_thumbnail(
+                        clip_url=final_url,
+                        job_id=job_id,
+                        clip_index=clip_prompt.clip_index
+                    )
+                )
+                logger.debug(
+                    f"Started thumbnail generation task for clip {clip_prompt.clip_index}",
+                    extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                )
+            except Exception as e:
+                # Don't fail video generation if thumbnail task creation fails
+                logger.warning(
+                    f"Failed to start thumbnail generation task: {e}",
+                    extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                )
+            
             # Get actual cost from Replicate prediction (if available)
             actual_cost = get_prediction_cost(prediction)
             if actual_cost is None:

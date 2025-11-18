@@ -1,5 +1,5 @@
 import { authStore } from "@/stores/authStore"
-import { APIError, UploadResponse, JobResponse } from "@/types/api"
+import { APIError, UploadResponse, JobResponse, RegenerationRequest, RegenerationResponse } from "@/types/api"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -257,6 +257,32 @@ export async function getJob(jobId: string): Promise<JobResponse> {
   // Use longer timeout for job status requests (5 minutes) to handle long uploads
   // The composer stage can take several minutes for large video uploads
   return request<JobResponse>(`/api/v1/jobs/${jobId}`, {}, 300000) // 5 minutes
+}
+
+export async function getJobClips(jobId: string): Promise<import("@/types/api").ClipListResponse> {
+  // Use 10 second timeout for clips requests
+  return request<import("@/types/api").ClipListResponse>(
+    `/api/v1/jobs/${jobId}/clips`,
+    { method: "GET" },
+    10000 // 10 second timeout
+  )
+}
+
+export async function regenerateClip(
+  jobId: string,
+  clipIndex: number,
+  request: RegenerationRequest
+): Promise<RegenerationResponse> {
+  // Use 30 second timeout for regeneration requests (initial response)
+  // Actual regeneration happens async with SSE events
+  return request<RegenerationResponse>(
+    `/api/v1/jobs/${jobId}/clips/${clipIndex}/regenerate`,
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+    },
+    30000 // 30 second timeout
+  )
 }
 
 export async function downloadVideo(jobId: string): Promise<Blob> {

@@ -8,6 +8,8 @@ graph TB
         Progress[Progress Tracker]
         Player[Video Player]
         SSE_Client[SSE Client]
+        ClipSelector[Clip Selector<br/>Thumbnails + Lyrics]
+        ClipChatbot[Clip Chatbot<br/>Conversational UI]
     end
     
     %% API Gateway Layer
@@ -33,16 +35,17 @@ graph TB
         Module4["[4] Scene Planner<br/>GPT-4o / Claude 3.5"]
         Module5["[5] Reference Generator<br/>SDXL via Replicate"]
         Module6["[6] Prompt Generator<br/>LLM Optimization"]
-        Module7["[7] Video Generator<br/>Stable Video Diffusion<br/>(Parallel: 5 concurrent)<br/>1024x576 → 1080p<br/>+ LoRA Application"]
+        Module7["[7] Video Generator<br/>Stable Video Diffusion<br/>(Parallel: 5 concurrent)<br/>1024x576 → 1080p<br/>+ LoRA Application<br/>+ Thumbnail Generation"]
         Module8["[8] Composer<br/>FFmpeg<br/>Upscale + Transitions"]
         LoRA_Trainer["[LoRA] LoRA Trainer<br/>RunPod Integration<br/>Async Training<br/>30-60 min"]
+        ClipRegenerator["[Clip] Clip Regenerator<br/>Template Matching<br/>LLM Prompt Modifier<br/>Single Clip Regeneration"]
     end
     
     %% External Services
     subgraph External["☁️ External Services"]
         Supabase_Auth[Supabase Auth]
         Supabase_DB[(Supabase PostgreSQL)]
-        Supabase_Storage[Supabase Storage<br/>audio-uploads<br/>reference-images<br/>video-clips<br/>video-outputs<br/>lora-models<br/>lora-validation-images]
+        Supabase_Storage[Supabase Storage<br/>audio-uploads<br/>reference-images<br/>video-clips<br/>video-outputs<br/>clip-thumbnails<br/>lora-models<br/>lora-validation-images]
         OpenAI[OpenAI API<br/>Whisper + GPT-4o]
         Replicate[Replicate API<br/>SDXL + SVD]
         RunPod[RunPod API<br/>GPU Instances<br/>LoRA Training]
@@ -101,9 +104,23 @@ graph TB
     Module4 -->|Store Plan| Supabase_DB
     Module5 -->|Store Images| Supabase_Storage
     Module7 -->|Store Clips| Supabase_Storage
+    Module7 -->|Generate Thumbnails| Supabase_Storage
     LoRA_Trainer -->|Store LoRA Metadata| Supabase_DB
     LoRA_Trainer -->|Store LoRA Files| Supabase_Storage
     LoRA_Trainer -->|Store Validation Images| Supabase_Storage
+    
+    %% Clip Regeneration Flow
+    ClipSelector -->|Select Clip| ClipChatbot
+    ClipChatbot -->|POST /clips/{idx}/regenerate| REST
+    REST -->|Load Clip Data| Supabase_DB
+    Supabase_DB -->|Clips/Prompts/Plan| ClipRegenerator
+    ClipRegenerator -->|Template Check| ClipRegenerator
+    ClipRegenerator -->|LLM Prompt Mod| OpenAI
+    ClipRegenerator -->|Regenerate Clip| Module7
+    Module7 -->|New Clip| Supabase_Storage
+    ClipRegenerator -->|Recompose| Module8
+    Module8 -->|Updated Video| Supabase_Storage
+    ClipRegenerator -->|Store Regeneration| Supabase_DB
     
     %% Authentication
     UI -->|Login| Supabase_Auth
@@ -127,9 +144,9 @@ graph TB
     classDef external fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     classDef queue fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     
-    class UI,Progress,Player,SSE_Client frontend
+    class UI,Progress,Player,SSE_Client,ClipSelector,ClipChatbot frontend
     class REST,SSE_Server,Queue_Manager,Orchestrator,Budget_Guard,Rate_Limit api
-    class Module3,Module4,Module5,Module6,Module7,Module8,LoRA_Trainer pipeline
+    class Module3,Module4,Module5,Module6,Module7,Module8,LoRA_Trainer,ClipRegenerator pipeline
     class Supabase_Auth,Supabase_DB,Supabase_Storage,OpenAI,Replicate,RunPod external
     class Job_Queue,Worker1,Worker2 queue
 

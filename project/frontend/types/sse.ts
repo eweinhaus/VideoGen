@@ -184,6 +184,65 @@ export interface ReferenceGenerationRetryEvent {
   reason?: string
 }
 
+export interface RegenerationStartedEvent {
+  sequence: number
+  clip_index: number
+  instruction: string
+}
+
+export interface TemplateMatchedEvent {
+  sequence: number
+  template_id: string
+  transformation: string
+}
+
+export interface PromptModifiedEvent {
+  sequence: number
+  modified_prompt: string
+  template_used?: string | null
+}
+
+export interface VideoGeneratingEvent {
+  sequence: number
+  progress: number
+  clip_index: number
+}
+
+export interface RecompositionStartedEvent {
+  sequence: number
+  progress: number
+  clip_index: number
+}
+
+export interface RecompositionCompleteEvent {
+  sequence: number
+  progress: number
+  video_url: string
+  duration: number
+}
+
+export interface RecompositionFailedEvent {
+  sequence: number
+  clip_index: number
+  error: string
+  retryable?: boolean
+}
+
+export interface RegenerationCompleteEvent {
+  sequence: number
+  clip_index: number
+  new_clip_url: string
+  cost: number
+  video_url?: string  // Added for recomposition result
+}
+
+export interface RegenerationFailedEvent {
+  sequence: number
+  clip_index: number
+  error: string
+  retryable?: boolean
+}
+
 export interface SSEHandlers {
   onStageUpdate?: (data: StageUpdateEvent) => void
   onProgress?: (data: ProgressEvent) => void
@@ -202,5 +261,14 @@ export interface SSEHandlers {
   onVideoGenerationComplete?: (data: VideoGenerationCompleteEvent) => void
   onVideoGenerationFailed?: (data: VideoGenerationFailedEvent) => void
   onVideoGenerationRetry?: (data: VideoGenerationRetryEvent) => void
+  onRegenerationStarted?: (data: RegenerationStartedEvent) => void
+  onTemplateMatched?: (data: TemplateMatchedEvent) => void
+  onPromptModified?: (data: PromptModifiedEvent) => void
+  onVideoGenerating?: (data: VideoGeneratingEvent) => void
+  onRecompositionStarted?: (data: RecompositionStartedEvent) => void
+  onRecompositionComplete?: (data: RecompositionCompleteEvent) => void
+  onRecompositionFailed?: (data: RecompositionFailedEvent) => void
+  onRegenerationComplete?: (data: RegenerationCompleteEvent) => void
+  onRegenerationFailed?: (data: RegenerationFailedEvent) => void
 }
 

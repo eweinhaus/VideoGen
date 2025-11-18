@@ -9,6 +9,8 @@ import { ProgressTracker } from "@/components/ProgressTracker"
 import { StageIndicator } from "@/components/StageIndicator"
 import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
+import { ClipSelector } from "@/components/ClipSelector"
+import { ClipChatbot } from "@/components/ClipChatbot"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
 import { useSSE } from "@/hooks/useSSE"
@@ -23,6 +25,7 @@ export default function JobProgressPage() {
   const jobId = params.jobId as string
   const { job, isLoading: jobLoading, error, fetchJob } = useJob(jobId)
   const [sseError, setSseError] = useState<string | null>(null)
+  const [selectedClipIndex, setSelectedClipIndex] = useState<number | undefined>(undefined)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -284,6 +287,36 @@ export default function JobProgressPage() {
                       </AlertDescription>
                     </Alert>
                     <VideoPlayer videoUrl={job.videoUrl} jobId={jobId} />
+                    <Card>
+                      <CardContent className="pt-6">
+                        <ClipSelector
+                          jobId={jobId}
+                          onClipSelect={(clipIndex) => {
+                            setSelectedClipIndex(clipIndex)
+                          }}
+                          selectedClipIndex={selectedClipIndex}
+                        />
+                      </CardContent>
+                    </Card>
+                    
+                    {/* ClipChatbot appears when a clip is selected */}
+                    {selectedClipIndex !== undefined && (
+                      <Card>
+                        <CardContent className="pt-6">
+                          <ClipChatbot
+                            jobId={jobId}
+                            clipIndex={selectedClipIndex}
+                            onRegenerationComplete={(newVideoUrl) => {
+                              // Refresh job to get updated video URL
+                              fetchJob(jobId).catch((error) => {
+                                console.error("Failed to refresh job after regeneration:", error)
+                              })
+                              console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                            }}
+                          />
+                        </CardContent>
+                      </Card>
+                    )}
                   </div>
                 )}
                 <ProgressTracker

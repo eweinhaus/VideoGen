@@ -1,0 +1,224 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import Image from "next/image"
+import { getJobClips } from "@/lib/api"
+import { ClipData } from "@/types/api"
+import { Card, CardContent } from "@/components/ui/card"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { LoadingSpinner } from "@/components/LoadingSpinner"
+import { formatDuration } from "@/lib/utils"
+import { cn } from "@/lib/utils"
+
+interface ClipSelectorProps {
+  jobId: string
+  onClipSelect: (clipIndex: number) => void
+  selectedClipIndex?: number
+}
+
+/**
+ * Format timestamp in seconds to "M:SS" format.
+ */
+function formatTimestamp(seconds: number): string {
+  const roundedSeconds = Math.round(seconds)
+  const mins = Math.floor(roundedSeconds / 60)
+  const secs = roundedSeconds % 60
+  return `${mins}:${secs.toString().padStart(2, "0")}`
+}
+
+/**
+ * Truncate lyrics to first 2-3 lines.
+ */
+function truncateLyrics(lyrics: string | null, maxLength: number = 100): string | null {
+  if (!lyrics) return null
+  
+  if (lyrics.length <= maxLength) {
+    return lyrics
+  }
+  
+  // Find last space before maxLength to avoid cutting words
+  const truncatePos = lyrics.lastIndexOf(" ", maxLength)
+  if (truncatePos > 0) {
+    return lyrics.substring(0, truncatePos) + "..."
+  }
+  
+  return lyrics.substring(0, maxLength - 3) + "..."
+}
+
+export function ClipSelector({
+  jobId,
+  onClipSelect,
+  selectedClipIndex,
+}: ClipSelectorProps) {
+  const [clips, setClips] = useState<ClipData[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+
+    async function fetchClips() {
+      try {
+        setLoading(true)
+        setError(null)
+        
+        const response = await getJobClips(jobId)
+        
+        if (!mounted) return
+        
+        setClips(response.clips)
+        setLoading(false)
+      } catch (err) {
+        if (!mounted) return
+        
+        const errorMessage = err instanceof Error ? err.message : "Failed to load clips"
+        setError(errorMessage)
+        setLoading(false)
+      }
+    }
+
+    fetchClips()
+
+    return () => {
+      mounted = false
+    }
+  }, [jobId])
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12">
+        <LoadingSpinner />
+        <p className="mt-4 text-sm text-muted-foreground">Loading clips...</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>
+          <div className="flex items-center justify-between">
+            <span>Failed to load clips: {error}</span>
+            <button
+              onClick={() => window.location.reload()}
+              className="ml-4 text-sm underline hover:no-underline"
+            >
+              Retry
+            </button>
+          </div>
+        </AlertDescription>
+      </Alert>
+    )
+  }
+
+  if (clips.length === 0) {
+    return (
+      <Alert>
+        <AlertDescription>
+          No clips available for this job. The video may not have completed generation yet.
+        </AlertDescription>
+      </Alert>
+    )
+  }
+
+  return (
+    <div className="w-full">
+      <h2 className="mb-4 text-lg font-semibold">Select a Clip to Edit</h2>
+      
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+        {clips.map((clip) => {
+          const isSelected = selectedClipIndex === clip.clip_index
+          const timestampRange = `${formatTimestamp(clip.timestamp_start)} - ${formatTimestamp(clip.timestamp_end)}`
+          const lyricsPreview = truncateLyrics(clip.lyrics_preview)
+
+          return (
+            <Card
+              key={clip.clip_index}
+              className={cn(
+                "cursor-pointer transition-all hover:shadow-md",
+                isSelected
+                  ? "ring-2 ring-primary ring-offset-2"
+                  : "hover:border-primary/50"
+              )}
+              onClick={() => onClipSelect(clip.clip_index)}
+            >
+              <CardContent className="p-0">
+                {/* Thumbnail */}
+                <div className="relative aspect-video w-full overflow-hidden rounded-t-lg bg-muted">
+                  {clip.thumbnail_url ? (
+                    <Image
+                      src={clip.thumbnail_url}
+                      alt={`Clip ${clip.clip_index + 1} thumbnail`}
+                      fill
+                      className="object-cover"
+                      loading="lazy"
+                      sizes="(max-width: 768px) 50vw, (max-width: 1024px) 33vw, 25vw"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center bg-muted">
+                      <div className="text-center">
+                        <svg
+                          className="mx-auto h-12 w-12 text-muted-foreground"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                          />
+                        </svg>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Thumbnail unavailable
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Clip index badge */}
+                  <div className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-xs font-semibold text-white">
+                    Clip {clip.clip_index + 1}
+                  </div>
+                  
+                  {/* Duration overlay */}
+                  <div className="absolute bottom-2 right-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
+                    {formatDuration(clip.duration)}
+                  </div>
+                  
+                  {/* Regenerated badge */}
+                  {clip.is_regenerated && (
+                    <div className="absolute left-2 bottom-2 rounded bg-primary/90 px-2 py-1 text-xs font-semibold text-white">
+                      Regenerated
+                    </div>
+                  )}
+                </div>
+                
+                {/* Clip metadata */}
+                <div className="p-3">
+                  {/* Timestamp range */}
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {timestampRange}
+                  </p>
+                  
+                  {/* Lyrics preview */}
+                  {lyricsPreview ? (
+                    <p className="mt-2 line-clamp-2 text-sm text-foreground">
+                      {lyricsPreview}
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-muted-foreground italic">
+                      No lyrics available
+                    </p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+

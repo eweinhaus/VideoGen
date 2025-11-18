@@ -47,10 +47,17 @@ async def sync_audio(
     # FFmpeg command: combine video + audio
     # Video should already be padded to match audio length exactly
     # Use -t to explicitly set duration to audio length (ensures exact match to audio)
+    # IMPORTANT: Use -map to explicitly select streams:
+    #   -map 0:v: Use video stream from first input (video file)
+    #   -map 1:a: Use audio stream from second input (user's audio file)
+    # This ensures we always use the user's uploaded audio, not any audio embedded in video files
+    # (e.g., veo3.1 videos include audio, but we want user's audio instead)
     ffmpeg_cmd = [
         "ffmpeg",
         "-i", str(video_path),
         "-i", str(audio_path),
+        "-map", "0:v",   # Map video stream from first input (video file)
+        "-map", "1:a",   # Map audio stream from second input (user's audio file)
         "-c:v", "copy",  # Copy video (no re-encoding)
         "-c:a", "aac",   # Encode audio to AAC
         "-b:a", OUTPUT_AUDIO_BITRATE,  # Audio bitrate

@@ -50,6 +50,35 @@ export interface ModelAspectRatiosResponse {
   default: string
 }
 
+export interface ClipData {
+  clip_index: number
+  thumbnail_url: string | null
+  timestamp_start: number
+  timestamp_end: number
+  lyrics_preview: string | null
+  duration: number
+  is_regenerated: boolean
+  original_prompt: string | null
+}
+
+export interface ClipListResponse {
+  clips: ClipData[]
+  total_clips: number
+}
+
+export interface RegenerationRequest {
+  instruction: string
+  conversation_history?: Array<{ role: string; content: string }>
+}
+
+export interface RegenerationResponse {
+  regeneration_id: string
+  estimated_cost: number
+  estimated_time: number
+  status: string
+  template_matched?: string | null
+}
+
 export class APIError extends Error {
   constructor(
     message: string,

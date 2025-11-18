@@ -273,6 +273,87 @@ export function useSSE(
       }
     })
 
+    eventSource.addEventListener("regeneration_started", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onRegenerationStarted?.(data)
+      } catch (err) {
+        console.error("Failed to parse regeneration_started event:", err)
+      }
+    })
+
+    eventSource.addEventListener("template_matched", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onTemplateMatched?.(data)
+      } catch (err) {
+        console.error("Failed to parse template_matched event:", err)
+      }
+    })
+
+    eventSource.addEventListener("prompt_modified", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onPromptModified?.(data)
+      } catch (err) {
+        console.error("Failed to parse prompt_modified event:", err)
+      }
+    })
+
+    eventSource.addEventListener("video_generating", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onVideoGenerating?.(data)
+      } catch (err) {
+        console.error("Failed to parse video_generating event:", err)
+      }
+    })
+
+    eventSource.addEventListener("regeneration_complete", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onRegenerationComplete?.(data)
+      } catch (err) {
+        console.error("Failed to parse regeneration_complete event:", err)
+      }
+    })
+
+    eventSource.addEventListener("regeneration_failed", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onRegenerationFailed?.(data)
+      } catch (err) {
+        console.error("Failed to parse regeneration_failed event:", err)
+      }
+    })
+
+    eventSource.addEventListener("recomposition_started", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onRecompositionStarted?.(data)
+      } catch (err) {
+        console.error("Failed to parse recomposition_started event:", err)
+      }
+    })
+
+    eventSource.addEventListener("recomposition_complete", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onRecompositionComplete?.(data)
+      } catch (err) {
+        console.error("Failed to parse recomposition_complete event:", err)
+      }
+    })
+
+    eventSource.addEventListener("recomposition_failed", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        handlersRef.current.onRecompositionFailed?.(data)
+      } catch (err) {
+        console.error("Failed to parse recomposition_failed event:", err)
+      }
+    })
+
     eventSourceRef.current = eventSource
   }, [jobId, close])
 
