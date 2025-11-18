@@ -195,7 +195,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "full_model": "google/veo-3.1:latest",
         "type": "text-and-image-to-video",
         "supports_lip_sync": False,
-        "supports_audio": True,  # Synchronized audio generation
+        "supports_audio": True,  # Model CAN generate audio, but we DON'T use it - we use original audio in composer
         "supports_motion_control": False,
         "max_duration": 8,
         "duration_support": "discrete",  # Only supports discrete duration values: 4, 6, 8
@@ -209,16 +209,19 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "generation_time_avg_seconds": 90,  # Higher quality takes longer
         "anatomy_score": 10,  # Highest quality - best anatomy
         "prompt_adherence_score": 10,  # Highest quality - excellent prompt following
-        "notes": "Premium Google Veo 3.1 model - highest quality available on Replicate. Features: reference image integration, first/last frame input, synchronized audio generation. Best for premium content requiring highest quality.",
+        "notes": "Premium Google Veo 3.1 model - highest quality available on Replicate. Features: reference image integration, first/last frame input. IMPORTANT: We do NOT use Veo's audio generation - we generate video-only clips and use original audio in composer.",
         "parameter_names": {
             "prompt": "prompt",
-            "image": "image",  # Reference image for image-to-video
+            "image": "image",  # Single reference image (backward compatibility)
+            "reference_images": "reference_images",  # Multiple reference images (array, up to 3)
             "duration": "duration",  # Duration in seconds (integer)
             "resolution": "resolution",  # "720p" or "1080p"
             "aspect_ratio": "aspect_ratio",  # "16:9" or "9:16"
         },
         "required_parameters": ["prompt"],
-        "optional_parameters": ["image", "duration", "resolution", "aspect_ratio"],
+        "optional_parameters": ["image", "reference_images", "duration", "resolution", "aspect_ratio"],
+        "supports_multiple_images": True,  # Veo 3.1 supports up to 3 reference images
+        "max_reference_images": 3,  # Maximum number of reference images supported
         "status": "available",  # Confirmed available on Replicate
         "last_verified": "2025-01-17",
         "verified_by": "web_search",

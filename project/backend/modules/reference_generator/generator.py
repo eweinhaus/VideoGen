@@ -21,41 +21,97 @@ from shared.logging import get_logger
 logger = get_logger("reference_generator.generator")
 
 # Model version constants
-# Using base model name (will use latest version)
-# Format: owner/model or owner/model:version_hash
-# To pin a specific version, use: stability-ai/sdxl:VERSION_HASH
-# To use latest: stability-ai/sdxl (default)
-# Cost: ~$0.005 per image
-# Speed: ~8-10s per image
-# Note: If you need to pin a specific version, set REFERENCE_MODEL_VERSION env var
-# Example: REFERENCE_MODEL_VERSION=39ed52f2-78e6-43c4-bc99-403f850fe245
-# Verified model name from Replicate API
-# Model: stability-ai/sdxl
-# Latest version (verified working): 7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc
-# Note: Must use version hash format - base name without version returns 404
+# 
+# RECOMMENDED MODELS FOR PHOTOREALISTIC CHARACTERS (from https://replicate.com/collections/flux):
+# 
+# 1. FLUX1.1 Pro Ultra (BEST FOR REALISTIC PEOPLE) ⭐ RECOMMENDED
+#    - black-forest-labs/flux-1.1-pro-ultra
+#    - Most powerful model, best for realistic images with "raw" mode
+#    - Large images up to 4 megapixels
+#    - Excellent prompt following and photorealistic output
+#    - Use "raw" mode for maximum realism
+#    - Set REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro-ultra
+#
+# 2. FLUX1.1 Pro (GOOD BALANCE)
+#    - black-forest-labs/flux-1.1-pro
+#    - Fast, high-quality generation
+#    - Good for professional work and commercial projects
+#    - Better balance of speed and quality
+#    - Set REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro
+#
+# 3. FLUX.1 Dev (OPEN SOURCE)
+#    - black-forest-labs/flux-dev
+#    - Open source version
+#    - Good for learning and prototypes
+#    - May be less photorealistic than Pro versions
+#
+# 4. SDXL Base (FALLBACK)
+#    - stability-ai/sdxl
+#    - Known working, good for scenes
+#    - Less photorealistic for people than Flux
+#
+# Format: owner/model (Replicate will use latest version automatically)
+# Note: Flux models use different parameters than SDXL (see generate_image function)
+
+# Default models
 REFERENCE_MODEL_BASE = "stability-ai/sdxl"
 REFERENCE_MODEL_LATEST_VERSION = "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
-# Must use version hash format - base name without version returns 404
 REFERENCE_MODEL_PROD = "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
-REFERENCE_MODEL_DEV = "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"  # Same for consistency
+REFERENCE_MODEL_DEV = "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
+
+# Photorealistic models (using Flux 1.1 Pro Ultra for best realism)
+# Based on https://replicate.com/collections/flux
+# FLUX1.1 Pro Ultra is the most powerful and best for realistic images with "raw" mode
+REFERENCE_MODEL_CHARACTERS_DEFAULT = "black-forest-labs/flux-1.1-pro-ultra"  # ⭐ BEST FOR REALISTIC PEOPLE
+REFERENCE_MODEL_SCENES_DEFAULT = "black-forest-labs/flux-1.1-pro-ultra"  # ⭐ ALSO BEST FOR REALISTIC SCENES
+
+# Alternative models:
+# - black-forest-labs/flux-1.1-pro (faster, good balance)
+# - black-forest-labs/flux-dev (open source, less photorealistic)
+# - stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc (fallback)
 
 
-def get_model_version() -> str:
+def get_model_version(image_type: Literal["scene", "character"] = "scene") -> str:
     """
-    Get model version based on environment.
+    Get model version based on environment and image type.
     
-    Supports:
-    - REFERENCE_MODEL_VERSION env var: Pin to specific version hash
-      Example: REFERENCE_MODEL_VERSION=39ed52f2-78e6-43c4-bc99-403f850fe245
-    - REFERENCE_MODEL_DEV env var: Override for development (full model string)
-      Example: REFERENCE_MODEL_DEV=stability-ai/sdxl:VERSION_HASH
+    For CHARACTER images: Uses FLUX1.1 Pro Ultra (best for realistic people)
+    For SCENE images: Uses FLUX1.1 Pro Ultra (best for realistic scenes)
+    
+    Environment Variables:
+    - REFERENCE_MODEL_CHARACTERS: Model for character images (default: FLUX1.1 Pro Ultra)
+      Example: REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro-ultra
+      Alternative: REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro (faster)
+    - REFERENCE_MODEL_SCENES: Model for scene images (default: FLUX1.1 Pro Ultra)
+      Example: REFERENCE_MODEL_SCENES=black-forest-labs/flux-1.1-pro-ultra
+      Alternative: REFERENCE_MODEL_SCENES=black-forest-labs/flux-1.1-pro (faster)
+    - REFERENCE_MODEL_VERSION: Legacy - applies to all images (deprecated, use specific vars)
+    - REFERENCE_MODEL_DEV: Override for development (full model string)
     
     Returns:
         Model version string in format: owner/model or owner/model:version_hash
     """
     import os
     
-    # Check for version hash override (appends to base model)
+    # Check for image-type-specific model overrides (RECOMMENDED)
+    if image_type == "character":
+        character_model = os.getenv("REFERENCE_MODEL_CHARACTERS", REFERENCE_MODEL_CHARACTERS_DEFAULT)
+        if character_model:
+            logger.info(
+                f"Using character model: {character_model}",
+                extra={"model": character_model, "image_type": image_type}
+            )
+            return character_model
+    else:
+        scene_model = os.getenv("REFERENCE_MODEL_SCENES", REFERENCE_MODEL_SCENES_DEFAULT)
+        if scene_model:
+            logger.info(
+                f"Using scene model: {scene_model}",
+                extra={"model": scene_model, "image_type": image_type}
+            )
+            return scene_model
+    
+    # Legacy: Check for version hash override (appends to base model)
     version_hash = os.getenv("REFERENCE_MODEL_VERSION")
     if version_hash:
         return f"{REFERENCE_MODEL_BASE}:{version_hash}"
@@ -65,8 +121,10 @@ def get_model_version() -> str:
     if dev_override and settings.environment == "development":
         return dev_override
     
-    # Default: Use base model (latest version)
-    return REFERENCE_MODEL_PROD
+    # Default: Use appropriate model for image type
+    if image_type == "character":
+        return REFERENCE_MODEL_CHARACTERS_DEFAULT
+    return REFERENCE_MODEL_SCENES_DEFAULT
 
 
 # Initialize Replicate client
@@ -103,7 +161,7 @@ async def generate_image(
         RetryableError: If retryable error occurs (will be retried by caller)
         GenerationError: If generation fails permanently
     """
-    model_version = get_model_version()
+    model_version = get_model_version(image_type)
     logger.info(
         f"Using Replicate model: {model_version} for {image_type} image {image_id}",
         extra={"job_id": str(job_id), "model_version": model_version, "image_type": image_type, "image_id": image_id}
@@ -128,18 +186,43 @@ async def generate_image(
             "cartoon, illustration, painting, drawing"
         )
     
-    default_settings = {
-        "prompt": prompt,
-        "negative_prompt": negative_prompt,
-        "width": 1024,
-        "height": 1024,
-        "num_outputs": 1,
-        "guidance_scale": 9.0 if image_type == "character" else 7.5,  # Even higher guidance for more realistic characters
-        "num_inference_steps": 50 if image_type == "character" else 30,  # More steps for better quality
-        "scheduler": "K_EULER"
-        # Note: seed is omitted - Replicate will randomize if not provided
-        # If you need deterministic results, set seed to an integer
-    }
+    # Check if using Flux model (different parameters than SDXL)
+    # Note: Flux models may require different parameters, but Realistic Vision SDXL uses SDXL parameters
+    is_flux = "flux" in model_version.lower() and "realistic" not in model_version.lower()
+    
+    if is_flux:
+        # Flux settings (optimized for photorealistic portraits)
+        # FLUX1.1 Pro Ultra API: https://replicate.com/black-forest-labs/flux-1.1-pro-ultra/api
+        # Uses aspect_ratio instead of width/height
+        # Use "raw" mode for maximum realism (especially for characters)
+        default_settings = {
+            "prompt": prompt,
+            "aspect_ratio": "1:1",  # Square format (1024x1024 equivalent)
+        }
+        
+        # Add raw mode for characters to maximize realism
+        # According to Replicate docs: "Use raw mode for realism"
+        if image_type == "character":
+            default_settings["raw"] = True
+        
+        # Note: FLUX1.1 Pro Ultra doesn't support negative_prompt, guidance_scale, 
+        # num_inference_steps, or scheduler parameters - these are SDXL-specific
+        # The negative prompt content is already incorporated into the main prompt
+    else:
+        # SDXL settings (works for both base SDXL and Realistic Vision SDXL)
+        default_settings = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "width": 1024,
+            "height": 1024,
+            "num_outputs": 1,
+            "guidance_scale": 9.0 if image_type == "character" else 7.5,  # Higher guidance for more realistic characters
+            "num_inference_steps": 50 if image_type == "character" else 30,  # More steps for better quality
+            "scheduler": "K_EULER"
+        }
+    
+    # Note: seed is omitted - Replicate will randomize if not provided
+    # If you need deterministic results, set seed to an integer
     
     generation_settings = settings_dict or default_settings
     generation_settings["prompt"] = prompt  # Ensure prompt is set
@@ -276,8 +359,27 @@ async def generate_image(
         raise RetryableError(f"Network error generating image {image_id}: {str(e)}")
         
     except Exception as e:
-        # Check if it's a validation error (non-retryable)
+        # Check if it's a 404 error (model not found) - non-retryable
         error_str = str(e).lower()
+        if "404" in error_str or "not found" in error_str or "could not be found" in error_str:
+            logger.error(
+                f"Model not found (404) for {image_id}: {model_version}. "
+                f"This usually means the model name is incorrect or the model is not available on Replicate.",
+                extra={
+                    "job_id": str(job_id),
+                    "image_type": image_type,
+                    "image_id": image_id,
+                    "model_version": model_version,
+                    "error": str(e)
+                }
+            )
+            raise GenerationError(
+                f"Model not found: {model_version}. "
+                f"The model may not be available on Replicate or the name is incorrect. "
+                f"Error: {str(e)}"
+            )
+        
+        # Check if it's a validation error (non-retryable)
         if any(keyword in error_str for keyword in ["invalid", "validation", "bad request", "400"]):
             raise GenerationError(f"Invalid prompt or settings for {image_id}: {str(e)}")
         
