@@ -77,6 +77,12 @@ class ClipContext:
     # This allows access to structured features for proper formatting
     characters: List[Any] = field(default_factory=list)  # List[Character] from shared.models.scene
 
+    # PHASE 3: Object support for consistent prop tracking
+    object_ids: List[str] = field(default_factory=list)
+    object_descriptions: List[str] = field(default_factory=list)
+    objects: List[Any] = field(default_factory=list)  # List[Object] from shared.models.scene
+    object_reference_urls: List[str] = field(default_factory=list)
+
 
 def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = True) -> Tuple[str, str]:
     """
@@ -407,7 +413,7 @@ def build_lyrics_block(context: ClipContext) -> str:
 
     This ensures lyrics are appended AFTER LLM optimization, preserving the exact
     words spoken during this clip's time range as extracted by the audio parser.
-    
+
     Similar to build_character_identity_block(), lyrics are appended after optimization
     to prevent the LLM from modifying or paraphrasing them.
 
@@ -425,6 +431,128 @@ def build_lyrics_block(context: ClipContext) -> str:
     lyrics_block = f"LYRICS REFERENCE: \"{context.lyrics_context.strip()}\""
 
     return lyrics_block
+
+
+def build_object_identity_block(context: ClipContext) -> str:
+    """
+    Build object identity block with immutable object descriptions.
+
+    PHASE 3: Formats from structured ObjectFeatures for consistent prop tracking.
+
+    This ensures identical object descriptions across all clips where the object appears,
+    preventing the LLM from modifying or paraphrasing object features.
+
+    This is appended AFTER LLM optimization to ensure the model cannot rewrite
+    or deviate from the precise object specifications.
+
+    Args:
+        context: ClipContext with Object objects (with structured features)
+
+    Returns:
+        Formatted object identity block with proper multi-object separation
+    """
+    # Try to use structured Object objects first
+    if context.objects:
+        return _build_identity_from_objects(context.objects)
+
+    # Fallback: Use legacy object_descriptions if available
+    if context.object_descriptions:
+        return _build_identity_from_object_descriptions(context.object_descriptions)
+
+    return ""
+
+
+def _build_identity_from_objects(objects: List[Any]) -> str:
+    """
+    Build object identity block from structured Object objects.
+
+    PHASE 3: Formats from ObjectFeatures (no pre-formatted text).
+
+    Args:
+        objects: List of Object objects with structured features
+
+    Returns:
+        Formatted object identity block
+    """
+    if not objects:
+        return ""
+
+    # Build individual object blocks
+    object_blocks = []
+    for obj in objects:
+        # Skip if no features available
+        if not hasattr(obj, 'features') or obj.features is None:
+            # Fallback to description field if features not available
+            if hasattr(obj, 'name') and obj.name:
+                object_blocks.append(obj.name)
+            continue
+
+        # Get object name
+        obj_name = getattr(obj, 'name', None) or getattr(obj, 'id', 'Object')
+
+        # Format features
+        features = obj.features
+        obj_block = f"""{obj_name}:
+Object Type: {features.object_type}
+Color: {features.color}
+Material: {features.material}
+Distinctive Features: {features.distinctive_features}
+Size: {features.size}
+Condition: {features.condition}"""
+
+        object_blocks.append(obj_block)
+
+    if not object_blocks:
+        return ""
+
+    # Proper multi-object formatting
+    if len(object_blocks) == 1:
+        # Single object
+        identity_block = f"""OBJECT IDENTITIES:
+
+{object_blocks[0]}
+
+CRITICAL: These are EXACT, IMMUTABLE features for this object. It must maintain these precise features in every clip where it appears."""
+    else:
+        # Multiple objects - separate with double newlines
+        objects_text = "\n\n".join(object_blocks)
+        object_count = len(object_blocks)
+        identity_block = f"""OBJECT IDENTITIES:
+
+{objects_text}
+
+CRITICAL: These are EXACT, IMMUTABLE features for ALL {object_count} objects. Each object must maintain these precise features in every clip where it appears."""
+
+    return identity_block
+
+
+def _build_identity_from_object_descriptions(object_descriptions: List[str]) -> str:
+    """
+    DEPRECATED: Build object identity block from pre-formatted descriptions.
+
+    This is a fallback for backward compatibility.
+
+    Args:
+        object_descriptions: List of pre-formatted object description strings
+
+    Returns:
+        Formatted object identity block
+    """
+    if not object_descriptions:
+        return ""
+
+    # Join all object descriptions
+    obj_desc = ', '.join(object_descriptions)
+
+    identity_block = (
+        f"OBJECT IDENTITY: {obj_desc}. "
+        "CRITICAL: These are EXACT, FIXED features - do not modify, reinterpret, "
+        "or deviate from these specific details. These objects appear "
+        "in multiple video clips - maintain precise consistency with these "
+        "physical descriptions."
+    )
+
+    return identity_block
 
 
 def summarize_color_palette(color_palette: List[str]) -> str:

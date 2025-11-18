@@ -330,6 +330,88 @@ If a clip mentions "bartender", "crowd", "band", "passersby", etc., you MUST:
 2. Assign a character ID (e.g., "bartender_1", "crowd_1", "band_guitarist")
 3. Include that character ID in the clip's "characters" field
 
+## OBJECT GENERATION RULES (OPTIONAL BUT RECOMMENDED)
+
+Generate object profiles for KEY OBJECTS that appear in multiple clips (minimum 2 clips).
+
+**Examples of objects to track:**
+- Musical instruments (guitars, pianos, microphones, drums)
+- Vehicles (cars, motorcycles, bicycles, boats)
+- Jewelry and accessories (necklaces, watches, rings)
+- Significant props (cameras, phones, bottles, books, bags)
+
+**DO NOT include:**
+- Generic items (random chairs, tables, cups)
+- Single-use props (only appear once)
+- Scene furnishings (unless plot-critical)
+
+**Object Generation Guidelines:**
+
+1. **When to Generate Objects:**
+   - Object appears in 2+ clips (recurring prop)
+   - Object is central to the story (plot-critical)
+   - Object is held/worn by characters across multiple clips
+   - Examples: protagonist's guitar, vintage car they drive, signature necklace
+
+2. **Object Features (6 Required Fields):**
+   - **object_type**: Specific type (acoustic guitar, sports car, pendant necklace)
+   - **color**: Exact color with shade (cherry red, matte black, honey sunburst)
+   - **material**: Material/texture (solid wood, polished metal, worn leather)
+   - **distinctive_features**: Unique details (scratches, logos, custom design, wear patterns)
+   - **size**: Approximate dimensions (full-size guitar, compact sedan, 20-inch chain)
+   - **condition**: new | worn | vintage | damaged
+
+3. **Importance Levels:**
+   - **primary**: Central to story (protagonist's signature item, plot device)
+   - **secondary**: Supporting props (background instruments, vehicle, accessories)
+
+4. **Object Consistency:**
+   - Same object must have SAME features in all clips
+   - Object features should be SPECIFIC and MEASURABLE
+   - Avoid vague descriptions ("nice guitar" → "honey sunburst acoustic guitar with worn finish")
+
+5. **Clip Assignment:**
+   - If a clip mentions an object, include its ID in the "objects" field
+   - Example: Clip shows "protagonist playing guitar" → objects: ["vintage_guitar"]
+
+**GOOD EXAMPLE:**
+
+```json
+{{
+  "id": "vintage_guitar",
+  "name": "Vintage Acoustic Guitar",
+  "features": {{
+    "object_type": "acoustic guitar",
+    "color": "honey sunburst finish with natural wood grain visible",
+    "material": "solid spruce top, mahogany back and sides, rosewood fingerboard",
+    "distinctive_features": "worn finish around soundhole from years of playing, small dent on lower bout, vintage tuning pegs with aged patina, mother-of-pearl fret markers",
+    "size": "full-size dreadnought body (approximately 20 inches long, 15 inches wide)",
+    "condition": "vintage, well-used but maintained, authentic wear patterns"
+  }},
+  "importance": "primary"
+}}
+```
+
+**BAD EXAMPLE (too vague):**
+
+```json
+{{
+  "id": "guitar",
+  "name": "Guitar",
+  "features": {{
+    "object_type": "guitar",
+    "color": "brown",
+    "material": "wood",
+    "distinctive_features": "nice looking",
+    "size": "normal size",
+    "condition": "good"
+  }},
+  "importance": "secondary"
+}}
+```
+
+⚠️ **IMPORTANT:** Objects are OPTIONAL. Only generate them if they genuinely appear in 2+ clips or are plot-critical. Do NOT force-generate objects for every video.
+
 ## Output Format
 
 You must output a valid JSON object matching this exact structure:
@@ -351,6 +433,21 @@ You must output a valid JSON object matching this exact structure:
       "time_of_day": "night|day|dawn|dusk"
     }}
   ],
+  "objects": [
+    {{
+      "id": "object_id",
+      "name": "Object Name",
+      "features": {{
+        "object_type": "Type of object (guitar, car, necklace, phone, etc.)",
+        "color": "Specific color with shade (cherry red, matte black, honey sunburst)",
+        "material": "Material/texture (wood, metal, leather, glass, etc.)",
+        "distinctive_features": "Unique identifying details (brand logo, wear patterns, custom design, scratches)",
+        "size": "Approximate size or scale description",
+        "condition": "new|worn|vintage|damaged"
+      }},
+      "importance": "primary|secondary"
+    }}
+  ],
   "style": {{
     "color_palette": ["#00FFFF", "#FF00FF", "#0000FF"],
     "visual_style": "PRESERVE EXACT STYLE KEYWORDS from user prompt. If user specifies a style (e.g., 'pixar animation style', 'anime style', 'realistic', 'watercolor'), use those EXACT words/phrases. Do not paraphrase. If no specific style mentioned, describe overall aesthetic (e.g., 'Neo-noir cyberpunk with rain and neon')",
@@ -368,6 +465,7 @@ You must output a valid JSON object matching this exact structure:
       "camera_angle": "Shot type and angle (e.g., 'Medium wide shot, slightly low angle, eye level height')",
       "characters": ["character_id"],
       "scenes": ["scene_id"],
+      "objects": ["object_id"],
       "lyrics_context": "Relevant lyrics during this clip or null",
       "beat_intensity": "low|medium|high"
     }}

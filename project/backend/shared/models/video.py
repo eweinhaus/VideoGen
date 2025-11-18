@@ -19,6 +19,7 @@ class ClipPrompt(BaseModel):
     duration: float = Field(description="Target duration in seconds")
     scene_reference_url: Optional[str] = None
     character_reference_urls: List[str] = Field(default_factory=list)
+    object_reference_urls: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Metadata: word_count, style_keywords, etc."

@@ -46,14 +46,20 @@ def extract_unique_image_urls(clip_prompts: List[ClipPrompt]) -> Dict[str, str]:
     for cp in clip_prompts:
         # Character references take priority
         if cp.character_reference_urls and len(cp.character_reference_urls) > 0:
-            char_url = cp.character_reference_urls[0]
-            if char_url not in unique_urls:
-                unique_urls[char_url] = "character"
+            for char_url in cp.character_reference_urls:
+                if char_url not in unique_urls:
+                    unique_urls[char_url] = "character"
         
-        # Scene reference (only if no character ref for this clip)
+        # Scene reference
         if cp.scene_reference_url:
             if cp.scene_reference_url not in unique_urls:
                 unique_urls[cp.scene_reference_url] = "scene"
+        
+        # Object references
+        if cp.object_reference_urls and len(cp.object_reference_urls) > 0:
+            for obj_url in cp.object_reference_urls:
+                if obj_url not in unique_urls:
+                    unique_urls[obj_url] = "object"
     
     return unique_urls
 
@@ -288,15 +294,17 @@ async def process(
                 image_url = None
                 reference_image_urls = []
             else:
-                # Collect all available reference images (character + scene)
-                # Priority: Character references first, then scene reference
+                # Collect all available reference images (character + scene + object)
+                # Priority: Character references first, then scene reference, then object references
                 # Veo 3.1 supports up to 3 reference images
                 collected_urls = []
                 
-                # Add character reference URLs (up to 2 to leave room for scene)
+                # Add character reference URLs (up to 2 to leave room for scene/objects)
                 if clip_prompt.character_reference_urls:
                     max_char_refs = min(len(clip_prompt.character_reference_urls), 2)  # Max 2 character refs
                     for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                        if len(collected_urls) >= 3:
+                            break
                         cached_url = image_cache_param.get(char_ref_url)
                         if cached_url:
                             collected_urls.append(cached_url)
@@ -333,6 +341,30 @@ async def process(
                                 extra={"job_id": str(job_id)}
                             )
                 
+                # Add object reference URLs if available and we have room (max 3 total)
+                if clip_prompt.object_reference_urls and len(collected_urls) < 3:
+                    remaining_slots = 3 - len(collected_urls)
+                    max_obj_refs = min(len(clip_prompt.object_reference_urls), remaining_slots)
+                    for obj_ref_url in clip_prompt.object_reference_urls[:max_obj_refs]:
+                        if len(collected_urls) >= 3:
+                            break
+                        cached_url = image_cache_param.get(obj_ref_url)
+                        if cached_url:
+                            collected_urls.append(cached_url)
+                            logger.debug(
+                                f"Using cached object reference for clip {clip_prompt.clip_index}",
+                                extra={"job_id": str(job_id), "url": obj_ref_url[:50]}
+                            )
+                        else:
+                            # Download if not cached
+                            downloaded_url = await download_and_upload_image(obj_ref_url, job_id)
+                            if downloaded_url:
+                                collected_urls.append(downloaded_url)
+                                logger.debug(
+                                    f"Downloaded object reference for clip {clip_prompt.clip_index}",
+                                    extra={"job_id": str(job_id)}
+                                )
+                
                 # Set both single image (backward compatibility) and multiple images
                 if collected_urls:
                     reference_image_urls = collected_urls
@@ -344,7 +376,8 @@ async def process(
                             "clip_index": clip_prompt.clip_index,
                             "num_images": len(reference_image_urls),
                             "has_character_refs": bool(clip_prompt.character_reference_urls),
-                            "has_scene_ref": bool(clip_prompt.scene_reference_url)
+                            "has_scene_ref": bool(clip_prompt.scene_reference_url),
+                            "has_object_refs": bool(clip_prompt.object_reference_urls)
                         }
                     )
                 else:

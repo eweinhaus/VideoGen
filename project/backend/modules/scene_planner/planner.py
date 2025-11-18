@@ -25,6 +25,10 @@ from .character_analyzer import (
     analyze_clips_for_implicit_characters,
     update_clip_scripts_with_characters
 )
+from .object_analyzer import (
+    analyze_clips_for_objects,
+    update_clip_scripts_with_objects as update_clips_with_object_ids
+)
 
 logger = get_logger("scene_planner")
 
@@ -192,7 +196,57 @@ async def plan_scenes(
                 all_characters=characters
             )
             logger.debug("Updated clip scripts with implicit character IDs")
-        
+
+        # PHASE 3: Extract objects from LLM output and analyze clips for additional objects
+        # Get objects from LLM (if provided)
+        from shared.models.scene import Object, ObjectFeatures
+        objects = []
+        if "objects" in llm_output and llm_output["objects"]:
+            for obj_data in llm_output["objects"]:
+                # Parse object with nested features
+                if "features" in obj_data:
+                    obj_features = ObjectFeatures(**obj_data["features"])
+                    obj = Object(
+                        id=obj_data["id"],
+                        name=obj_data["name"],
+                        features=obj_features,
+                        importance=obj_data.get("importance", "secondary")
+                    )
+                    objects.append(obj)
+
+            logger.info(
+                f"LLM generated {len(objects)} object profiles",
+                extra={
+                    "job_id": str(job_id),
+                    "object_ids": [obj.id for obj in objects]
+                }
+            )
+
+        # Analyze clip scripts for additional objects not caught by LLM
+        detected_objects, clip_scripts = analyze_clips_for_objects(
+            clip_scripts=clip_scripts,
+            existing_objects=objects
+        )
+
+        if detected_objects:
+            logger.info(
+                f"Detected {len(detected_objects)} additional objects in clip scripts",
+                extra={
+                    "job_id": str(job_id),
+                    "detected_object_ids": [obj.id for obj in detected_objects]
+                }
+            )
+            # Add detected objects to the object list
+            objects.extend(detected_objects)
+
+        # If LLM provided objects but didn't assign them to clips, update clip scripts
+        if objects and "objects" in llm_output and llm_output["objects"]:
+            clip_scripts = update_clips_with_object_ids(
+                clip_scripts=clip_scripts,
+                objects=objects
+            )
+            logger.debug("Updated clip scripts with object IDs")
+
         if "scenes" in llm_output:
             from shared.models.scene import Scene
             scenes = [
@@ -229,6 +283,7 @@ async def plan_scenes(
             video_summary=video_summary or "Music video scene plan",
             characters=characters,
             scenes=scenes,
+            objects=objects,
             style=style or _create_default_style(audio_data),
             clip_scripts=clip_scripts,
             transitions=transitions
