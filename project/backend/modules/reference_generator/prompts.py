@@ -312,9 +312,14 @@ def synthesize_prompt(
     # Join all fragments
     prompt = ", ".join(fragments)
     
-    # Validate and truncate if too long (increased max_length for detailed prompts)
+    # Validate and truncate if too long
+    # Flux 1.1 Pro Ultra supports very long prompts (2000+ characters), but we set a reasonable limit
+    # Character images need detailed feature descriptions, so allow longer prompts
     try:
-        prompt = validate_prompt(prompt, max_length=800)  # Increased from 500 to accommodate detailed features
+        # For character images: Allow up to 2000 characters (Flux supports this)
+        # For scene/object images: Use 1500 characters (still generous)
+        max_length = 2000 if image_type == "character" else 1500
+        prompt = validate_prompt(prompt, max_length=max_length)
     except ValidationError as e:
         logger.error(
             f"Prompt validation failed for {image_type}: {str(e)}",
@@ -421,8 +426,9 @@ def synthesize_object_prompt(
     prompt = ", ".join(fragments)
 
     # Validate and truncate if too long
+    # SDXL supports longer prompts, but we set a reasonable limit for product photography
     try:
-        prompt = validate_prompt(prompt, max_length=800)
+        prompt = validate_prompt(prompt, max_length=1500)  # Increased from 800 for detailed object descriptions
     except ValidationError as e:
         logger.error(
             f"Object prompt validation failed for {obj.id}: {str(e)}",

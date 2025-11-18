@@ -294,20 +294,58 @@ async def process(
                 image_url = None
                 reference_image_urls = []
             else:
-                # Collect all available reference images (character + scene + object)
-                # Priority: Character references first, then scene reference, then object references
-                # Veo 3.1 supports up to 3 reference images
-                collected_urls = []
+                # Detect if clip is face-heavy (close-up, mid-shot, portrait, face-focused)
+                # Face-heavy clips need ALL character references prioritized for better face clarity
+                prompt_lower = clip_prompt.prompt.lower()
+                camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
                 
-                # Add character reference URLs (up to 2 to leave room for scene/objects)
+                is_face_heavy = any(keyword in prompt_lower for keyword in [
+                    # Close-up shots
+                    "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                    "facial", "head", "head and shoulders", "bust shot", "face fills",
+                    # Mid-shots (also need clear facial features)
+                    "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                    "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                    "from waist", "from chest", "from shoulders"
+                ]) or is_medium_shot
+                
+                # Collect all available reference images (character + scene + object)
+                # For face-heavy clips: Prioritize ALL character references before scene/objects
+                # For other clips: Character references (limited), then scene, then objects
+                # Veo 3.1 supports up to 3 reference images total
+                collected_urls = []
+                max_reference_images = 3  # Veo 3.1 limit, other models will limit further in generator
+                
+                # Add character reference URLs
+                # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
+                # OTHER CLIPS: Limit to 2 to leave room for scene/objects
+                character_refs_added = 0
                 if clip_prompt.character_reference_urls:
-                    max_char_refs = min(len(clip_prompt.character_reference_urls), 2)  # Max 2 character refs
+                    if is_face_heavy:
+                        # Face-heavy clips: Prioritize ALL character references
+                        max_char_refs = len(clip_prompt.character_reference_urls)  # No limit for face-heavy
+                        logger.info(
+                            f"Face-heavy clip detected - prioritizing ALL {len(clip_prompt.character_reference_urls)} character reference(s) for clip {clip_prompt.clip_index}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "num_character_refs": len(clip_prompt.character_reference_urls),
+                                "shot_type": "mid-shot" if is_medium_shot else "close-up",
+                                "camera_angle": camera_angle if camera_angle else None
+                            }
+                        )
+                    else:
+                        # Other clips: Limit to 2 to leave room for scene/objects
+                        max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+                    
                     for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
-                        if len(collected_urls) >= 3:
+                        if len(collected_urls) >= max_reference_images:
                             break
                         cached_url = image_cache_param.get(char_ref_url)
                         if cached_url:
                             collected_urls.append(cached_url)
+                            character_refs_added += 1
                             logger.debug(
                                 f"Using cached character reference for clip {clip_prompt.clip_index}",
                                 extra={"job_id": str(job_id), "url": char_ref_url[:50]}
@@ -317,13 +355,15 @@ async def process(
                             downloaded_url = await download_and_upload_image(char_ref_url, job_id)
                             if downloaded_url:
                                 collected_urls.append(downloaded_url)
+                                character_refs_added += 1
                                 logger.debug(
                                     f"Downloaded character reference for clip {clip_prompt.clip_index}",
                                     extra={"job_id": str(job_id)}
                                 )
                 
                 # Add scene reference URL if available and we have room (max 3 total)
-                if clip_prompt.scene_reference_url and len(collected_urls) < 3:
+                # For face-heavy clips: Only add scene if there's room after ALL characters
+                if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
                     cached_url = image_cache_param.get(clip_prompt.scene_reference_url)
                     if cached_url:
                         collected_urls.append(cached_url)
@@ -342,7 +382,8 @@ async def process(
                             )
                 
                 # Add object reference URLs if available and we have room (max 3 total)
-                if clip_prompt.object_reference_urls and len(collected_urls) < 3:
+                # For face-heavy clips: Only add objects if there's room after ALL characters and scene
+                if clip_prompt.object_reference_urls and len(collected_urls) < max_reference_images:
                     remaining_slots = 3 - len(collected_urls)
                     max_obj_refs = min(len(clip_prompt.object_reference_urls), remaining_slots)
                     for obj_ref_url in clip_prompt.object_reference_urls[:max_obj_refs]:
@@ -370,14 +411,21 @@ async def process(
                     reference_image_urls = collected_urls
                     image_url = collected_urls[0]  # First image for backward compatibility
                     logger.info(
-                        f"Collected {len(reference_image_urls)} reference image(s) for clip {clip_prompt.clip_index}",
+                        f"Collected {len(reference_image_urls)} reference image(s) for clip {clip_prompt.clip_index} "
+                        f"(face_heavy={is_face_heavy}, {character_refs_added}/{len(clip_prompt.character_reference_urls)} character refs used, "
+                        f"shot_type={'mid-shot' if is_medium_shot else 'close-up' if is_face_heavy else 'wide'})",
                         extra={
                             "job_id": str(job_id),
                             "clip_index": clip_prompt.clip_index,
                             "num_images": len(reference_image_urls),
+                            "num_character_refs": character_refs_added,
+                            "total_character_refs_available": len(clip_prompt.character_reference_urls),
                             "has_character_refs": bool(clip_prompt.character_reference_urls),
                             "has_scene_ref": bool(clip_prompt.scene_reference_url),
-                            "has_object_refs": bool(clip_prompt.object_reference_urls)
+                            "has_object_refs": bool(clip_prompt.object_reference_urls),
+                            "face_heavy": is_face_heavy,
+                            "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide"),
+                            "camera_angle": camera_angle if camera_angle else None
                         }
                     )
                 else:
@@ -792,12 +840,36 @@ async def process(
                     reference_image_urls = []  # Multiple images for Veo 3.1
                     
                     if use_reference_images_retry:
-                        collected_urls = []
+                        # Detect if clip is face-heavy (same logic as main generation)
+                        prompt_lower = clip_prompt.prompt.lower()
+                        camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                        is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
                         
-                        # Add character reference URLs (up to 2 to leave room for scene)
+                        is_face_heavy = any(keyword in prompt_lower for keyword in [
+                            "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                            "facial", "head", "head and shoulders", "bust shot", "face fills",
+                            "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                            "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                            "from waist", "from chest", "from shoulders"
+                        ]) or is_medium_shot
+                        
+                        collected_urls = []
+                        max_reference_images = 3  # Veo 3.1 limit
+                        
+                        # Add character reference URLs
+                        # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
+                        # OTHER CLIPS: Limit to 2 to leave room for scene/objects
                         if clip_prompt.character_reference_urls:
-                            max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+                            if is_face_heavy:
+                                # Face-heavy clips: Prioritize ALL character references
+                                max_char_refs = len(clip_prompt.character_reference_urls)  # No limit for face-heavy
+                            else:
+                                # Other clips: Limit to 2 to leave room for scene/objects
+                                max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+                            
                             for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                                if len(collected_urls) >= max_reference_images:
+                                    break
                                 cached_url = image_cache.get(char_ref_url)
                                 if cached_url:
                                     collected_urls.append(cached_url)
@@ -807,7 +879,8 @@ async def process(
                                         collected_urls.append(downloaded_url)
                         
                         # Add scene reference URL if available and we have room (max 3 total)
-                        if clip_prompt.scene_reference_url and len(collected_urls) < 3:
+                        # For face-heavy clips: Only add scene if there's room after ALL characters
+                        if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
                             cached_url = image_cache.get(clip_prompt.scene_reference_url)
                             if cached_url:
                                 collected_urls.append(cached_url)
