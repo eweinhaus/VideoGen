@@ -182,6 +182,7 @@ async def generate_image(
     # Default generation settings
     # Enhanced negative prompt for character images to prevent cartoonish results
     # AND prevent identity changes across variations (Layer 6 Safeguard)
+    # AND prevent face warping/distortion (Face Clarity Enhancement)
     if image_type == "character":
         negative_prompt = (
             # Prevent cartoonish/stylized results
@@ -193,12 +194,17 @@ async def generate_image(
             "unrealistic proportions, exaggerated features, "
             "watercolor, oil painting, sketch, line art, vector art, "
             "stylized features, exaggerated eyes, anime eyes, manga style, "
-            # NEW: Prevent identity changes (Layer 6 - Identity Preservation)
+            # Prevent identity changes (Layer 6 - Identity Preservation)
             "different person, different face, different identity, "
             "different hair color, different eye color, different skin tone, "
             "different age, different gender, different ethnicity, "
             "multiple people, two people, different character, "
-            "face swap, face change, identity swap, inconsistent features"
+            "face swap, face change, identity swap, inconsistent features, "
+            # NEW: Prevent face warping/distortion (Face Clarity Enhancement)
+            "warped face, distorted face, blurred face, fuzzy facial features, "
+            "face morphing, inconsistent face, face changing, deformed facial features, "
+            "asymmetric face, face distortion, face blur, low detail face, "
+            "unclear face, hazy face, soft focus face, out of focus face"
         )
     else:
         negative_prompt = (
@@ -230,14 +236,15 @@ async def generate_image(
         # The negative prompt content is already incorporated into the main prompt
     else:
         # SDXL settings (works for both base SDXL and Realistic Vision SDXL)
+        # Enhanced quality settings for character images to improve face clarity
         default_settings = {
             "prompt": prompt,
             "negative_prompt": negative_prompt,
             "width": 1024,
             "height": 1024,
             "num_outputs": 1,
-            "guidance_scale": 9.0 if image_type == "character" else 7.5,  # Higher guidance for more realistic characters
-            "num_inference_steps": 50 if image_type == "character" else 30,  # More steps for better quality
+            "guidance_scale": 10.0 if image_type == "character" else 7.5,  # Increased from 9.0 for better face detail
+            "num_inference_steps": 60 if image_type == "character" else 30,  # Increased from 50 for sharper faces
             "scheduler": "K_EULER"
         }
     
