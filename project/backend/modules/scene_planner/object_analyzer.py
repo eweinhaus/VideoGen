@@ -13,45 +13,97 @@ from shared.models.scene import Object, ObjectFeatures, ClipScript
 logger = get_logger("scene_planner.object_analyzer")
 
 
-# Object patterns to detect in clip descriptions
+# Object patterns to detect in clip descriptions and user input
 OBJECT_PATTERNS = {
     # Musical instruments
-    "guitar": r"\b(guitar|guitars|acoustic\s+guitar|electric\s+guitar)\b",
-    "piano": r"\b(piano|keyboard|keys|grand\s+piano)\b",
-    "drums": r"\b(drums|drum\s+set|drum\s+kit)\b",
-    "microphone": r"\b(microphone|mic|mics)\b",
-    "violin": r"\b(violin|fiddle)\b",
-    "saxophone": r"\b(saxophone|sax)\b",
+    "guitar": r"\b(guitar|guitars|acoustic\s+guitar|electric\s+guitar|vintage\s+guitar|classical\s+guitar|bass\s+guitar)\b",
+    "piano": r"\b(piano|keyboard|keys|grand\s+piano|upright\s+piano|electric\s+piano)\b",
+    "drums": r"\b(drums|drum\s+set|drum\s+kit|drumkit|percussion)\b",
+    "microphone": r"\b(microphone|mic|mics|wireless\s+mic|studio\s+mic)\b",
+    "violin": r"\b(violin|fiddle|string\s+instrument)\b",
+    "saxophone": r"\b(saxophone|sax|alto\s+sax|tenor\s+sax)\b",
+    "trumpet": r"\b(trumpet|horn|brass\s+instrument)\b",
+    "bass": r"\b(bass|bass\s+guitar|electric\s+bass|upright\s+bass)\b",
 
     # Vehicles
-    "car": r"\b(car|automobile|vehicle|sedan|coupe)\b",
-    "motorcycle": r"\b(motorcycle|bike|motorbike|chopper)\b",
-    "bicycle": r"\b(bicycle|bike|cycle)\b",
-    "truck": r"\b(truck|pickup)\b",
-    "boat": r"\b(boat|yacht|sailboat)\b",
+    "car": r"\b(car|automobile|vehicle|sedan|coupe|sports\s+car|vintage\s+car|classic\s+car)\b",
+    "motorcycle": r"\b(motorcycle|bike|motorbike|chopper|harley|scooter)\b",
+    "bicycle": r"\b(bicycle|bike|cycle|mountain\s+bike|road\s+bike)\b",
+    "truck": r"\b(truck|pickup|pickup\s+truck|suv)\b",
+    "boat": r"\b(boat|yacht|sailboat|speedboat|vessel)\b",
+    "van": r"\b(van|minivan|camper\s+van)\b",
 
     # Jewelry/Accessories
-    "necklace": r"\b(necklace|pendant|chain\s+necklace)\b",
-    "ring": r"\b(ring|rings|wedding\s+ring|diamond\s+ring)\b",
-    "bracelet": r"\b(bracelet|bangle)\b",
-    "watch": r"\b(watch|wristwatch|timepiece)\b",
-    "earrings": r"\b(earrings|ear\s+rings|studs)\b",
+    "necklace": r"\b(necklace|pendant|chain\s+necklace|choker|locket)\b",
+    "ring": r"\b(ring|rings|wedding\s+ring|diamond\s+ring|engagement\s+ring)\b",
+    "bracelet": r"\b(bracelet|bangle|cuff|wristband)\b",
+    "watch": r"\b(watch|wristwatch|timepiece|smartwatch)\b",
+    "earrings": r"\b(earrings|ear\s+rings|studs|hoops|dangly\s+earrings)\b",
+    "chain": r"\b(chain|gold\s+chain|silver\s+chain|neck\s+chain)\b",
 
     # Electronics
-    "phone": r"\b(phone|smartphone|mobile\s+phone|cellphone|cell\s+phone)\b",
-    "laptop": r"\b(laptop|computer|notebook)\b",
-    "camera": r"\b(camera|cameras|video\s+camera|film\s+camera)\b",
-    "headphones": r"\b(headphones|earbuds|ear\s+buds)\b",
+    "phone": r"\b(phone|smartphone|mobile\s+phone|cellphone|cell\s+phone|iphone|android)\b",
+    "laptop": r"\b(laptop|computer|notebook|macbook|pc)\b",
+    "camera": r"\b(camera|cameras|video\s+camera|film\s+camera|dslr|mirrorless)\b",
+    "headphones": r"\b(headphones|earbuds|ear\s+buds|earphones|airpods)\b",
+    "speaker": r"\b(speaker|speakers|bluetooth\s+speaker|sound\s+system)\b",
 
     # Props
-    "book": r"\b(book|books|novel|journal)\b",
-    "bottle": r"\b(bottle|bottles|wine\s+bottle|beer\s+bottle)\b",
-    "glass": r"\b(glass|glasses|wine\s+glass|drinking\s+glass)\b",
-    "bag": r"\b(bag|backpack|purse|handbag|suitcase)\b",
-    "hat": r"\b(hat|cap|beanie|fedora)\b",
-    "jacket": r"\b(jacket|coat|blazer)\b",
-    "sunglasses": r"\b(sunglasses|shades)\b",
+    "book": r"\b(book|books|novel|journal|notebook|diary)\b",
+    "bottle": r"\b(bottle|bottles|wine\s+bottle|beer\s+bottle|water\s+bottle)\b",
+    "glass": r"\b(glass|glasses|wine\s+glass|drinking\s+glass|champagne\s+glass)\b",
+    "bag": r"\b(bag|backpack|purse|handbag|suitcase|briefcase|tote\s+bag)\b",
+    "hat": r"\b(hat|cap|beanie|fedora|baseball\s+cap|snapback)\b",
+    "jacket": r"\b(jacket|coat|blazer|leather\s+jacket|denim\s+jacket|bomber\s+jacket)\b",
+    "sunglasses": r"\b(sunglasses|shades|aviators|wayfarers)\b",
+    "umbrella": r"\b(umbrella|parasol)\b",
+    "flower": r"\b(flower|flowers|bouquet|rose|tulip|daisy)\b",
+    "guitar_case": r"\b(guitar\s+case|instrument\s+case|case)\b",
 }
+
+
+def extract_objects_from_user_input(user_prompt: str) -> List[Object]:
+    """
+    Extract object mentions from user input prompt before LLM generation.
+    
+    This allows us to pass explicit object hints to the LLM and ensure
+    objects mentioned in user input are tracked even if they only appear once.
+    
+    Args:
+        user_prompt: User's creative prompt text
+        
+    Returns:
+        List of Object objects detected from user input (marked as primary)
+    """
+    detected_objects = []
+    existing_ids = set()
+    
+    user_prompt_lower = user_prompt.lower()
+    
+    # Scan user prompt for object mentions
+    for object_type, pattern in OBJECT_PATTERNS.items():
+        if re.search(pattern, user_prompt_lower, re.IGNORECASE):
+            # Generate object ID
+            obj_id = _generate_object_id(object_type, existing_ids)
+            existing_ids.add(obj_id)
+            
+            # Generate object profile (marked as primary since user mentioned it)
+            obj = _generate_object_profile(obj_id, object_type)
+            # Mark as primary since user explicitly mentioned it
+            obj.importance = "primary"
+            
+            detected_objects.append(obj)
+            
+            logger.info(
+                f"Extracted object '{object_type}' from user input",
+                extra={
+                    "object_id": obj_id,
+                    "object_type": object_type,
+                    "importance": "primary"
+                }
+            )
+    
+    return detected_objects
 
 
 def analyze_clips_for_objects(
@@ -82,11 +134,19 @@ def analyze_clips_for_objects(
     # Generate new objects for recurring props
     new_objects = []
     for object_type, mention_count in object_mentions.items():
-        # Only create objects for those mentioned in 2+ clips (recurring)
-        # Exception: primary objects (user can manually specify later)
-        if mention_count < 2:
+        # Create objects for:
+        # 1. Those mentioned in 2+ clips (recurring)
+        # 2. Primary objects (even if single-clip, if marked as primary by LLM or user)
+        # Check if this object type already exists as primary
+        is_primary = any(
+            obj.features.object_type == object_type or object_type in obj.features.object_type
+            for obj in existing_objects
+            if obj.importance == "primary"
+        )
+        
+        if mention_count < 2 and not is_primary:
             logger.debug(
-                f"Object type '{object_type}' only mentioned {mention_count} time(s), skipping",
+                f"Object type '{object_type}' only mentioned {mention_count} time(s) and not primary, skipping",
                 extra={"object_type": object_type, "mention_count": mention_count}
             )
             continue
@@ -96,6 +156,9 @@ def analyze_clips_for_objects(
 
         # Generate object profile
         obj = _generate_object_profile(obj_id, object_type)
+        # If it's primary (from user input or LLM), mark it
+        if is_primary:
+            obj.importance = "primary"
         new_objects.append(obj)
         existing_ids.add(obj_id)
 
@@ -104,7 +167,8 @@ def analyze_clips_for_objects(
             extra={
                 "object_id": obj_id,
                 "object_type": object_type,
-                "mention_count": mention_count
+                "mention_count": mention_count,
+                "importance": obj.importance
             }
         )
 

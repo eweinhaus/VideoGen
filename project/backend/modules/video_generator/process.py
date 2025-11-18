@@ -450,6 +450,61 @@ async def process(
                     if attempt < 2:
                         error_msg = str(e)
                         
+                        # Check if this is a content moderation error that requires fallback to Kling Turbo
+                        # This happens when Veo 3.1 content moderation fails and prompt can't be sanitized
+                        is_fallback_to_kling = (
+                            "fallback to kling turbo" in error_msg.lower() or
+                            "fallback to kling" in error_msg.lower()
+                        )
+                        
+                        if is_fallback_to_kling and selected_model_key == "veo_31":
+                            # Immediately switch to Kling Turbo (text-only) for this clip
+                            logger.info(
+                                f"Content moderation error detected for clip {clip_prompt.clip_index}, "
+                                f"switching to Kling Turbo (text-only) immediately",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "original_model": selected_model_key,
+                                    "fallback_model": "kling_v25_turbo",
+                                    "reference_images": False
+                                }
+                            )
+                            # Retry with Kling Turbo (text-only, no reference images)
+                            clip = await generate_video_clip(
+                                clip_prompt=clip_prompt,
+                                image_url=None,  # No reference images for fallback
+                                reference_image_urls=[],  # Empty for fallback
+                                settings=settings_dict,
+                                job_id=job_id,
+                                environment=environment,
+                                extra_context=None,
+                                progress_callback=progress_callback,
+                                video_model="kling_v25_turbo",  # Use fallback model
+                                aspect_ratio=aspect_ratio,
+                            )
+                            logger.info(
+                                f"Clip {clip_prompt.clip_index} generated successfully with Kling Turbo fallback",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                            )
+                            # Emit completion event
+                            complete_event = {
+                                "event_type": "video_generation_complete",
+                                "data": {
+                                    "clip_index": clip_prompt.clip_index,
+                                    "video_url": clip.video_url,
+                                    "duration": clip.actual_duration,
+                                    "cost": float(clip.cost),
+                                }
+                            }
+                            events.append(complete_event)
+                            if event_publisher:
+                                try:
+                                    await event_publisher("video_generation_complete", complete_event["data"])
+                                except Exception as e:
+                                    logger.warning(f"Failed to publish complete event: {e}", extra={"job_id": str(job_id)})
+                            return clip
+                        
                         # Check if this is a content moderation error that was sanitized
                         # If so, sanitize the prompt before retrying
                         if "content moderation" in error_msg.lower() or "prompt sanitized" in error_msg.lower():

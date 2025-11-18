@@ -8,7 +8,7 @@ cost tracking, and comprehensive prompt engineering.
 import json
 import re
 from decimal import Decimal
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from uuid import UUID
 
 from openai import OpenAI, AsyncOpenAI
@@ -330,49 +330,53 @@ If a clip mentions "bartender", "crowd", "band", "passersby", etc., you MUST:
 2. Assign a character ID (e.g., "bartender_1", "crowd_1", "band_guitarist")
 3. Include that character ID in the clip's "characters" field
 
-## OBJECT GENERATION RULES (OPTIONAL BUT RECOMMENDED)
+## OBJECT GENERATION RULES (HIGHLY RECOMMENDED)
 
-Generate object profiles for KEY OBJECTS that appear in multiple clips (minimum 2 clips).
+**CRITICAL: Generate object profiles for KEY OBJECTS that appear in the video.**
+
+**When to Generate Objects:**
+1. **Object appears in 2+ clips** (recurring prop) - ALWAYS generate
+2. **Object is central to the story** (plot-critical) - ALWAYS generate, even if single-clip
+3. **Object is held/worn by characters** across multiple clips - ALWAYS generate
+4. **User explicitly mentioned object** in their prompt - ALWAYS generate as PRIMARY
+5. **Object is a signature prop** (protagonist's guitar, vintage car, necklace) - ALWAYS generate
 
 **Examples of objects to track:**
-- Musical instruments (guitars, pianos, microphones, drums)
-- Vehicles (cars, motorcycles, bicycles, boats)
-- Jewelry and accessories (necklaces, watches, rings)
-- Significant props (cameras, phones, bottles, books, bags)
+- Musical instruments (guitars, pianos, microphones, drums, violins, saxophones, trumpets, bass)
+- Vehicles (cars, motorcycles, bicycles, boats, trucks, vans)
+- Jewelry and accessories (necklaces, watches, rings, bracelets, earrings, chains)
+- Significant props (cameras, phones, laptops, headphones, speakers)
+- Key items (books, bottles, glasses, bags, hats, jackets, sunglasses, umbrellas, flowers, guitar cases)
 
 **DO NOT include:**
-- Generic items (random chairs, tables, cups)
-- Single-use props (only appear once)
-- Scene furnishings (unless plot-critical)
+- Generic scene furnishings (random chairs, tables, cups) unless plot-critical
+- Background items that don't interact with characters
+- Items mentioned only once in passing
 
 **Object Generation Guidelines:**
 
-1. **When to Generate Objects:**
-   - Object appears in 2+ clips (recurring prop)
-   - Object is central to the story (plot-critical)
-   - Object is held/worn by characters across multiple clips
-   - Examples: protagonist's guitar, vintage car they drive, signature necklace
+1. **Object Features (6 Required Fields - ALL MUST BE SPECIFIC):**
+   - **object_type**: Specific type (acoustic guitar, sports car, pendant necklace) - NOT generic "guitar" or "car"
+   - **color**: Exact color with shade (cherry red metallic, matte black, honey sunburst finish) - NOT just "red" or "black"
+   - **material**: Material/texture (solid spruce top, polished metal, worn leather) - NOT "wood" or "metal"
+   - **distinctive_features**: Unique details (scratches, logos, custom design, wear patterns, brand names) - NOT "nice looking"
+   - **size**: Approximate dimensions (full-size dreadnought body, compact sedan, 20-inch chain) - NOT "normal size"
+   - **condition**: new | worn | vintage | damaged | pristine | well-used
 
-2. **Object Features (6 Required Fields):**
-   - **object_type**: Specific type (acoustic guitar, sports car, pendant necklace)
-   - **color**: Exact color with shade (cherry red, matte black, honey sunburst)
-   - **material**: Material/texture (solid wood, polished metal, worn leather)
-   - **distinctive_features**: Unique details (scratches, logos, custom design, wear patterns)
-   - **size**: Approximate dimensions (full-size guitar, compact sedan, 20-inch chain)
-   - **condition**: new | worn | vintage | damaged
-
-3. **Importance Levels:**
-   - **primary**: Central to story (protagonist's signature item, plot device)
+2. **Importance Levels:**
+   - **primary**: Central to story (protagonist's signature item, plot device, user-mentioned object)
    - **secondary**: Supporting props (background instruments, vehicle, accessories)
 
-4. **Object Consistency:**
+3. **Object Consistency:**
    - Same object must have SAME features in all clips
    - Object features should be SPECIFIC and MEASURABLE
-   - Avoid vague descriptions ("nice guitar" → "honey sunburst acoustic guitar with worn finish")
+   - Avoid vague descriptions ("nice guitar" → "honey sunburst acoustic guitar with worn finish around soundhole")
+   - Extract features from clip descriptions when possible
 
-5. **Clip Assignment:**
+4. **Clip Assignment:**
    - If a clip mentions an object, include its ID in the "objects" field
    - Example: Clip shows "protagonist playing guitar" → objects: ["vintage_guitar"]
+   - Primary objects should appear in relevant clips even if only mentioned once
 
 **GOOD EXAMPLE:**
 
@@ -633,7 +637,8 @@ def _get_mood_instructions(mood: str, energy_level: str, bpm: float) -> str:
 
 def _build_user_prompt(
     user_prompt: str,
-    audio_data: AudioAnalysis
+    audio_data: AudioAnalysis,
+    user_input_objects: Optional[List[Any]] = None
 ) -> str:
     """
     Build user prompt with audio context and clip boundaries.
@@ -659,10 +664,11 @@ def _build_user_prompt(
             f"  Clip {i}: {boundary.start:.1f}s - {boundary.end:.1f}s (duration: {boundary.duration:.1f}s)"
         )
     
-    # Format lyrics (if available) - use all lyrics with formatted phrases
+    # Format FULL lyrics (if available) - use ALL lyrics as primary context for scene planning
+    # Lyrics inform the overall story and character actions, not just individual clips
     lyrics_text = ""
     if audio_data.lyrics:
-        # Group lyrics by formatted phrases to avoid repetition
+        # Group lyrics by formatted phrases to avoid repetition, but include ALL unique phrases
         seen_phrases = set()
         lyrics_lines = []
         
@@ -678,25 +684,37 @@ def _build_user_prompt(
                 # Fallback to individual word if formatted_text not available
                 lyrics_lines.append(f"  [{lyric.timestamp:.1f}s] {lyric.text}")
         
-        # If we have too many unique phrases, limit to first 50 for token management
-        if len(lyrics_lines) > 50:
-            lyrics_lines = lyrics_lines[:50]
-            lyrics_text = f"""
-## Lyrics Context (showing first 50 phrases)
+        # Use ALL lyrics - no truncation (full lyrics strongly inform the overall story)
+        lyrics_text = f"""
+## Full Lyrics (Complete Song - Strongly Inform Scene Planning)
 
 {chr(10).join(lyrics_lines)}
-"""
-        else:
-            lyrics_text = f"""
-## Lyrics Context
 
-{chr(10).join(lyrics_lines)}
+**IMPORTANT:** These lyrics are a STRONG SECONDARY source (1B) that should strongly inform the scene planning. Use them to:
+- Understand the song's narrative, themes, and emotional journey
+- Determine character actions and motivations that align with lyrical content
+- Create scenes that complement and enhance the user's creative vision
+- Ensure characters perform actions (talking, moving, gesturing) that match the lyrics
+- The user's creative vision (above) is PRIMARY (1A), but lyrics should strongly influence how that vision is executed
 """
     
-    user_prompt_formatted = f"""## User's Creative Vision
+    # Add user input objects information if available
+    objects_hint = ""
+    if user_input_objects:
+        object_names = [obj.name for obj in user_input_objects]
+        objects_hint = f"""
+## Objects Mentioned by User (IMPORTANT - Mark as PRIMARY)
+
+The user explicitly mentioned these objects in their prompt. These should be marked as "primary" importance and included in relevant clips:
+{chr(10).join(f"- {name}" for name in object_names)}
+
+**CRITICAL:** These objects are plot-critical and should appear in the scene plan even if they only appear in one clip.
+"""
+    
+    user_prompt_formatted = f"""## User's Creative Vision (PRIMARY - 1A)
 
 {user_prompt}
-
+{objects_hint}{lyrics_text}
 ## Song Structure
 
 {chr(10).join(structure_lines)}
@@ -704,9 +722,16 @@ def _build_user_prompt(
 ## Clip Boundaries (You must generate scripts for these exact boundaries)
 
 {chr(10).join(boundary_lines)}
-{lyrics_text}
 
-Generate a complete scene plan that transforms the user's creative vision into a professional music video plan. Apply director knowledge to enhance the vision while maintaining the core concept. Ensure all clip scripts align to the provided boundaries and create a coherent visual narrative."""
+**IMPORTANT INSTRUCTIONS:**
+1. **User's Creative Vision is PRIMARY (1A)** - This is the foundation of the scene plan
+2. **Lyrics are SECONDARY but STRONGLY INFORM (1B)** - Use lyrics to enhance and inform how the user's vision is executed
+3. Characters should PERFORM ACTIONS based on lyrics: talking (lip-sync), moving, gesturing, interacting with objects
+4. Avoid static "moving still shots" - characters must be DOING things, not just standing there
+5. Each clip's visual_description should include specific actions that align with the lyrics at that timestamp
+6. The lyrics_context field in each clip should contain the specific lyrics/phrases for that clip's timestamp range
+
+Generate a complete scene plan that transforms the user's creative vision (PRIMARY) informed by the lyrics (SECONDARY but strong) into a professional music video plan. Apply director knowledge to enhance the vision while maintaining the core concept. Ensure all clip scripts align to the provided boundaries and create a coherent visual narrative with active, dynamic characters."""
     
     return user_prompt_formatted
 
@@ -716,7 +741,8 @@ async def generate_scene_plan(
     job_id: UUID,
     user_prompt: str,
     audio_data: AudioAnalysis,
-    director_knowledge: str
+    director_knowledge: str,
+    user_input_objects: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
     """
     Generate scene plan using LLM API.
@@ -747,7 +773,7 @@ async def generate_scene_plan(
     try:
         # Build prompts
         system_prompt = _build_system_prompt(director_knowledge, audio_data)
-        user_prompt_formatted = _build_user_prompt(user_prompt, audio_data)
+        user_prompt_formatted = _build_user_prompt(user_prompt, audio_data, user_input_objects)
         
         logger.info(
             f"Calling LLM for scene plan generation",

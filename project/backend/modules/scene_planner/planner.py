@@ -26,6 +26,7 @@ from .character_analyzer import (
     update_clip_scripts_with_characters
 )
 from .object_analyzer import (
+    extract_objects_from_user_input,
     analyze_clips_for_objects,
     update_clip_scripts_with_objects as update_clips_with_object_ids
 )
@@ -76,12 +77,25 @@ async def plan_scenes(
         director_knowledge = get_director_knowledge()
         logger.debug("Loaded director knowledge base")
         
+        # Step 1a: Extract objects from user input before LLM generation
+        # This allows us to pass explicit object hints to the LLM
+        user_input_objects = extract_objects_from_user_input(user_prompt)
+        if user_input_objects:
+            logger.info(
+                f"Extracted {len(user_input_objects)} objects from user input",
+                extra={
+                    "job_id": str(job_id),
+                    "object_ids": [obj.id for obj in user_input_objects]
+                }
+            )
+        
         # Step 2: Generate scene plan using LLM
         llm_output = await generate_scene_plan(
             job_id=job_id,
             user_prompt=user_prompt,
             audio_data=audio_data,
-            director_knowledge=director_knowledge
+            director_knowledge=director_knowledge,
+            user_input_objects=user_input_objects  # Pass extracted objects as hints
         )
         logger.debug("Generated scene plan from LLM")
         
@@ -198,10 +212,13 @@ async def plan_scenes(
             logger.debug("Updated clip scripts with implicit character IDs")
 
         # PHASE 3: Extract objects from LLM output and analyze clips for additional objects
-        # Get objects from LLM (if provided)
+        # Start with objects extracted from user input (they're already marked as primary)
         from shared.models.scene import Object, ObjectFeatures
-        objects = []
+        objects = list(user_input_objects)  # Start with user input objects
+        
+        # Get objects from LLM (if provided)
         if "objects" in llm_output and llm_output["objects"]:
+            existing_object_ids = {obj.id for obj in objects}
             for obj_data in llm_output["objects"]:
                 # Parse object with nested features
                 if "features" in obj_data:
@@ -212,17 +229,21 @@ async def plan_scenes(
                         features=obj_features,
                         importance=obj_data.get("importance", "secondary")
                     )
-                    objects.append(obj)
+                    # Only add if not already extracted from user input
+                    if obj.id not in existing_object_ids:
+                        objects.append(obj)
+                        existing_object_ids.add(obj.id)
 
             logger.info(
-                f"LLM generated {len(objects)} object profiles",
+                f"LLM generated {len([o for o in objects if o not in user_input_objects])} additional object profiles",
                 extra={
                     "job_id": str(job_id),
-                    "object_ids": [obj.id for obj in objects]
+                    "object_ids": [obj.id for obj in objects],
+                    "user_input_objects": len(user_input_objects)
                 }
             )
 
-        # Analyze clip scripts for additional objects not caught by LLM
+        # Analyze clip scripts for additional objects not caught by LLM or user input
         detected_objects, clip_scripts = analyze_clips_for_objects(
             clip_scripts=clip_scripts,
             existing_objects=objects
