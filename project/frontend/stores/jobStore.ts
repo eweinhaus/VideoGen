@@ -12,7 +12,7 @@ interface JobState {
   error: string | null
   setCurrentJob: (job: Job | null) => void
   updateJob: (jobId: string, updates: Partial<Job>) => void
-  fetchJob: (jobId: string) => Promise<void>
+  fetchJob: (jobId: string, options?: { timeout?: number; allowPartial?: boolean }) => Promise<void>
   fetchJobs: () => Promise<void>
   clearCurrentJob: () => void
 }
