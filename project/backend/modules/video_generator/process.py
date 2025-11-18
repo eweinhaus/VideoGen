@@ -308,38 +308,38 @@ async def process(
                         cached_url = image_cache_param.get(char_ref_url)
                         if cached_url:
                             collected_urls.append(cached_url)
-                            logger.debug(
-                                f"Using cached character reference for clip {clip_prompt.clip_index}",
+                    logger.debug(
+                        f"Using cached character reference for clip {clip_prompt.clip_index}",
                                 extra={"job_id": str(job_id), "url": char_ref_url[:50]}
-                            )
-                        else:
+                    )
+                else:
                             # Download if not cached
                             downloaded_url = await download_and_upload_image(char_ref_url, job_id)
                             if downloaded_url:
                                 collected_urls.append(downloaded_url)
                                 logger.debug(
                                     f"Downloaded character reference for clip {clip_prompt.clip_index}",
-                                    extra={"job_id": str(job_id)}
-                                )
+                        extra={"job_id": str(job_id)}
+                    )
                 
                 # Add scene reference URL if available and we have room (max 3 total)
                 if clip_prompt.scene_reference_url and len(collected_urls) < 3:
                     cached_url = image_cache_param.get(clip_prompt.scene_reference_url)
                     if cached_url:
                         collected_urls.append(cached_url)
-                        logger.debug(
-                            f"Using cached scene reference for clip {clip_prompt.clip_index}",
-                            extra={"job_id": str(job_id)}
-                        )
-                    else:
+                    logger.debug(
+                        f"Using cached scene reference for clip {clip_prompt.clip_index}",
+                        extra={"job_id": str(job_id)}
+                    )
+                else:
                         # Download if not cached
                         downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
                         if downloaded_url:
                             collected_urls.append(downloaded_url)
                             logger.debug(
                                 f"Downloaded scene reference for clip {clip_prompt.clip_index}",
-                                extra={"job_id": str(job_id)}
-                            )
+                        extra={"job_id": str(job_id)}
+                    )
                 
                 # Add object reference URLs if available and we have room (max 3 total)
                 if clip_prompt.object_reference_urls and len(collected_urls) < 3:
@@ -380,13 +380,13 @@ async def process(
                             "has_object_refs": bool(clip_prompt.object_reference_urls)
                         }
                     )
-                else:
-                    # No references available - text-only generation
-                    logger.debug(
-                        f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
-                        extra={"job_id": str(job_id)}
-                    )
-                    image_url = None
+            else:
+                # No references available - text-only generation
+                logger.debug(
+                    f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
+                    extra={"job_id": str(job_id)}
+                )
+                image_url = None
                     reference_image_urls = []
             
             # Progress callback to emit events during polling (defined outside retry loop)
