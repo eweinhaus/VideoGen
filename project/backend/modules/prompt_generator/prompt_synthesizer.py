@@ -13,8 +13,13 @@ logger = get_logger("prompt_generator")
 
 # Enhanced negative prompt to prevent anatomy errors and quality issues
 # Added specific anatomy constraints to prevent common issues like extra limbs, missing body parts
+# Enhanced with face-specific constraints to prevent face warping and distortion
 DEFAULT_NEGATIVE_PROMPT = (
     "blurry, low resolution, distorted faces, "
+    "warped face, distorted face, blurred face, fuzzy facial features, "
+    "face morphing, inconsistent face, face changing, different face, "
+    "deformed facial features, asymmetric face, face distortion, "
+    "face blur, low detail face, unclear face, hazy face, soft focus face, "
     "extra limbs, missing limbs, extra fingers, missing fingers, deformed hands, "
     "extra legs, extra arms, three legs, three arms, four legs, four arms, "
     "deformed anatomy, mutated body parts, asymmetric body, distorted proportions, "
@@ -342,13 +347,16 @@ Age: {features.age}"""
         return ""
 
     # PHASE 3: Proper multi-character formatting
+    # Enhanced with face preservation instructions for better face clarity
+    face_preservation_note = "\n\nFACE PRESERVATION: Preserve EXACT facial features - sharp face, clear eyes, defined nose, natural mouth, consistent facial structure, no face warping, no face distortion, no face blur."
+    
     if len(character_blocks) == 1:
         # Single character
         identity_block = f"""CHARACTER IDENTITIES:
 
 {character_blocks[0]}
 
-CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character must maintain these precise features in every clip."""
+CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character must maintain these precise features in every clip.{face_preservation_note}"""
     else:
         # Multiple characters - separate with double newlines
         characters_text = "\n\n".join(character_blocks)
@@ -357,7 +365,7 @@ CRITICAL: These are EXACT, IMMUTABLE features for ALL characters. Each character
 
 {characters_text}
 
-CRITICAL: These are EXACT, IMMUTABLE features for ALL {character_count} characters. Each character must maintain these precise features in every clip."""
+CRITICAL: These are EXACT, IMMUTABLE features for ALL {character_count} characters. Each character must maintain these precise features in every clip.{face_preservation_note}"""
 
     return identity_block
 

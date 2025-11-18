@@ -105,9 +105,12 @@ def get_character_variation_suffix(variation_index: int) -> str:
     elif variation_index == 4:
         # Variation 4: action pose
         return "SAME PERSON, dynamic action shot, in motion, natural movement, EXACT SAME FEATURES"
+    elif variation_index == 5:
+        # Variation 5: close-up face portrait (for maximum face detail and clarity)
+        return "SAME PERSON, extreme close-up portrait, face fills frame, sharp facial features, detailed eyes nose mouth, professional headshot quality, EXACT SAME FEATURES, high resolution face detail"
     else:
-        # Cycle through variations if we have more than 5
-        cycle_idx = (variation_index % 5)
+        # Cycle through variations if we have more than 6
+        cycle_idx = (variation_index % 6)
         return get_character_variation_suffix(cycle_idx)
 
 
@@ -236,7 +239,8 @@ def synthesize_prompt(
     # For character images: START with strong realism keywords (order matters in SDXL)
     if image_type == "character":
         # Put realism FIRST to override any style tendencies
-        fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human")
+        # Emphasize face detail and clarity for better video generation preservation
+        fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human, sharp facial features, detailed face, clear eyes nose mouth, professional portrait quality")
     
     # For character images, use enhanced character features if available
     if image_type == "character" and character:
@@ -264,6 +268,7 @@ def synthesize_prompt(
     # Add style information (for characters, this reinforces realism)
     if image_type == "character":
         # For characters: emphasize photography and realism
+        # Enhanced with face-specific keywords for better preservation in video generation
         style_fragments = [
             "professional portrait photography",
             "natural lighting, studio quality",
@@ -271,7 +276,9 @@ def synthesize_prompt(
             f"{color_palette_str} color tones",
             "DSLR camera, 85mm lens, f/2.8 aperture, shallow depth of field",
             "natural skin texture, realistic skin pores, natural colors",
-            "highly detailed, professional quality, 4K, sharp focus, crisp details"
+            "highly detailed, professional quality, 4K, sharp focus, crisp details",
+            "sharp facial features, clear face definition, no face blur, no face distortion",
+            "preserve exact facial structure, consistent face, no face warping"
         ]
     else:
         # For scenes: use scene plan style

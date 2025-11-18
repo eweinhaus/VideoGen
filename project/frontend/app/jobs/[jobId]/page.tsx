@@ -192,7 +192,7 @@ export default function JobProgressPage() {
         <Alert variant="destructive">
           <AlertDescription>
             <div className="space-y-2">
-              <div>Job not found or you don't have access to it</div>
+              <div>Job not found or you don&apos;t have access to it</div>
               <div className="text-sm text-muted-foreground">
                 Job ID: {jobId}
               </div>

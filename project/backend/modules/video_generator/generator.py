@@ -585,36 +585,75 @@ async def generate_video_clip(
     # Add image(s) if available (parameter name varies by model)
     # Use parameter name from model config (e.g., "start_image" for Kling, "image" for Veo3)
     # Veo 3.1 supports multiple reference images (up to 3) via "reference_images" parameter
+    # Face Clarity Enhancement: Prioritize character references for face-heavy clips
     if model_config.get("type") in ["image-to-video", "text-and-image-to-video"]:
         parameter_names = model_config.get("parameter_names", {})
         supports_multiple = model_config.get("supports_multiple_images", False)
         max_images = model_config.get("max_reference_images", 1)
         
+        # Detect if clip is face-heavy (close-up, portrait, face-focused)
+        # This helps prioritize character reference images for better face preservation
+        prompt_lower = clip_prompt.prompt.lower()
+        is_face_heavy = any(keyword in prompt_lower for keyword in [
+            "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+            "facial", "head", "head and shoulders", "bust shot", "face fills"
+        ])
+        
         # Check if we have multiple images and model supports it (e.g., Veo 3.1)
         if supports_multiple and reference_image_urls and len(reference_image_urls) > 0:
             # Use multiple images parameter (e.g., "reference_images" for Veo 3.1)
             reference_images_param = parameter_names.get("reference_images", "reference_images")
-            # Limit to max_images (Veo 3.1 supports up to 3)
-            limited_images = reference_image_urls[:max_images]
+            
+            # For face-heavy clips, prioritize character references
+            if is_face_heavy and image_url and max_images >= 2:
+                # Use character reference first, then scene reference
+                # Take first character reference, then add scene reference
+                limited_images = [reference_image_urls[0], image_url] if len(reference_image_urls) > 0 else [image_url]
+                limited_images = limited_images[:max_images]
+            else:
+                # Default: use character references (or scene if no character refs)
+                # For single image models, this will be handled in the elif branch
+                limited_images = reference_image_urls[:max_images]
+            
             input_data[reference_images_param] = limited_images
             logger.info(
-                f"Using {len(limited_images)} reference image(s) via '{reference_images_param}' parameter for {selected_model_key}",
+                f"Using {len(limited_images)} reference image(s) via '{reference_images_param}' parameter for {selected_model_key} "
+                f"(face_heavy={is_face_heavy})",
                 extra={
                     "job_id": str(job_id),
                     "model": selected_model_key,
                     "parameter": reference_images_param,
                     "num_images": len(limited_images),
-                    "max_images": max_images
+                    "max_images": max_images,
+                    "face_heavy": is_face_heavy
                 }
             )
         elif image_url:
-            # Fallback to single image parameter (backward compatibility)
+            # Single image parameter - prioritize character reference for face-heavy clips
             image_param = parameter_names.get("image", "start_image")  # Default to "start_image" for backward compatibility
-            input_data[image_param] = image_url
-            logger.debug(
-                f"Using single image parameter '{image_param}' for model {selected_model_key}",
-                extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
-            )
+            
+            # For face-heavy clips with character references, use character reference as primary
+            if is_face_heavy and reference_image_urls and len(reference_image_urls) > 0:
+                # Use character reference instead of scene reference for face-heavy clips
+                primary_image = reference_image_urls[0]  # Character reference
+                input_data[image_param] = primary_image
+                logger.info(
+                    f"Using character reference for face-heavy clip via '{image_param}' parameter for {selected_model_key}",
+                    extra={
+                        "job_id": str(job_id),
+                        "model": selected_model_key,
+                        "image_param": image_param,
+                        "face_heavy": True,
+                        "using_character_ref": True
+                    }
+                )
+            else:
+                # Default: use scene reference
+                input_data[image_param] = image_url
+                logger.debug(
+                    f"Using single image parameter '{image_param}' for model {selected_model_key}",
+                    extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
+                )
 
     # Get model version string for Replicate
     # Extract version from model config - don't use default fallback to avoid wrong model version
