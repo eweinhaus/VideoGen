@@ -9,7 +9,7 @@ import time
 import subprocess
 import tempfile
 import os
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
 from uuid import UUID
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
@@ -148,6 +148,121 @@ async def download_video_from_url(url: str) -> bytes:
         raise RetryableError(f"Video download failed: {str(e)}") from e
 
 
+async def strip_audio_from_video_bytes(video_bytes: bytes, job_id: UUID = None) -> bytes:
+    """
+    Strip audio track from video bytes using FFmpeg.
+    
+    This ensures video-only clips regardless of what the model generates.
+    We use original audio in the composer, not AI-generated audio.
+    
+    Args:
+        video_bytes: Video file bytes (with or without audio)
+        job_id: Job ID for logging
+        
+    Returns:
+        Video bytes without audio track
+        
+    Raises:
+        RetryableError: If audio stripping fails
+        GenerationError: If FFmpeg is not available
+    """
+    import shutil
+    
+    # Check if FFmpeg is available
+    if not shutil.which("ffmpeg"):
+        logger.warning(
+            "FFmpeg not available, cannot strip audio. Video may contain audio from model.",
+            extra={"job_id": str(job_id) if job_id else None}
+        )
+        # Return original bytes if FFmpeg not available (better than failing)
+        return video_bytes
+    
+    # Use temporary files for input and output
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as input_file:
+        input_path = input_file.name
+        input_file.write(video_bytes)
+    
+    output_path = None
+    try:
+        # Create output temp file
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as output_file:
+            output_path = output_file.name
+        
+        # FFmpeg command to strip audio: -an flag removes all audio streams
+        # -c:v copy: Copy video stream without re-encoding (faster, preserves quality)
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-c:v", "copy",  # Copy video (no re-encoding)
+            "-an",  # Remove all audio streams
+            "-y",  # Overwrite output file
+            output_path
+        ]
+        
+        logger.info(
+            "Stripping audio from video clip",
+            extra={"job_id": str(job_id) if job_id else None}
+        )
+        
+        # Run FFmpeg command
+        process = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+        
+        if process.returncode != 0:
+            error_msg = stderr.decode() if stderr else "Unknown FFmpeg error"
+            logger.error(
+                f"Failed to strip audio from video: {error_msg}",
+                extra={"job_id": str(job_id) if job_id else None, "error": error_msg}
+            )
+            # Return original bytes if stripping fails (better than failing the job)
+            logger.warning(
+                "Returning original video bytes (audio stripping failed)",
+                extra={"job_id": str(job_id) if job_id else None}
+            )
+            return video_bytes
+        
+        # Read output file
+        with open(output_path, "rb") as f:
+            video_without_audio = f.read()
+        
+        logger.info(
+            "Audio stripped from video clip successfully",
+            extra={
+                "job_id": str(job_id) if job_id else None,
+                "original_size": len(video_bytes),
+                "stripped_size": len(video_without_audio)
+            }
+        )
+        
+        return video_without_audio
+        
+    except asyncio.TimeoutError:
+        logger.error(
+            "Audio stripping timeout after 60s",
+            extra={"job_id": str(job_id) if job_id else None}
+        )
+        return video_bytes  # Return original on timeout
+    except Exception as e:
+        logger.error(
+            f"Error stripping audio from video: {e}",
+            extra={"job_id": str(job_id) if job_id else None, "error": str(e)}
+        )
+        return video_bytes  # Return original on error
+    finally:
+        # Clean up temp files
+        try:
+            if os.path.exists(input_path):
+                os.unlink(input_path)
+            if output_path and os.path.exists(output_path):
+                os.unlink(output_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete temporary files: {e}")
+
+
 def get_video_duration(video_bytes: bytes) -> float:
     """
     Get video duration using ffprobe or similar.
@@ -222,8 +337,9 @@ def map_to_nearest_valid_duration(target_duration: float, valid_durations: list)
 async def generate_video_clip(
     clip_prompt: ClipPrompt,
     image_url: Optional[str],
-    settings: dict,
-    job_id: UUID,
+    reference_image_urls: Optional[List[str]] = None,  # Multiple images for Veo 3.1
+    settings: dict = None,
+    job_id: UUID = None,
     environment: str = "production",
     extra_context: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -462,17 +578,43 @@ async def generate_video_clip(
             # Models with variable resolution may not need resolution parameter
             pass
 
-    # Add image if available (parameter name varies by model)
+    # IMPORTANT: We do NOT pass audio parameters to any model
+    # All models generate video-only clips. Original audio is synced in composer.
+    # This ensures we use the user's original audio file, not AI-generated audio.
+    
+    # Add image(s) if available (parameter name varies by model)
     # Use parameter name from model config (e.g., "start_image" for Kling, "image" for Veo3)
-    if image_url and model_config.get("type") in ["image-to-video", "text-and-image-to-video"]:
-        # Get image parameter name from model config
+    # Veo 3.1 supports multiple reference images (up to 3) via "reference_images" parameter
+    if model_config.get("type") in ["image-to-video", "text-and-image-to-video"]:
         parameter_names = model_config.get("parameter_names", {})
-        image_param = parameter_names.get("image", "start_image")  # Default to "start_image" for backward compatibility
-        input_data[image_param] = image_url
-        logger.debug(
-            f"Using image parameter '{image_param}' for model {selected_model_key}",
-            extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
-        )
+        supports_multiple = model_config.get("supports_multiple_images", False)
+        max_images = model_config.get("max_reference_images", 1)
+        
+        # Check if we have multiple images and model supports it (e.g., Veo 3.1)
+        if supports_multiple and reference_image_urls and len(reference_image_urls) > 0:
+            # Use multiple images parameter (e.g., "reference_images" for Veo 3.1)
+            reference_images_param = parameter_names.get("reference_images", "reference_images")
+            # Limit to max_images (Veo 3.1 supports up to 3)
+            limited_images = reference_image_urls[:max_images]
+            input_data[reference_images_param] = limited_images
+            logger.info(
+                f"Using {len(limited_images)} reference image(s) via '{reference_images_param}' parameter for {selected_model_key}",
+                extra={
+                    "job_id": str(job_id),
+                    "model": selected_model_key,
+                    "parameter": reference_images_param,
+                    "num_images": len(limited_images),
+                    "max_images": max_images
+                }
+            )
+        elif image_url:
+            # Fallback to single image parameter (backward compatibility)
+            image_param = parameter_names.get("image", "start_image")  # Default to "start_image" for backward compatibility
+            input_data[image_param] = image_url
+            logger.debug(
+                f"Using single image parameter '{image_param}' for model {selected_model_key}",
+                extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
+            )
 
     # Get model version string for Replicate
     # Extract version from model config - don't use default fallback to avoid wrong model version
@@ -485,9 +627,20 @@ async def generate_video_clip(
     use_fallback = False
     
     try:
+        # Ensure no audio parameters are passed (we use original audio in composer)
+        # Remove any audio-related parameters if they somehow got added
+        audio_params = [k for k in input_data.keys() if "audio" in k.lower()]
+        if audio_params:
+            logger.warning(
+                f"Removing audio parameters from input_data: {audio_params}",
+                extra={"job_id": str(job_id), "model": selected_model_key, "removed_params": audio_params}
+            )
+            for param in audio_params:
+                del input_data[param]
+        
         # Start prediction
         logger.info(
-            f"Starting video generation for clip {clip_prompt.clip_index}",
+            f"Starting video generation for clip {clip_prompt.clip_index} (video-only, no audio)",
             extra={
                 "job_id": str(job_id),
                 "model": selected_model_key,
@@ -495,7 +648,8 @@ async def generate_video_clip(
                 "resolution": input_data.get("resolution"),
                 "aspect_ratio": aspect_ratio,
                 "has_image": image_url is not None,
-                "input_params": list(input_data.keys())
+                "input_params": list(input_data.keys()),
+                "audio_generation": False  # Explicitly log that we're not generating audio
             }
         )
         
@@ -725,6 +879,10 @@ async def generate_video_clip(
             else:
                 raise GenerationError(f"Unexpected output format: {type(video_output)}")
             
+            # IMPORTANT: Strip audio from video to ensure video-only clips
+            # Some models (like Veo 3.1) generate audio by default, but we use original audio in composer
+            video_bytes = await strip_audio_from_video_bytes(video_bytes, job_id=job_id)
+            
             # Get actual duration
             actual_duration = get_video_duration(video_bytes)
             
@@ -817,6 +975,59 @@ async def generate_video_clip(
                 # Retry with fallback (would need to be called from retry logic)
                 raise RetryableError(f"Model unavailable, try fallback: {prediction.error}")
             
+            # Check for content moderation/safety filter errors
+            error_str = str(prediction.error).lower()
+            if "flagged as sensitive" in error_str or "e005" in error_str or "sensitive" in error_str:
+                # Content moderation error - try sanitizing prompt and retry
+                from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
+                
+                logger.warning(
+                    f"Content moderation error for clip {clip_prompt.clip_index}, attempting prompt sanitization",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "error": str(prediction.error),
+                        "prompt_preview": clip_prompt.prompt[:100] if clip_prompt.prompt else None,
+                        "has_reference_images": bool(reference_image_urls or image_url)
+                    }
+                )
+                
+                # Sanitize the prompt
+                sanitized_prompt = sanitize_prompt_for_content_moderation(clip_prompt.prompt, job_id=str(job_id))
+                
+                # If prompt was modified, make it retryable so we can try again with sanitized version
+                if sanitized_prompt != clip_prompt.prompt:
+                    logger.info(
+                        f"Prompt sanitized for clip {clip_prompt.clip_index}, will retry with sanitized version",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "original_preview": clip_prompt.prompt[:100],
+                            "sanitized_preview": sanitized_prompt[:100]
+                        }
+                    )
+                    # Raise as RetryableError so it can be retried with sanitized prompt
+                    # The retry logic will need to use the sanitized prompt
+                    raise RetryableError(
+                        f"Content moderation error (prompt sanitized, retryable): {prediction.error}"
+                    )
+                else:
+                    # Prompt couldn't be sanitized - try fallback to Kling Turbo (text-only, no reference images)
+                    logger.warning(
+                        f"Content moderation error for clip {clip_prompt.clip_index} - prompt could not be sanitized, "
+                        f"will fallback to Kling Turbo (text-only)",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "error": str(prediction.error),
+                            "fallback_model": "kling_v25_turbo"
+                        }
+                    )
+                    # Raise as RetryableError with special marker for content moderation fallback
+                    raise RetryableError(
+                        f"Content moderation error (fallback to Kling Turbo): {prediction.error}"
+                    )
+            
             raise GenerationError(f"Clip generation failed: {prediction.error}")
             
     except RetryableError:
@@ -852,6 +1063,21 @@ async def generate_video_clip(
         elif "unavailable" in error_str or "unavailable" in error_logs_str:
             # Model unavailable - try fallback
             raise RetryableError(f"Model unavailable, try fallback: {str(e)}") from e
+        elif "flagged as sensitive" in error_str or "e005" in error_str or "sensitive" in error_str:
+            # Content moderation error - provide clearer message
+            logger.error(
+                f"Content moderation error detected",
+                extra={
+                    "job_id": str(job_id) if job_id else None,
+                    "error": str(e),
+                    "error_type": "content_moderation"
+                }
+            )
+            raise GenerationError(
+                f"Content moderation: The prompt or reference images were flagged as sensitive "
+                f"by Veo 3.1's safety filters. Please modify the prompt or use different reference images. "
+                f"Error: {str(e)}"
+            ) from e
         else:
             # Non-retryable model error
             raise GenerationError(f"Model error: {str(e)}") from e
@@ -864,6 +1090,13 @@ async def generate_video_clip(
             raise RetryableError(f"Timeout error: {str(e)}") from e
         elif "network" in error_str or "connection" in error_str:
             raise RetryableError(f"Network error: {str(e)}") from e
+        elif "flagged as sensitive" in error_str or "e005" in error_str or "sensitive" in error_str:
+            # Content moderation error - provide clearer message
+            raise GenerationError(
+                f"Content moderation: The prompt or reference images were flagged as sensitive "
+                f"by Veo 3.1's safety filters. Please modify the prompt or use different reference images. "
+                f"Error: {str(e)}"
+            ) from e
         else:
             raise GenerationError(f"Generation error: {str(e)}") from e
 
