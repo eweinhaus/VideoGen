@@ -609,12 +609,12 @@ async def generate_video_clip(
             )
         elif image_url:
             # Fallback to single image parameter (backward compatibility)
-            image_param = parameter_names.get("image", "start_image")  # Default to "start_image" for backward compatibility
-            input_data[image_param] = image_url
-            logger.debug(
+        image_param = parameter_names.get("image", "start_image")  # Default to "start_image" for backward compatibility
+        input_data[image_param] = image_url
+        logger.debug(
                 f"Using single image parameter '{image_param}' for model {selected_model_key}",
-                extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
-            )
+            extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}
+        )
 
     # Get model version string for Replicate
     # Extract version from model config - don't use default fallback to avoid wrong model version

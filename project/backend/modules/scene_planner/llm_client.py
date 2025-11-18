@@ -685,7 +685,7 @@ def _build_user_prompt(
                 lyrics_lines.append(f"  [{lyric.timestamp:.1f}s] {lyric.text}")
         
         # Use ALL lyrics - no truncation (full lyrics strongly inform the overall story)
-        lyrics_text = f"""
+            lyrics_text = f"""
 ## Full Lyrics (Complete Song - Strongly Inform Scene Planning)
 
 {chr(10).join(lyrics_lines)}
