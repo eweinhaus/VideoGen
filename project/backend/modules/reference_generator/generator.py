@@ -107,8 +107,25 @@ def get_model_version(image_type: Literal["scene", "character", "object"] = "sce
             return character_model
     elif image_type == "object":
         # Objects use SDXL for product photography (better for clean backgrounds and precise details)
+        # IMPORTANT: Always use versioned model string to avoid 404 errors
         object_model = os.getenv("REFERENCE_MODEL_OBJECTS", REFERENCE_MODEL_PROD)
         if object_model:
+            # Validate that model string includes version hash (prevents 404 errors)
+            # Format should be "owner/model:version_hash" or "owner/model:latest"
+            if ":" not in object_model and object_model == "stability-ai/sdxl":
+                # User provided unversioned model - use production version
+                logger.warning(
+                    f"Unversioned model '{object_model}' provided for objects. Using production version to avoid 404 errors.",
+                    extra={"provided_model": object_model, "using_model": REFERENCE_MODEL_PROD}
+                )
+                object_model = REFERENCE_MODEL_PROD
+            elif ":" not in object_model:
+                # Other unversioned models - warn but allow (Flux models work without version)
+                logger.warning(
+                    f"Unversioned model '{object_model}' provided. This may cause 404 errors if model is not available.",
+                    extra={"model": object_model, "image_type": image_type}
+                )
+            
             logger.info(
                 f"Using object model: {object_model}",
                 extra={"model": object_model, "image_type": image_type}
