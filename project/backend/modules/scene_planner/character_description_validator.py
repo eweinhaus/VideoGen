@@ -161,21 +161,23 @@ def _extract_features(description: str) -> Dict[str, str]:
 
     # Pattern to match "Feature: description" format
     # Handles both bullet point format and inline format (with " - " separators)
-    # Captures until next feature, newline, or end of string
+    # FIXED: Pattern now correctly captures descriptions that contain hyphens (e.g., "shoulder-length", "5'7\"")
+    # Uses positive lookahead to stop at next " - FeatureName:" pattern, not just any hyphen
+    # This allows hyphens within feature descriptions (like "shoulder-length", "mid-20s", etc.)
     feature_patterns = {
-        "Hair": r"[-•]?\s*Hair:\s*([^-\n]+?)(?=\s*-\s*(?:Face|Eyes|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
-        "Face": r"[-•]?\s*Face:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Eyes|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
-        "Eyes": r"[-•]?\s*Eyes:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
-        "Clothing": r"[-•]?\s*Clothing:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Accessories|Build|Age|CRITICAL)|\n|$)",
-        "Accessories": r"[-•]?\s*Accessories:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Build|Age|CRITICAL)|\n|$)",
-        "Build": r"[-•]?\s*Build:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Accessories|Age|CRITICAL)|\n|$)",
-        "Age": r"[-•]?\s*Age:\s*([^-\n]+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Accessories|Build|CRITICAL)|\n|$)",
+        "Hair": r"[-•]?\s*(?i:Hair):\s*(.+?)(?=\s*-\s*(?:Face|Eyes|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Face": r"[-•]?\s*(?i:Face):\s*(.+?)(?=\s*-\s*(?:Hair|Eyes|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Eyes": r"[-•]?\s*(?i:Eyes):\s*(.+?)(?=\s*-\s*(?:Hair|Face|Clothing|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Clothing": r"[-•]?\s*(?i:Clothing):\s*(.+?)(?=\s*-\s*(?:Hair|Face|Eyes|Accessories|Build|Age|CRITICAL)|\n|$)",
+        "Accessories": r"[-•]?\s*(?i:Accessories):\s*(.+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Build|Age|CRITICAL)|\n|$)",
+        "Build": r"[-•]?\s*(?i:Build):\s*(.+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Accessories|Age|CRITICAL)|\n|$)",
+        "Age": r"[-•]?\s*(?i:Age):\s*(.+?)(?=\s*-\s*(?:Hair|Face|Eyes|Clothing|Accessories|Build|CRITICAL)|\n|$)",
     }
-
+    
+    # Extract features using improved patterns
     for feature_name, pattern in feature_patterns.items():
-        match = re.search(pattern, description, re.IGNORECASE | re.MULTILINE)
+        match = re.search(pattern, description, re.MULTILINE)
         if match:
-            # Clean up the extracted text
             feature_text = match.group(1).strip()
             # Remove trailing punctuation
             feature_text = feature_text.rstrip('.,;')
@@ -183,7 +185,7 @@ def _extract_features(description: str) -> Dict[str, str]:
         else:
             logger.warning(
                 f"Could not extract {feature_name} from character description",
-                extra={"feature": feature_name}
+                extra={"feature": feature_name, "description_preview": description[:200]}
             )
 
     # Fallback: Try to extract features from unstructured text using keyword matching

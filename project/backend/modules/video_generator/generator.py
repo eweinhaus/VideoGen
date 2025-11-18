@@ -591,13 +591,25 @@ async def generate_video_clip(
         supports_multiple = model_config.get("supports_multiple_images", False)
         max_images = model_config.get("max_reference_images", 1)
         
-        # Detect if clip is face-heavy (close-up, portrait, face-focused)
+        # Detect if clip is face-heavy (close-up, mid-shot, portrait, face-focused)
+        # Mid-shots and close-ups both need clear facial features - apply same face preservation rules
         # This helps prioritize character reference images for better face preservation
         prompt_lower = clip_prompt.prompt.lower()
+        
+        # Check camera angle from metadata if available (more reliable than parsing prompt)
+        camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+        is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+        
+        # Check prompt text for face-heavy keywords (close-up, mid-shot, portrait, etc.)
         is_face_heavy = any(keyword in prompt_lower for keyword in [
+            # Close-up shots
             "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
-            "facial", "head", "head and shoulders", "bust shot", "face fills"
-        ])
+            "facial", "head", "head and shoulders", "bust shot", "face fills",
+            # Mid-shots (also need clear facial features)
+            "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+            "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+            "from waist", "from chest", "from shoulders"
+        ]) or is_medium_shot
         
         # Check if we have multiple images and model supports it (e.g., Veo 3.1)
         if supports_multiple and reference_image_urls and len(reference_image_urls) > 0:
@@ -618,14 +630,16 @@ async def generate_video_clip(
             input_data[reference_images_param] = limited_images
             logger.info(
                 f"Using {len(limited_images)} reference image(s) via '{reference_images_param}' parameter for {selected_model_key} "
-                f"(face_heavy={is_face_heavy})",
+                f"(face_heavy={is_face_heavy}, shot_type={'mid-shot' if is_medium_shot else 'close-up' if is_face_heavy else 'wide'})",
                 extra={
                     "job_id": str(job_id),
                     "model": selected_model_key,
                     "parameter": reference_images_param,
                     "num_images": len(limited_images),
                     "max_images": max_images,
-                    "face_heavy": is_face_heavy
+                    "face_heavy": is_face_heavy,
+                    "camera_angle": camera_angle if camera_angle else None,
+                    "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide")
                 }
             )
         elif image_url:
@@ -638,13 +652,15 @@ async def generate_video_clip(
                 primary_image = reference_image_urls[0]  # Character reference
                 input_data[image_param] = primary_image
                 logger.info(
-                    f"Using character reference for face-heavy clip via '{image_param}' parameter for {selected_model_key}",
+                    f"Using character reference for face-heavy clip (close-up or mid-shot) via '{image_param}' parameter for {selected_model_key}",
                     extra={
                         "job_id": str(job_id),
                         "model": selected_model_key,
                         "image_param": image_param,
                         "face_heavy": True,
-                        "using_character_ref": True
+                        "using_character_ref": True,
+                        "camera_angle": camera_angle if camera_angle else None,
+                        "shot_type": "mid-shot" if is_medium_shot else "close-up"
                     }
                 )
             else:

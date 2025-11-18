@@ -149,7 +149,9 @@ def build_character_features_block(character: Optional[Character]) -> str:
         else:
             char_label = char_name
         
-        # Format features for reference image (more concise than video prompts)
+        # Format features for reference image
+        # IMPORTANT: Use the EXACT feature descriptions from scene planner - don't truncate or simplify
+        # This ensures reference images match the character descriptions exactly
         # Emphasize realism and photography for lifelike results
         # Note: Realism keywords are added at prompt start, not here to avoid redundancy
         features_block = (
@@ -243,13 +245,27 @@ def synthesize_prompt(
         fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human, sharp facial features, detailed face, clear eyes nose mouth, professional portrait quality")
     
     # For character images, use enhanced character features if available
+    # CRITICAL: Always prefer structured features from scene planner over raw description
     if image_type == "character" and character:
         features_block = build_character_features_block(character)
         if features_block:
             # Use detailed features instead of simple description
+            # This ensures reference images match the exact character descriptions from scene planner
+            logger.debug(
+                f"Using structured character features for {character.id or 'unknown'}",
+                extra={
+                    "character_id": character.id,
+                    "has_features": character.features is not None,
+                    "has_description": character.description is not None
+                }
+            )
             fragments.append(features_block)
         else:
-            # Fallback to description
+            # Fallback to description (should rarely happen if scene planner is working correctly)
+            logger.warning(
+                f"Character {character.id or 'unknown'} has no structured features, falling back to description",
+                extra={"character_id": character.id, "description_preview": description[:100]}
+            )
             fragments.append(description)
     else:
         # Scene images or characters without structured features
