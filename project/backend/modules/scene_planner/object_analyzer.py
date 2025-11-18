@@ -127,6 +127,17 @@ def analyze_clips_for_objects(
     """
     # Get existing object IDs
     existing_ids = {obj.id for obj in existing_objects}
+    
+    # Build object_type to Object mapping for consolidation
+    # Normalize object types to prevent duplicates (e.g., "truck", "pickup truck" → "truck")
+    object_type_map = {}
+    for obj in existing_objects:
+        normalized_type = _normalize_object_type(obj.features.object_type)
+        if normalized_type not in object_type_map:
+            object_type_map[normalized_type] = obj
+        # Prefer primary importance
+        elif obj.importance == "primary" and object_type_map[normalized_type].importance != "primary":
+            object_type_map[normalized_type] = obj
 
     # Scan all clips for object mentions
     object_mentions, clip_object_map = _scan_clips_for_objects(clip_scripts)
@@ -134,12 +145,29 @@ def analyze_clips_for_objects(
     # Generate new objects for recurring props
     new_objects = []
     for object_type, mention_count in object_mentions.items():
+        # Normalize object type for comparison
+        normalized_type = _normalize_object_type(object_type)
+        
+        # Check if an object of this type already exists (consolidation)
+        if normalized_type in object_type_map:
+            existing_obj = object_type_map[normalized_type]
+            logger.debug(
+                f"Object type '{object_type}' (normalized: '{normalized_type}') already exists as '{existing_obj.id}', skipping duplicate",
+                extra={
+                    "object_type": object_type,
+                    "normalized_type": normalized_type,
+                    "existing_object_id": existing_obj.id,
+                    "mention_count": mention_count
+                }
+            )
+            continue
+        
         # Create objects for:
         # 1. Those mentioned in 2+ clips (recurring)
         # 2. Primary objects (even if single-clip, if marked as primary by LLM or user)
         # Check if this object type already exists as primary
         is_primary = any(
-            obj.features.object_type == object_type or object_type in obj.features.object_type
+            _normalize_object_type(obj.features.object_type) == normalized_type
             for obj in existing_objects
             if obj.importance == "primary"
         )
@@ -161,6 +189,8 @@ def analyze_clips_for_objects(
             obj.importance = "primary"
         new_objects.append(obj)
         existing_ids.add(obj_id)
+        # Add to type map to prevent further duplicates
+        object_type_map[normalized_type] = obj
 
         logger.info(
             f"Generated object profile for '{object_type}'",
@@ -226,6 +256,161 @@ def _scan_clips_for_objects(
     )
 
     return object_mentions, clip_object_map
+
+
+def _normalize_object_type(object_type: str) -> str:
+    """
+    Normalize object type to base type for consolidation.
+    
+    Maps variations like "pickup truck", "truck", "pickup" to base type "truck".
+    
+    Args:
+        object_type: Object type string
+        
+    Returns:
+        Normalized base object type
+    """
+    object_type_lower = object_type.lower()
+    
+    # Normalization mappings
+    normalizations = {
+        # Vehicles
+        "pickup": "truck",
+        "pickup truck": "truck",
+        "suv": "truck",
+        "automobile": "car",
+        "vehicle": "car",
+        "sedan": "car",
+        "coupe": "car",
+        "sports car": "car",
+        "vintage car": "car",
+        "classic car": "car",
+        "motorbike": "motorcycle",
+        "bike": "motorcycle",  # Context-dependent, but default to motorcycle
+        "chopper": "motorcycle",
+        "harley": "motorcycle",
+        "scooter": "motorcycle",
+        "yacht": "boat",
+        "sailboat": "boat",
+        "speedboat": "boat",
+        "vessel": "boat",
+        "minivan": "van",
+        "camper van": "van",
+        
+        # Musical instruments
+        "acoustic guitar": "guitar",
+        "electric guitar": "guitar",
+        "vintage guitar": "guitar",
+        "classical guitar": "guitar",
+        "bass guitar": "bass",
+        "electric bass": "bass",
+        "upright bass": "bass",
+        "grand piano": "piano",
+        "upright piano": "piano",
+        "electric piano": "piano",
+        "drum set": "drums",
+        "drum kit": "drums",
+        "drumkit": "drums",
+        "wireless mic": "microphone",
+        "studio mic": "microphone",
+        "alto sax": "saxophone",
+        "tenor sax": "saxophone",
+        "string instrument": "violin",
+        
+        # Electronics
+        "smartphone": "phone",
+        "mobile phone": "phone",
+        "cellphone": "phone",
+        "cell phone": "phone",
+        "iphone": "phone",
+        "android": "phone",
+        "computer": "laptop",
+        "notebook": "laptop",
+        "macbook": "laptop",
+        "pc": "laptop",
+        "video camera": "camera",
+        "film camera": "camera",
+        "dslr": "camera",
+        "mirrorless": "camera",
+        "earbuds": "headphones",
+        "ear buds": "headphones",
+        "earphones": "headphones",
+        "airpods": "headphones",
+        "bluetooth speaker": "speaker",
+        "sound system": "speaker",
+        
+        # Accessories
+        "pendant": "necklace",
+        "chain necklace": "necklace",
+        "choker": "necklace",
+        "locket": "necklace",
+        "wedding ring": "ring",
+        "diamond ring": "ring",
+        "engagement ring": "ring",
+        "bangle": "bracelet",
+        "cuff": "bracelet",
+        "wristband": "bracelet",
+        "wristwatch": "watch",
+        "timepiece": "watch",
+        "smartwatch": "watch",
+        "ear rings": "earrings",
+        "ear rings": "earrings",
+        "studs": "earrings",
+        "hoops": "earrings",
+        "dangly earrings": "earrings",
+        "gold chain": "chain",
+        "silver chain": "chain",
+        "neck chain": "chain",
+        
+        # Props
+        "novel": "book",
+        "journal": "book",
+        "notebook": "book",
+        "diary": "book",
+        "wine bottle": "bottle",
+        "beer bottle": "bottle",
+        "water bottle": "bottle",
+        "wine glass": "glass",
+        "drinking glass": "glass",
+        "champagne glass": "glass",
+        "backpack": "bag",
+        "purse": "bag",
+        "handbag": "bag",
+        "suitcase": "bag",
+        "briefcase": "bag",
+        "tote bag": "bag",
+        "cap": "hat",
+        "beanie": "hat",
+        "fedora": "hat",
+        "baseball cap": "hat",
+        "snapback": "hat",
+        "coat": "jacket",
+        "blazer": "jacket",
+        "leather jacket": "jacket",
+        "denim jacket": "jacket",
+        "bomber jacket": "jacket",
+        "shades": "sunglasses",
+        "aviators": "sunglasses",
+        "wayfarers": "sunglasses",
+        "parasol": "umbrella",
+        "bouquet": "flower",
+        "rose": "flower",
+        "tulip": "flower",
+        "daisy": "flower",
+        "instrument case": "guitar_case",
+    }
+    
+    # Check if exact match exists
+    if object_type_lower in normalizations:
+        return normalizations[object_type_lower]
+    
+    # Check if any normalization key is contained in the object type
+    for key, base_type in normalizations.items():
+        if key in object_type_lower:
+            return base_type
+    
+    # Return normalized version (lowercase, spaces to underscores)
+    return object_type_lower.replace(" ", "_")
 
 
 def _generate_object_id(object_type: str, existing_ids: Set[str]) -> str:

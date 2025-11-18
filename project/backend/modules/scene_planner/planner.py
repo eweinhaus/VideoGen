@@ -214,7 +214,20 @@ async def plan_scenes(
         # PHASE 3: Extract objects from LLM output and analyze clips for additional objects
         # Start with objects extracted from user input (they're already marked as primary)
         from shared.models.scene import Object, ObjectFeatures
+        from .object_analyzer import _normalize_object_type
+        
         objects = list(user_input_objects)  # Start with user input objects
+        
+        # Build object_type to Object mapping for consolidation
+        # This prevents duplicate objects of the same type (e.g., "truck", "truck_1", "pickup truck")
+        object_type_map = {}
+        for obj in objects:
+            normalized_type = _normalize_object_type(obj.features.object_type)
+            if normalized_type not in object_type_map:
+                object_type_map[normalized_type] = obj
+            # Prefer primary importance
+            elif obj.importance == "primary" and object_type_map[normalized_type].importance != "primary":
+                object_type_map[normalized_type] = obj
         
         # Get objects from LLM (if provided)
         if "objects" in llm_output and llm_output["objects"]:
@@ -229,10 +242,45 @@ async def plan_scenes(
                         features=obj_features,
                         importance=obj_data.get("importance", "secondary")
                     )
-                    # Only add if not already extracted from user input
-                    if obj.id not in existing_object_ids:
-                        objects.append(obj)
-                        existing_object_ids.add(obj.id)
+                    
+                    # Check for duplicate ID
+                    if obj.id in existing_object_ids:
+                        logger.debug(
+                            f"Skipping duplicate object ID '{obj.id}' from LLM",
+                            extra={"object_id": obj.id, "object_type": obj.features.object_type}
+                        )
+                        continue
+                    
+                    # Check for duplicate object_type (consolidation)
+                    normalized_type = _normalize_object_type(obj.features.object_type)
+                    if normalized_type in object_type_map:
+                        existing_obj = object_type_map[normalized_type]
+                        logger.info(
+                            f"Consolidating duplicate object type '{obj.features.object_type}' (normalized: '{normalized_type}') - "
+                            f"keeping existing '{existing_obj.id}' (importance: {existing_obj.importance}), "
+                            f"skipping LLM object '{obj.id}' (importance: {obj.importance})",
+                            extra={
+                                "job_id": str(job_id),
+                                "normalized_type": normalized_type,
+                                "existing_object_id": existing_obj.id,
+                                "skipped_object_id": obj.id,
+                                "existing_importance": existing_obj.importance,
+                                "skipped_importance": obj.importance
+                            }
+                        )
+                        # If the new object is primary and existing is not, upgrade existing
+                        if obj.importance == "primary" and existing_obj.importance != "primary":
+                            existing_obj.importance = "primary"
+                            logger.info(
+                                f"Upgraded existing object '{existing_obj.id}' to primary importance",
+                                extra={"object_id": existing_obj.id}
+                            )
+                        continue
+                    
+                    # Add new object
+                    objects.append(obj)
+                    existing_object_ids.add(obj.id)
+                    object_type_map[normalized_type] = obj
 
             logger.info(
                 f"LLM generated {len([o for o in objects if o not in user_input_objects])} additional object profiles",
