@@ -130,21 +130,14 @@ def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = 
         camera = _default_camera(context.beat_intensity)
     fragments.append(f"Camera: {camera}")
 
-    # Add character descriptions with anatomy constraints for human characters
-    if context.character_descriptions:
-        # Check if any human characters are present (basic heuristic: look for human-related terms)
-        has_humans = any(
-            word in ' '.join(context.character_descriptions).lower()
-            for word in ['person', 'man', 'woman', 'human', 'boy', 'girl', 'child', 'adult', 'people']
-        )
-
-        char_desc = f"Characters: {', '.join(context.character_descriptions)}"
-
-        # Add anatomy keywords if human characters are present
-        if has_humans:
-            char_desc += ", anatomically correct human, proper human anatomy, two arms, two legs"
-
-        fragments.append(char_desc)
+    # IMPORTANT: Do NOT add character descriptions to main prompt body
+    # Character identity blocks will be appended AFTER LLM optimization
+    # to ensure immutable, structured character features
+    #
+    # Legacy character_descriptions are only used as fallback when
+    # Character objects don't have structured features
+    #
+    # This prevents duplicate character information in prompts
 
     if context.scene_descriptions and not using_character_ref:
         # Only add scene descriptions here if we didn't already add them at the start
