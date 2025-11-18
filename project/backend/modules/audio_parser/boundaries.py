@@ -33,16 +33,16 @@ def generate_boundaries(
         List of ClipBoundary objects
     """
     # Calculate target number of clips if not specified
-    # Target ~8 seconds per clip on average (most clips should be 6-10 seconds)
-    # For a 3-minute (180s) video: 180 / 8 = 22.5 clips, capped at 25 max
+    # Target ~7 seconds per clip on average (most clips should be 5-8 seconds)
+    # For a 3-minute (180s) video: 180 / 7 = 25.7 clips, capped at 25 max
     if max_clips is None:
-        # Target ~8 seconds per clip on average
-        target_clips = int(total_duration / 8.0)
+        # Target ~7 seconds per clip on average (centered around 7s to avoid exceeding Veo 3.1's 8s limit)
+        target_clips = int(total_duration / 7.0)
         # Cap at 25 clips maximum (for 3-minute videos and longer)
         # Minimum 5 clips for very short songs
         max_clips = max(5, min(25, target_clips))
     # Edge case 1: Very short songs (<9s) → Create fewer segments to ensure 3s minimum
-    # For normal songs, we target 6-10s per clip (~8s), but very short songs can't meet this
+    # For normal songs, we target 5-8s per clip (~7s), but very short songs can't meet this
     # Instead, create 1-2 segments that meet the 3s minimum requirement (Pydantic model constraint)
     if total_duration < 9.0:
         boundaries = []
@@ -106,15 +106,15 @@ def generate_boundaries(
         boundaries = []
         current_time = 0.0
         while current_time < total_duration and len(boundaries) < max_clips:
-            # Target ~8 seconds, using ~7 beats as base (approximately 8s at typical BPM)
-            end_time = min(current_time + (7 * beat_interval), total_duration)
+            # Target ~7 seconds, using ~6 beats as base (approximately 7s at typical BPM)
+            end_time = min(current_time + (6 * beat_interval), total_duration)
             duration = end_time - current_time
-            # Ensure duration is within 6-10s range (prefer ~8s, most above 6s)
-            if duration < 6.0:
-                end_time = min(current_time + 6.0, total_duration)
+            # Ensure duration is within 5-8s range (prefer ~7s, most above 5s, cap at 8s for Veo 3.1)
+            if duration < 5.0:
+                end_time = min(current_time + 5.0, total_duration)
                 duration = end_time - current_time
-            elif duration > 10.0:
-                end_time = min(current_time + 10.0, total_duration)
+            elif duration > 8.0:
+                end_time = min(current_time + 8.0, total_duration)
                 duration = end_time - current_time
             
             boundaries.append(ClipBoundary(
@@ -132,9 +132,9 @@ def generate_boundaries(
         return boundaries[:max_clips]
     
     # Normal case: Beat-aligned boundaries
-    # Target roughly 8 seconds per clip on average (most clips 6-10 seconds)
+    # Target roughly 7 seconds per clip on average (most clips 5-8 seconds)
     # Add variation: use different beats_per_clip values to create natural variation
-    target_duration = 8.0  # Target 8 seconds per clip
+    target_duration = 7.0  # Target 7 seconds per clip (centered to avoid exceeding Veo 3.1's 8s limit)
     beat_interval = np.mean(np.diff(beat_timestamps)) if len(beat_timestamps) > 1 else (60.0 / bpm)
     base_beats_per_clip = max(1, math.ceil(target_duration / beat_interval))
     
@@ -154,8 +154,8 @@ def generate_boundaries(
                 current_beat_idx += 1
         
         # Add variation: alternate between base, base+1, and base-1 beats per clip
-        # This creates natural variation in clip durations (roughly 6-10s range, prefer ~8s)
-        # Reduced variation to ensure we stay closer to target and don't create too many clips
+        # This creates natural variation in clip durations (roughly 5-8s range, prefer ~7s)
+        # Reduced variation to ensure we stay closer to target and don't exceed Veo 3.1's 8s limit
         variation_pattern = [0, 1, -1, 0]  # Simpler pattern (repeats every 4 clips) to reduce over-generation
         beats_variation = variation_pattern[clip_index % len(variation_pattern)]
         beats_per_clip = max(1, base_beats_per_clip + beats_variation)
@@ -164,24 +164,24 @@ def generate_boundaries(
         end = beat_timestamps[end_idx]
         duration = end - start
         
-        # Adjust duration to be within 6-10s range (prefer ~8s, most above 6s)
-        if duration < 6.0:
-            # Extend to next beats to reach at least 6s
-            while end_idx < len(beat_timestamps) - 1 and duration < 6.0:
+        # Adjust duration to be within 5-8s range (prefer ~7s, most above 5s, cap at 8s for Veo 3.1)
+        if duration < 5.0:
+            # Extend to next beats to reach at least 5s
+            while end_idx < len(beat_timestamps) - 1 and duration < 5.0:
                 end_idx += 1
                 end = beat_timestamps[end_idx]
                 duration = end - start
-                if duration >= 6.0:
+                if duration >= 5.0:
                     break
             
-            # If we've run out of beats and duration is still < 6.0, extend to total_duration
-            if duration < 6.0:
-                # Extend to total_duration to ensure minimum 6s duration
-                end = min(start + 6.0, total_duration)
+            # If we've run out of beats and duration is still < 5.0, extend to total_duration
+            if duration < 5.0:
+                # Extend to total_duration to ensure minimum 5s duration
+                end = min(start + 5.0, total_duration)
                 duration = end - start
-                # If extending to 6s would exceed total_duration, we need to handle this differently
-                if duration < 6.0:
-                    # This means we're near the end and can't create a 6s clip
+                # If extending to 5s would exceed total_duration, we need to handle this differently
+                if duration < 5.0:
+                    # This means we're near the end and can't create a 5s clip
                     # Merge with previous boundary if possible, or extend to end
                     if len(boundaries) > 0:
                         # Merge with previous boundary, but respect 25s model limit
@@ -205,28 +205,28 @@ def generate_boundaries(
                         # Skip creating this boundary
                         break
                     else:
-                        # First boundary - extend to at least 6s or total_duration
-                        end = max(start + 6.0, total_duration)
+                        # First boundary - extend to at least 5s or total_duration
+                        end = max(start + 5.0, total_duration)
                         duration = end - start
         
-        # Cap duration at 10s maximum (allow some flexibility up to 25s for last boundary)
-        if duration > 10.0:
-            # Find the beat that keeps us closest to 10s without going over
-            # Backtrack to find a beat that gives us duration <= 10.0
-            while end_idx > current_beat_idx and duration > 10.0:
+        # Cap duration at 8s maximum (Veo 3.1 limit, allow some flexibility up to 25s for last boundary)
+        if duration > 8.0:
+            # Find the beat that keeps us closest to 8s without going over
+            # Backtrack to find a beat that gives us duration <= 8.0
+            while end_idx > current_beat_idx and duration > 8.0:
                 end_idx -= 1
                 if end_idx > current_beat_idx:
                     end = beat_timestamps[end_idx]
                     duration = end - start
                 else:
-                    # Can't go back further, cap at 10s
-                    end = min(start + 10.0, total_duration)
+                    # Can't go back further, cap at 8s
+                    end = min(start + 8.0, total_duration)
                     duration = end - start
                     break
         
-        # Ensure duration is at least 6.0 before creating boundary
-        if duration < 6.0:
-            # If we still can't reach 6s, skip this boundary or merge with previous
+        # Ensure duration is at least 5.0 before creating boundary
+        if duration < 5.0:
+            # If we still can't reach 5s, skip this boundary or merge with previous
             if len(boundaries) > 0:
                 # Merge with previous boundary, but respect 25s model limit
                 prev_boundary = boundaries[-1]
@@ -244,18 +244,18 @@ def generate_boundaries(
                 # Skip creating this boundary
                 continue
             else:
-                # First boundary - must be at least 6s or use total_duration
-                end = max(start + 6.0, total_duration)
+                # First boundary - must be at least 5s or use total_duration
+                end = max(start + 5.0, total_duration)
                 duration = end - start
         
-        # Final safeguard: ensure duration is at least 6.0 and at most 10.0 before creating boundary
-        if duration < 6.0:
+        # Final safeguard: ensure duration is at least 5.0 and at most 8.0 before creating boundary
+        if duration < 5.0:
             # This should not happen after all the checks above, but as a final safeguard
             # extend to ensure minimum duration
-            end = min(start + 6.0, total_duration)
+            end = min(start + 5.0, total_duration)
             duration = end - start
-            # If still < 6.0, we're at the end - merge with previous or skip
-            if duration < 6.0 and len(boundaries) > 0:
+            # If still < 5.0, we're at the end - merge with previous or skip
+            if duration < 5.0 and len(boundaries) > 0:
                 MAX_DURATION = 25.0  # Model limit
                 prev_boundary = boundaries[-1]
                 merged_duration = total_duration - prev_boundary.start
@@ -273,9 +273,9 @@ def generate_boundaries(
                         duration=merged_duration
                     )
                 continue
-        elif duration > 10.0:
-            # Cap at 10s maximum (allow up to 25s for last boundary if needed)
-            end = min(start + 10.0, total_duration)
+        elif duration > 8.0:
+            # Cap at 8s maximum (Veo 3.1 limit, allow up to 25s for last boundary if needed)
+            end = min(start + 8.0, total_duration)
             duration = end - start
         
         boundaries.append(ClipBoundary(
@@ -300,13 +300,13 @@ def generate_boundaries(
             return _create_equal_segments(total_duration, min(3, int(total_duration / 3.0)))
     
     # Trim last clip to end if needed - smart extension
-    # Extend last clip to cover full duration if reasonable (≤10s), otherwise create new clip
+    # Extend last clip to cover full duration if reasonable (≤8s), otherwise create new clip
     if boundaries[-1].end < total_duration:
         new_end = total_duration
         new_duration = new_end - boundaries[-1].start
         
-        # Smart extension: extend if new duration ≤ 10s (reasonable limit for 8s target)
-        if new_duration <= 10.0:
+        # Smart extension: extend if new duration ≤ 8s (Veo 3.1 limit, reasonable for 7s target)
+        if new_duration <= 8.0:
             # Extend the last boundary to cover full duration
             prev_boundary = boundaries[-1]
             boundaries[-1] = ClipBoundary(
@@ -316,9 +316,9 @@ def generate_boundaries(
             )
             logger.info(f"Extended last boundary to cover full duration: {prev_boundary.end:.1f}s -> {new_end:.1f}s (duration: {new_duration:.1f}s)")
         else:
-            # If extending would exceed 10s, create additional clip if there's enough time
+            # If extending would exceed 8s, create additional clip if there's enough time
             remaining_time = total_duration - boundaries[-1].end
-            if remaining_time >= 6.0 and len(boundaries) < max_clips:
+            if remaining_time >= 5.0 and len(boundaries) < max_clips:
                 boundaries.append(ClipBoundary(
                     start=boundaries[-1].end,
                     end=total_duration,
@@ -340,20 +340,20 @@ def generate_boundaries(
                 if new_duration > MAX_DURATION:
                     logger.warning(f"Capped last boundary at 25s model limit: {prev_boundary.end:.1f}s -> {capped_end:.1f}s (duration: {capped_duration:.1f}s, would have been {new_duration:.1f}s)")
                 else:
-                    logger.info(f"Extended last boundary beyond 10s limit to cover full duration: {prev_boundary.end:.1f}s -> {capped_end:.1f}s (duration: {capped_duration:.1f}s)")
+                    logger.info(f"Extended last boundary beyond 8s limit to cover full duration: {prev_boundary.end:.1f}s -> {capped_end:.1f}s (duration: {capped_duration:.1f}s)")
     
-    # Final validation: ensure all boundaries have duration >= 6.0 and <= 25.0 (model limit)
-    # Allow last boundary to extend up to 25s (model limit) to cover full audio, but prefer 6-10s range
+    # Final validation: ensure all boundaries have duration >= 5.0 and <= 25.0 (model limit)
+    # Allow last boundary to extend up to 25s (model limit) to cover full audio, but prefer 5-8s range
     # Filter out any boundaries that don't meet the range and merge/skip as needed
     MAX_DURATION = 25.0  # Model limit: ClipBoundary.duration <= 25.0
     validated_boundaries = []
     for i, boundary in enumerate(boundaries):
-        # Last boundary can be up to 25s (model limit, to cover full audio), others should be 6-10s
-        max_duration = MAX_DURATION if i == len(boundaries) - 1 else 10.0
-        if 6.0 <= boundary.duration <= max_duration:
+        # Last boundary can be up to 25s (model limit, to cover full audio), others should be 5-8s
+        max_duration = MAX_DURATION if i == len(boundaries) - 1 else 8.0
+        if 5.0 <= boundary.duration <= max_duration:
             validated_boundaries.append(boundary)
-        elif boundary.duration < 6.0:
-            # If duration < 6.0, try to merge with previous or next boundary
+        elif boundary.duration < 5.0:
+            # If duration < 5.0, try to merge with previous or next boundary
             if len(validated_boundaries) > 0:
                 # Merge with previous boundary
                 prev_boundary = validated_boundaries[-1]
@@ -382,8 +382,8 @@ def generate_boundaries(
                         duration=new_duration
                     ))
             else:
-                # Last boundary - extend to ensure >= 6.0
-                new_end = max(boundary.start + 6.0, total_duration)
+                # Last boundary - extend to ensure >= 5.0
+                new_end = max(boundary.start + 5.0, total_duration)
                 new_duration = new_end - boundary.start
                 if new_duration <= MAX_DURATION:
                     validated_boundaries.append(ClipBoundary(
@@ -391,15 +391,15 @@ def generate_boundaries(
                         end=new_end,
                         duration=new_duration
                     ))
-        elif boundary.duration > 10.0:
-            # If duration > 10.0, allow it if it's the last boundary and ≤ 25s (model limit)
-            # Otherwise, cap at 10.0
+        elif boundary.duration > 8.0:
+            # If duration > 8.0, allow it if it's the last boundary and ≤ 25s (model limit)
+            # Otherwise, cap at 8.0 (Veo 3.1 limit)
             if i == len(boundaries) - 1 and boundary.duration <= MAX_DURATION:
                 # Last boundary can extend up to 25s (model limit) to cover full audio
                 validated_boundaries.append(boundary)
             else:
-                # Cap at 10.0 for non-last boundaries, or 25s if last boundary exceeds limit
-                cap_duration = MAX_DURATION if i == len(boundaries) - 1 else 10.0
+                # Cap at 8.0 for non-last boundaries (Veo 3.1 limit), or 25s if last boundary exceeds limit
+                cap_duration = MAX_DURATION if i == len(boundaries) - 1 else 8.0
                 validated_boundaries.append(ClipBoundary(
                     start=boundary.start,
                     end=min(boundary.start + cap_duration, total_duration),
@@ -417,8 +417,8 @@ def generate_boundaries(
             last_boundary = boundaries[-1]
             last_boundary = ClipBoundary(
                 start=last_boundary.start,
-                end=max(last_boundary.start + 6.0, total_duration),
-                duration=max(6.0, min(10.0, total_duration - last_boundary.start))
+                end=max(last_boundary.start + 5.0, total_duration),
+                duration=max(5.0, min(8.0, total_duration - last_boundary.start))
             )
             boundaries = [last_boundary]
     
@@ -427,17 +427,17 @@ def generate_boundaries(
 
 
 def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBoundary]:
-    """Create equal-length segments, ensuring durations are in 6-10s range (prefer ~8s)."""
+    """Create equal-length segments, ensuring durations are in 5-8s range (prefer ~7s)."""
     # For very short songs, we may need to adjust
     # If total duration is less than 9s, we already handled it in the main function
-    # This function is called when we need minimum 3 clips but can't fit 6-10s each
-    # In that case, we'll create segments that are as close to 8s as possible (minimum 3s per model for very short songs)
+    # This function is called when we need minimum 3 clips but can't fit 5-8s each
+    # In that case, we'll create segments that are as close to 7s as possible (minimum 3s per model for very short songs)
     
     if duration < 9.0:
         # For songs <9s, create 3 segments with minimum 3s each where possible (model minimum)
         # But if duration < 9s, we already handled it above, so this shouldn't be called
         # However, if it is called, ensure minimum 3s per segment (model constraint)
-        min_segment_duration = max(6.0, duration / num_segments)
+        min_segment_duration = max(5.0, duration / num_segments)
         segments = []
         current_time = 0.0
         for i in range(num_segments):
@@ -449,15 +449,15 @@ def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBound
                 end_time = min(current_time + min_segment_duration, duration)
                 seg_duration = end_time - current_time
             
-            # Ensure duration is at least 6s (or as close as possible)
-            if seg_duration < 6.0 and i < num_segments - 1:
-                end_time = min(current_time + 6.0, duration)
+            # Ensure duration is at least 5s (or as close as possible)
+            if seg_duration < 5.0 and i < num_segments - 1:
+                end_time = min(current_time + 5.0, duration)
                 seg_duration = end_time - current_time
             
-            # Ensure duration doesn't exceed 10s
-            if seg_duration > 10.0:
-                end_time = current_time + 10.0
-                seg_duration = 10.0
+            # Ensure duration doesn't exceed 8s (Veo 3.1 limit)
+            if seg_duration > 8.0:
+                end_time = current_time + 8.0
+                seg_duration = 8.0
             
             segments.append(ClipBoundary(
                 start=current_time,
@@ -473,14 +473,14 @@ def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBound
     # For longer songs, create equal segments
     segment_duration = duration / num_segments
     
-    # Ensure segment duration is in 6-10s range (prefer ~8s)
-    if segment_duration < 6.0:
+    # Ensure segment duration is in 5-8s range (prefer ~7s)
+    if segment_duration < 5.0:
         # If segments would be too short, reduce number of segments
-        num_segments = max(3, int(duration / 6.0))
+        num_segments = max(3, int(duration / 5.0))
         segment_duration = duration / num_segments
-    elif segment_duration > 10.0:
-        # If segments would be too long, increase number of segments
-        num_segments = max(3, int(duration / 10.0))
+    elif segment_duration > 8.0:
+        # If segments would be too long, increase number of segments (Veo 3.1 limit)
+        num_segments = max(3, int(duration / 8.0))
         segment_duration = duration / num_segments
     
     return [

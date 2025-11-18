@@ -47,7 +47,12 @@ async def process(
     """
     logger.info(
         f"Starting reference generation for job {job_id}",
-        extra={"job_id": str(job_id), "scenes": len(plan.scenes), "characters": len(plan.characters)}
+        extra={
+            "job_id": str(job_id),
+            "scenes": len(plan.scenes),
+            "characters": len(plan.characters),
+            "objects": len(plan.objects) if plan.objects else 0
+        }
     )
     
     # Initialize event list
@@ -86,16 +91,32 @@ async def process(
     character_ids = {char.id for char in plan.characters}
     if len(character_ids) != len(plan.characters):
         raise ValidationError("Character IDs must be unique", job_id=job_id)
-    
+
+    # Check for unique object IDs (objects are optional)
+    if plan.objects:
+        object_ids = {obj.id for obj in plan.objects}
+        if len(object_ids) != len(plan.objects):
+            raise ValidationError("Object IDs must be unique", job_id=job_id)
+
     # Validate style object
     if not plan.style:
         raise ValidationError("ScenePlan must have a style object", job_id=job_id)
-    
-    # Extract unique scenes and characters (deduplicate by ID)
+
+    # Extract unique scenes, characters, and objects (deduplicate by ID)
     unique_scenes_list = list({scene.id: scene for scene in plan.scenes}.values())
     unique_characters_list = list({char.id: char for char in plan.characters}.values())
+    unique_objects_list = list({obj.id: obj for obj in plan.objects}.values()) if plan.objects else []
+
+    # Calculate total expected images including variations
+    variations_per_scene = settings.reference_variations_per_scene
+    variations_per_character = settings.reference_variations_per_character
+    variations_per_object = settings.reference_variations_per_object
     
-    total_images = len(unique_scenes_list) + len(unique_characters_list)
+    total_images = (
+        len(unique_scenes_list) * variations_per_scene +
+        len(unique_characters_list) * variations_per_character +
+        len(unique_objects_list) * variations_per_object
+    )
     
     logger.info(
         f"Reference generator input validation for job {job_id}",
@@ -105,6 +126,8 @@ async def process(
             "unique_scenes": len(unique_scenes_list),
             "total_characters": len(plan.characters),
             "unique_characters": len(unique_characters_list),
+            "total_objects": len(plan.objects) if plan.objects else 0,
+            "unique_objects": len(unique_objects_list),
             "total_images": total_images
         }
     )
@@ -165,7 +188,19 @@ async def process(
                 "current_image": current_image
             }
         })
-    
+
+    for obj in unique_objects_list:
+        current_image += 1
+        events.append({
+            "event_type": "reference_generation_start",
+            "data": {
+                "image_type": "object",
+                "image_id": obj.id,
+                "total_images": total_images,
+                "current_image": current_image
+            }
+        })
+
     # Create events callback for SSE event publishing
     def publish_event_data(event_data: Dict[str, Any]) -> None:
         """Callback to add events to the events list."""
@@ -180,9 +215,11 @@ async def process(
                 "job_id": str(job_id),
                 "scenes_count": len(unique_scenes_list),
                 "characters_count": len(unique_characters_list),
+                "objects_count": len(unique_objects_list),
                 "total_images": total_images,
                 "scene_ids": [s.id for s in unique_scenes_list],
-                "character_ids": [c.id for c in unique_characters_list]
+                "character_ids": [c.id for c in unique_characters_list],
+                "object_ids": [o.id for o in unique_objects_list]
             }
         )
         results = await generate_all_references(
@@ -190,6 +227,7 @@ async def process(
             plan=plan,
             scenes=unique_scenes_list,
             characters=unique_characters_list,
+            objects=unique_objects_list,
             duration_seconds=duration_seconds,
             events_callback=publish_event_data
         )
@@ -326,11 +364,13 @@ async def process(
     
     scene_references: List[ReferenceImage] = []
     character_references: List[ReferenceImage] = []
+    object_references: List[ReferenceImage] = []
     total_cost = Decimal("0.00")
     total_generation_time = 0.0
     successful_images = 0
     scene_references_count = 0
     character_references_count = 0
+    object_references_count = 0
     completed_images = 0
     
     for result in results:
@@ -396,6 +436,8 @@ async def process(
                 ref_image = ReferenceImage(
                     scene_id=result["scene_id"] if image_type == "scene" else None,
                     character_id=result["character_id"] if image_type == "character" else None,
+                    object_id=result["object_id"] if image_type == "object" else None,
+                    variation_index=result.get("variation_index", 0),
                     image_url=signed_url,
                     prompt_used=result["prompt"],
                     generation_time=result["generation_time"],
@@ -405,9 +447,12 @@ async def process(
                 if image_type == "scene":
                     scene_references.append(ref_image)
                     scene_references_count += 1
-                else:
+                elif image_type == "character":
                     character_references.append(ref_image)
                     character_references_count += 1
+                elif image_type == "object":
+                    object_references.append(ref_image)
+                    object_references_count += 1
                 
                 total_cost += result["cost"]
                 total_generation_time += result["generation_time"]
@@ -451,11 +496,13 @@ async def process(
     # Calculate partial success threshold
     success_percentage = successful_images / total_images if total_images > 0 else 0.0
     
-    # Check threshold (ALL three conditions must pass)
+    # Check threshold (ALL required conditions must pass)
+    # If objects exist in plan, they must have at least 1 reference
     threshold_met = (
         success_percentage >= 0.5 and  # ≥50% of total images
         scene_references_count >= 1 and  # At least 1 scene reference
-        character_references_count >= 1  # At least 1 character reference
+        character_references_count >= 1 and  # At least 1 character reference
+        (object_references_count >= 1 if len(unique_objects_list) > 0 else True)  # Objects required if they exist
     )
     
     if not threshold_met:
@@ -466,8 +513,10 @@ async def process(
                 "success_percentage": success_percentage,
                 "scene_references": scene_references_count,
                 "character_references": character_references_count,
+                "object_references": object_references_count,
                 "total_images": total_images,
-                "successful_images": successful_images
+                "successful_images": successful_images,
+                "objects_required": len(unique_objects_list) > 0
             }
         )
         # Publish stage complete event (failed)
@@ -498,7 +547,8 @@ async def process(
         job_id=job_id,
         scene_references=scene_references,
         character_references=character_references,
-        total_references=len(scene_references) + len(character_references),
+        object_references=object_references,
+        total_references=len(scene_references) + len(character_references) + len(object_references),
         total_generation_time=total_generation_time,
         total_cost=total_cost,
         status=status,

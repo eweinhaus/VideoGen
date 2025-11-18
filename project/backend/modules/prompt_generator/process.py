@@ -19,6 +19,7 @@ from .prompt_synthesizer import (
     ClipContext,
     build_comprehensive_style_block,
     build_character_identity_block,
+    build_object_identity_block,
     build_lyrics_block,
     compute_word_count
 )
@@ -78,7 +79,11 @@ async def process(
     # This ensures identical, immutable character descriptions across all clips
     final_prompts = _append_identity_blocks(final_prompts, clip_contexts)
 
-    # LYRICS BLOCKS: Append lyrics blocks AFTER character identity blocks
+    # PHASE 3: OBJECT IDENTITY BLOCKS: Append object identity blocks AFTER character identity blocks
+    # This ensures identical, immutable object descriptions across all clips where objects appear
+    final_prompts = _append_object_identity_blocks(final_prompts, clip_contexts)
+
+    # LYRICS BLOCKS: Append lyrics blocks AFTER object identity blocks
     # This ensures exact lyrics (filtered to clip time range) are preserved and not modified by LLM
     final_prompts = _append_lyrics_blocks(final_prompts, clip_contexts)
 
@@ -201,16 +206,67 @@ def _append_identity_blocks(prompts: List[str], contexts: List[ClipContext]) -> 
     return final_prompts
 
 
+def _append_object_identity_blocks(prompts: List[str], contexts: List[ClipContext]) -> List[str]:
+    """
+    Append object identity blocks to prompts after character identity blocks.
+
+    PHASE 3: This ensures consistent object descriptions across clips where objects appear,
+    preventing the LLM from modifying or paraphrasing object features.
+
+    Each clip with objects gets the EXACT SAME object description, creating
+    immutable identity for recurring props.
+
+    Args:
+        prompts: List of optimized prompts (with style and character blocks already appended)
+        contexts: List of ClipContext objects (for building object identity blocks)
+
+    Returns:
+        List of prompts with object identity blocks appended
+    """
+    if len(prompts) != len(contexts):
+        logger.warning(
+            "Prompt count mismatch when appending object identity blocks",
+            extra={"prompt_count": len(prompts), "context_count": len(contexts)}
+        )
+        # Return as-is if mismatch (shouldn't happen, but safety)
+        return prompts
+
+    final_prompts = []
+    for prompt, context in zip(prompts, contexts):
+        # Build object identity block for this clip
+        object_block = build_object_identity_block(context)
+
+        if object_block:
+            # Append object block after character identity block
+            # Format: "[optimized action + style + character]. OBJECT IDENTITIES: ..."
+            final_prompt = f"{prompt.strip()}\n\n{object_block}"
+        else:
+            # No objects in this clip, keep original prompt
+            final_prompt = prompt
+
+        final_prompts.append(final_prompt)
+
+    logger.debug(
+        "Appended object identity blocks to prompts",
+        extra={
+            "clip_count": len(final_prompts),
+            "clips_with_objects": sum(1 for ctx in contexts if ctx.objects or ctx.object_descriptions)
+        }
+    )
+
+    return final_prompts
+
+
 def _append_lyrics_blocks(prompts: List[str], contexts: List[ClipContext]) -> List[str]:
     """
-    Append lyrics blocks to prompts after LLM optimization and character identity blocks.
+    Append lyrics blocks to prompts after LLM optimization, character identity, and object identity blocks.
 
     This mirrors _append_identity_blocks() - ensures exact lyrics (filtered to clip time range)
     are preserved and not modified by the LLM. Each clip gets only the lyrics spoken during
     that specific clip's time range, as extracted by the audio parser and filtered by the scene planner.
 
     Args:
-        prompts: List of optimized prompts (with style and identity blocks already appended)
+        prompts: List of optimized prompts (with style, character, and object blocks already appended)
         contexts: List of ClipContext objects (for building lyrics blocks)
 
     Returns:
@@ -295,6 +351,7 @@ def _build_clip_contexts(
 ) -> List[ClipContext]:
     characters = {char.id: char for char in plan.characters}
     scenes = {scene.id: scene for scene in plan.scenes}
+    objects = {obj.id: obj for obj in plan.objects}  # PHASE 3: Object support
     contexts: List[ClipContext] = []
 
     for script in plan.clip_scripts:
@@ -316,6 +373,21 @@ def _build_clip_contexts(
             characters[char_id].description
             for char_id in script.characters
             if char_id in characters and characters[char_id].description
+        ]
+
+        # PHASE 3: OBJECT SUPPORT: Pass Object objects for consistent prop tracking
+        # Get objects for this clip (from ClipScript.objects list)
+        clip_objects = [
+            objects[obj_id]
+            for obj_id in getattr(script, 'objects', [])
+            if obj_id in objects
+        ]
+
+        # Keep legacy object_desc for backward compatibility
+        object_desc = [
+            objects[obj_id].name
+            for obj_id in getattr(script, 'objects', [])
+            if obj_id in objects and hasattr(objects[obj_id], 'name')
         ]
 
         # Extract beat timing metadata for this clip
@@ -355,6 +427,11 @@ def _build_clip_contexts(
                 color_palette_full=plan.style.color_palette,
                 # CHARACTER CONSISTENCY FIX: Pass Character objects for structured formatting
                 characters=clip_characters,
+                # PHASE 3: OBJECT SUPPORT: Pass Object objects for consistent prop tracking
+                object_ids=list(getattr(script, 'objects', [])),
+                object_descriptions=object_desc,
+                objects=clip_objects,
+                object_reference_urls=mapping.object_reference_urls if mapping and hasattr(mapping, 'object_reference_urls') else [],
             )
         )
     return contexts
@@ -414,6 +491,7 @@ def _assemble_clip_prompts(
                 duration=float(template.payload["duration"]),
                 scene_reference_url=template.scene_reference_url,
                 character_reference_urls=template.character_reference_urls,
+                object_reference_urls=template.object_reference_urls,
                 metadata=metadata,
             )
         )

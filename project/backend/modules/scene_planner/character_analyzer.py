@@ -157,7 +157,7 @@ def _generate_character_profile(char_id: str, role: str) -> Character:
         role: Character role (e.g., "bartender")
 
     Returns:
-        Character object with features
+        Character object with features and description
     """
     # Generate character name from role
     char_name = _role_to_name(role)
@@ -175,12 +175,31 @@ def _generate_character_profile(char_id: str, role: str) -> Character:
     else:
         role_category = "supporting"
 
+    # Generate description from features for backward compatibility
+    description = _build_description_from_features(char_name, features, role_category)
+
     return Character(
         id=char_id,
         name=char_name,
         role=role_category,
-        features=features
+        features=features,
+        description=description
     )
+
+
+def _build_description_from_features(name: str, features: CharacterFeatures, role: str) -> str:
+    """
+    Build description string from structured features for backward compatibility.
+    
+    Args:
+        name: Character name
+        features: CharacterFeatures object
+        role: Character role category
+        
+    Returns:
+        Formatted description string
+    """
+    return f"{name} ({role}) - FIXED CHARACTER IDENTITY:\n- Hair: {features.hair}\n- Face: {features.face}\n- Eyes: {features.eyes}\n- Clothing: {features.clothing}\n- Accessories: {features.accessories}\n- Build: {features.build}\n- Age: {features.age}"
 
 
 def _role_to_name(role: str) -> str:

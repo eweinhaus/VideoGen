@@ -19,6 +19,7 @@ class BasePromptTemplate:
     payload: Dict[str, Any]
     scene_reference_url: Optional[str]
     character_reference_urls: List[str]
+    object_reference_urls: List[str]
 
 
 def build_base_prompt(
@@ -61,6 +62,7 @@ def build_base_prompt(
         payload=payload,
         scene_reference_url=mapping.scene_reference_url,
         character_reference_urls=mapping.character_reference_urls,
+        object_reference_urls=mapping.object_reference_urls,
     )
 
 
@@ -87,8 +89,10 @@ def build_base_prompt_batch(
             ClipReferenceMapping(
                 scene_id=None,
                 character_ids=context.character_ids,
+                object_ids=[],
                 scene_reference_url=None,
                 character_reference_urls=[],
+                object_reference_urls=[],
                 reference_mode="text_only",
             ),
         )

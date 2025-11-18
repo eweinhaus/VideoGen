@@ -64,10 +64,24 @@ class Settings(BaseSettings):
     # Set to false to use text-only mode for video generation
     use_reference_images: bool = True
 
+    # REFERENCE_VARIATIONS_PER_SCENE: Number of reference image variations to generate per scene
+    # Default: 2 (wide shot + medium shot from different angle)
+    # Variations provide different camera angles/perspectives of the same scene
+    # Higher values increase cost but provide more scene variety across clips
+    reference_variations_per_scene: int = 2
+
     # REFERENCE_VARIATIONS_PER_CHARACTER: Number of reference image variations to generate per character
-    # Default: 1 (original behavior), can be increased to 3-5 for more variety
+    # Default: 2 (frontal + profile view of SAME person)
+    # Variations show same character from different angles/poses for variety
     # Higher values increase cost but reduce repetition across clips
-    reference_variations_per_character: int = 1
+    # Note: All variations must show the SAME PERSON (identity-preserving)
+    reference_variations_per_character: int = 2
+
+    # REFERENCE_VARIATIONS_PER_OBJECT: Number of reference image variations to generate per object
+    # Default: 2 (primary view + alternate angle)
+    # Variations show same object from different angles for consistency
+    # Only applies to objects detected in multiple clips
+    reference_variations_per_object: int = 2
 
     # Video Generator configuration
     # VIDEO_MODEL: Select which video generation model to use
