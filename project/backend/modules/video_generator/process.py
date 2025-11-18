@@ -387,7 +387,7 @@ async def process(
                     extra={"job_id": str(job_id)}
                 )
                 image_url = None
-                    reference_image_urls = []
+                reference_image_urls = []
             
             # Progress callback to emit events during polling (defined outside retry loop)
             async def progress_callback(progress_event):
