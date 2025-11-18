@@ -1028,6 +1028,20 @@ async def generate_video_clip(
                         f"Content moderation error (fallback to Kling Turbo): {prediction.error}"
                     )
             
+            # Check for transient infrastructure errors before raising GenerationError
+            error_str = str(prediction.error).lower()
+            if "internal error" in error_str or "code 13" in error_str or "try again later" in error_str:
+                # Transient infrastructure error - should be retryable
+                logger.warning(
+                    f"Transient infrastructure error for clip {clip_prompt.clip_index}, marking as retryable",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "error": str(prediction.error)
+                    }
+                )
+                raise RetryableError(f"Internal error (transient, retryable): {prediction.error}")
+            
             raise GenerationError(f"Clip generation failed: {prediction.error}")
             
     except RetryableError:
@@ -1063,6 +1077,17 @@ async def generate_video_clip(
         elif "unavailable" in error_str or "unavailable" in error_logs_str:
             # Model unavailable - try fallback
             raise RetryableError(f"Model unavailable, try fallback: {str(e)}") from e
+        elif "internal error" in error_str or "code 13" in error_str or "try again later" in error_str:
+            # Transient infrastructure error - should be retryable
+            logger.warning(
+                f"Transient infrastructure error detected, marking as retryable",
+                extra={
+                    "job_id": str(job_id) if job_id else None,
+                    "error": str(e),
+                    "error_type": "infrastructure_error"
+                }
+            )
+            raise RetryableError(f"Internal error (transient, retryable): {str(e)}") from e
         elif "flagged as sensitive" in error_str or "e005" in error_str or "sensitive" in error_str:
             # Content moderation error - provide clearer message
             logger.error(
@@ -1090,6 +1115,9 @@ async def generate_video_clip(
             raise RetryableError(f"Timeout error: {str(e)}") from e
         elif "network" in error_str or "connection" in error_str:
             raise RetryableError(f"Network error: {str(e)}") from e
+        elif "internal error" in error_str or "code 13" in error_str or "try again later" in error_str:
+            # Transient infrastructure error - should be retryable
+            raise RetryableError(f"Internal error (transient, retryable): {str(e)}") from e
         elif "flagged as sensitive" in error_str or "e005" in error_str or "sensitive" in error_str:
             # Content moderation error - provide clearer message
             raise GenerationError(
