@@ -478,6 +478,9 @@ def _assemble_clip_prompts(
             "llm_used": bool(llm_result),
             "llm_model": llm_result.model if llm_result else None,
         }
+        # Store camera_angle in metadata for face-heavy clip detection (mid-shots and close-ups)
+        if template.payload.get("camera_angle"):
+            metadata["camera_angle"] = template.payload["camera_angle"]
         if template.payload.get("lyrics_context"):
             metadata["lyrics_context"] = template.payload["lyrics_context"]
         if template.payload.get("beat_metadata"):
