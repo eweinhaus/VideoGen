@@ -7,7 +7,7 @@ Coordinates all audio analysis components.
 import librosa
 import io
 from uuid import UUID
-from shared.models.audio import AudioAnalysis
+from shared.models.audio import AudioAnalysis, ClipBoundary, SongStructure
 from shared.logging import get_logger
 
 from modules.audio_parser.beat_detection import detect_beats, detect_beat_subdivisions, classify_beat_strength
@@ -53,24 +53,104 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
         beat_strength = classify_beat_strength(beat_timestamps, audio, sr, bpm)
         downbeat_count = sum(1 for s in beat_strength if s == "downbeat")
         logger.info(f"Beat strength: {downbeat_count} downbeats, {len(beat_strength) - downbeat_count} upbeats")
-        
-        # 2. Clip Boundaries (generate first - these will be used for structure)
-        clip_boundaries = generate_boundaries(beat_timestamps, bpm, duration)
-        logger.info(f"Clip boundaries: {len(clip_boundaries)} clips")
-        
-        # 3. Structure Analysis (uses clip boundaries as base, then classifies each segment)
-        from modules.audio_parser.structure_analysis import analyze_structure_from_clips
-        structure_result = analyze_structure_from_clips(audio, sr, clip_boundaries, duration, beat_timestamps)
+
+        # 2. Structure Analysis (FIRST - to determine segment types and intensities)
+        structure_result = analyze_structure(audio, sr, beat_timestamps, duration)
         if isinstance(structure_result, tuple):
             song_structure, structure_fallback = structure_result
         else:
             # Handle case where it returns just the list (backward compatibility)
             song_structure = structure_result
             structure_fallback = False
-        
+
         if structure_fallback:
             fallbacks_used.append("structure_analysis")
-        logger.info(f"Structure analysis: {len(song_structure)} segments (aligned with {len(clip_boundaries)} clips)")
+        logger.info(f"Structure analysis: {len(song_structure)} segments detected")
+
+        # 3. Clip Boundaries (generate AFTER structure, using segment-specific parameters)
+        # Generate boundaries for each structure segment with content-based durations
+
+        # PHASE 2.4: Preprocess segments to merge very short ones (<4s) with adjacent segments
+        # This ensures we don't lose audio and don't create clips < 4s (production quality minimum)
+        MIN_SEGMENT_DURATION = 4.0  # Production quality minimum
+        merged_segments = []
+        i = 0
+        while i < len(song_structure):
+            segment = song_structure[i]
+            segment_duration = segment.end - segment.start
+
+            # If segment is too short, try to merge with next or previous
+            if segment_duration < MIN_SEGMENT_DURATION:
+                if i < len(song_structure) - 1:
+                    # Merge with next segment (prefer forward merge)
+                    next_segment = song_structure[i + 1]
+                    # Create merged segment using current segment's type (first segment dominates)
+                    merged = SongStructure(
+                        type=segment.type,
+                        start=segment.start,
+                        end=next_segment.end,
+                        energy=segment.energy,
+                        beat_intensity=segment.beat_intensity or next_segment.beat_intensity
+                    )
+                    merged_segments.append(merged)
+                    logger.info(f"Merged short segment {segment.type}({segment_duration:.1f}s) with next segment, new duration: {merged.end - merged.start:.1f}s")
+                    i += 2  # Skip next segment since we merged it
+                elif len(merged_segments) > 0:
+                    # Merge with previous segment (last segment, merge backward)
+                    prev_segment = merged_segments[-1]
+                    # Update previous segment to extend to current segment's end
+                    merged = SongStructure(
+                        type=prev_segment.type,
+                        start=prev_segment.start,
+                        end=segment.end,
+                        energy=prev_segment.energy,
+                        beat_intensity=prev_segment.beat_intensity or segment.beat_intensity
+                    )
+                    merged_segments[-1] = merged
+                    logger.info(f"Merged short segment {segment.type}({segment_duration:.1f}s) with previous segment, new duration: {merged.end - merged.start:.1f}s")
+                    i += 1
+                else:
+                    # Only one segment and it's short - keep it anyway
+                    merged_segments.append(segment)
+                    logger.warning(f"Single short segment {segment.type}({segment_duration:.1f}s), keeping as-is")
+                    i += 1
+            else:
+                # Segment is long enough, keep as-is
+                merged_segments.append(segment)
+                i += 1
+
+        logger.info(f"Segment preprocessing: {len(song_structure)} original segments → {len(merged_segments)} merged segments")
+
+        # Generate boundaries for each merged structure segment
+        clip_boundaries = []
+        for segment in merged_segments:
+            # Extract beats within this segment and make them relative to segment start
+            segment_beats_absolute = [b for b in beat_timestamps if segment.start <= b <= segment.end]
+            segment_beats = [b - segment.start for b in segment_beats_absolute]  # Make relative
+            segment_duration = segment.end - segment.start
+
+            # Generate boundaries for this segment using its type and beat_intensity
+            segment_boundaries = generate_boundaries(
+                beat_timestamps=segment_beats,
+                bpm=bpm,
+                total_duration=segment_duration,
+                max_clips=None,  # Let it calculate based on duration
+                segment_type=segment.type,
+                beat_intensity=segment.beat_intensity or "medium"
+            )
+
+            # Offset boundaries to match segment start time and add to list
+            for boundary in segment_boundaries:
+                # Create new ClipBoundary with offset times (Pydantic models are immutable)
+                offset_boundary = ClipBoundary(
+                    start=boundary.start + segment.start,
+                    end=boundary.end + segment.start,
+                    duration=boundary.duration,  # Duration stays the same
+                    metadata=boundary.metadata
+                )
+                clip_boundaries.append(offset_boundary)
+
+        logger.info(f"Clip boundaries: {len(clip_boundaries)} clips generated from {len(song_structure)} structure segments")
         
         # 4. Mood Classification (uses BPM, structure energy, spectral features)
         mood = classify_mood(audio, sr, bpm, song_structure)

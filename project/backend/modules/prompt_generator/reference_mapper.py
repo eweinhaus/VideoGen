@@ -95,41 +95,48 @@ def map_clip_references(
             }
         )
 
-    # Map character references with rotation through variations
-    # Find all variations for each character and rotate based on clip_index
+    # Map character references - use variation 0 (frontal portrait) for each character
+    # This ensures every character mentioned in the clip gets their reference image
     character_reference_urls = []
     missing_character_ids = []
 
     for char_id in clip.characters:
-        # Find all variations for this character (char_id, char_id_var1, char_id_var2, etc.)
-        char_variations = []
-        for stored_char_id, url in index.character_urls.items():
-            # Match base character ID or variations
-            if stored_char_id == char_id or stored_char_id.startswith(f"{char_id}_var"):
-                char_variations.append((stored_char_id, url))
-
-        if char_variations:
-            # Sort variations to ensure consistent ordering (var0, var1, var2, etc.)
-            char_variations.sort(key=lambda x: x[0])
-
-            # Rotate through variations based on clip_index
-            variation_index = clip_index % len(char_variations)
-            selected_variation_id, selected_url = char_variations[variation_index]
-
-            character_reference_urls.append(selected_url)
-
+        # Find variation 0 (base character_id) for this character
+        # Variation 0 is stored as the base character_id (without _var suffix)
+        variation_0_url = None
+        
+        # First, try to find the exact match (variation 0)
+        if char_id in index.character_urls:
+            variation_0_url = index.character_urls[char_id]
+            character_reference_urls.append(variation_0_url)
+            
             logger.debug(
-                f"Clip {clip_index}: Using variation {variation_index} for character '{char_id}'",
+                f"Clip {clip_index}: Using variation 0 (frontal portrait) for character '{char_id}'",
                 extra={
                     "clip_index": clip_index,
                     "character_id": char_id,
-                    "variation_index": variation_index,
-                    "total_variations": len(char_variations),
-                    "selected_variation_id": selected_variation_id
+                    "variation_index": 0,
+                    "variation_key": char_id
                 }
             )
         else:
-            missing_character_ids.append(char_id)
+            # If variation 0 not found, check if any variations exist (for error reporting)
+            char_variations = []
+            for stored_char_id, url in index.character_urls.items():
+                if stored_char_id.startswith(f"{char_id}_var"):
+                    char_variations.append(stored_char_id)
+            
+            if char_variations:
+                logger.warning(
+                    f"Clip {clip_index}: Character '{char_id}' has variations but missing variation 0 (base)",
+                    extra={
+                        "clip_index": clip_index,
+                        "character_id": char_id,
+                        "available_variations": char_variations
+                    }
+                )
+            else:
+                missing_character_ids.append(char_id)
     
     if missing_character_ids and index.status != "missing":
         # Log when character IDs don't have references (but references exist)

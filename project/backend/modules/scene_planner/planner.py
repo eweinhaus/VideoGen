@@ -164,7 +164,12 @@ async def plan_scenes(
                 # Validate specificity if features were extracted
                 if features:
                     # Build a temporary formatted description for specificity check
-                    temp_description = f"{character_name} - Hair: {features.hair}, Face: {features.face}, Eyes: {features.eyes}, Clothing: {features.clothing}, Accessories: {features.accessories}, Build: {features.build}, Age: {features.age}"
+                    # Format face_features into a string
+                    face_desc = f"{features.face_features.shape} face, {features.face_features.skin_tone} skin, {features.face_features.nose}, {features.face_features.mouth}, {features.face_features.cheeks}, {features.face_features.jawline}"
+                    if features.face_features.distinctive_marks != "none":
+                        face_desc += f", {features.face_features.distinctive_marks}"
+
+                    temp_description = f"{character_name} - Hair: {features.hair}, Face: {face_desc}, Eyes: {features.eyes}, Clothing: {features.clothing}, Accessories: {features.accessories}, Build: {features.build}, Age: {features.age}"
                     specificity_check = validate_character_specificity(temp_description)
                     if not specificity_check["is_specific"]:
                         logger.warning(

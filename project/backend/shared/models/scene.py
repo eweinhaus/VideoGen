@@ -7,14 +7,30 @@ Defines ScenePlan, Character, Scene, Style, ClipScript, Transition, and Referenc
 from decimal import Decimal
 from typing import Literal, List, Optional, Dict, Any
 from uuid import UUID
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, field_validator
+import warnings
+
+
+class FaceFeatures(BaseModel):
+    """Detailed face features for consistent facial appearance."""
+
+    shape: str = Field(description="Face shape: oval, heart-shaped, square, round")
+    skin_tone: str = Field(description="Skin tone: fair, medium, olive, brown")
+    nose: str = Field(description="Nose: button nose, aquiline nose, straight nose")
+    mouth: str = Field(description="Mouth/lips: full lips, thin lips, wide smile")
+    cheeks: str = Field(description="Cheeks: high cheekbones, rounded cheeks")
+    jawline: str = Field(description="Jawline: strong, soft, angular, rounded")
+    distinctive_marks: str = Field(
+        default="none",
+        description="Freckles, mole, scar, or 'none'"
+    )
 
 
 class CharacterFeatures(BaseModel):
     """Structured character features for consistent appearance."""
 
     hair: str = Field(description="Hair color, length, texture, and style")
-    face: str = Field(description="Skin tone, face shape, distinctive features, facial hair")
+    face_features: FaceFeatures = Field(description="Detailed facial features")
     eyes: str = Field(description="Eye color and eyebrow description")
     clothing: str = Field(description="Specific clothing items with colors and details")
     accessories: str = Field(description="Accessories like glasses, jewelry, hats, or 'None'")
@@ -52,7 +68,29 @@ class Scene(BaseModel):
 
     id: str
     description: str
-    time_of_day: Optional[str] = None
+    time_of_day: str  # PHASE 2.2: Now required for time consistency
+
+    @field_validator("time_of_day")
+    @classmethod
+    def validate_time_of_day(cls, v: str) -> str:
+        """
+        Validate time_of_day field.
+
+        PHASE 2.2: Warn if value is not in standard list for consistency.
+        """
+        standard_times = {
+            "dawn", "morning", "midday", "afternoon",
+            "dusk", "evening", "night", "midnight"
+        }
+
+        if v.lower() not in standard_times:
+            warnings.warn(
+                f"time_of_day '{v}' is not in standard list: {standard_times}. "
+                "This may affect lighting consistency across clips.",
+                UserWarning
+            )
+
+        return v
 
 
 class ObjectFeatures(BaseModel):

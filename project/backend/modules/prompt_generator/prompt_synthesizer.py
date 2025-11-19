@@ -14,6 +14,7 @@ logger = get_logger("prompt_generator")
 # Enhanced negative prompt to prevent anatomy errors and quality issues
 # Added specific anatomy constraints to prevent common issues like extra limbs, missing body parts
 # Enhanced with face-specific constraints to prevent face warping and distortion
+# Phase 1.4: Added video-specific negative terms for temporal stability
 DEFAULT_NEGATIVE_PROMPT = (
     "blurry, low resolution, distorted faces, "
     "warped face, distorted face, blurred face, fuzzy facial features, "
@@ -24,8 +25,12 @@ DEFAULT_NEGATIVE_PROMPT = (
     "extra legs, extra arms, three legs, three arms, four legs, four arms, "
     "deformed anatomy, mutated body parts, asymmetric body, distorted proportions, "
     "malformed limbs, incorrect anatomy, unnatural body structure, "
-    "text, watermark, logo, oversaturated, flickering, low quality, "
-    "cartoon, illustration, duplicate subject"
+    "text, watermark, logo, oversaturated, low quality, "
+    "cartoon, illustration, duplicate subject, "
+    "flickering, jittering, unstable camera, shaky footage, frame drops, "
+    "morphing background, changing scenery mid-clip, inconsistent lighting, "
+    "teleporting characters, position jumps, continuity errors, "
+    "temporal artifacts, stuttering motion, warping objects"
 )
 
 HEX_NAME_LOOKUP = {
@@ -88,96 +93,345 @@ class ClipContext:
     objects: List[Any] = field(default_factory=list)  # List[Object] from shared.models.scene
     object_reference_urls: List[str] = field(default_factory=list)
 
+    # PHASE 2.1: Scene transition context
+    transition_from_previous: Optional[str] = None
+    is_first_clip: bool = False
+
+    # PHASE 2.2: Time of day for lighting consistency
+    time_of_day: Optional[str] = None
+
+    # PHASE 2.3: Scene persistence notes
+    scene_persistence_note: str = ""
+
+
+def _build_transition_block(context: ClipContext) -> str:
+    """
+    Build transition instruction block based on clip position and transition type.
+
+    PHASE 2.1: Provides transition context to help video generation model
+    understand scene transitions and maintain consistency.
+
+    Args:
+        context: ClipContext with transition information
+
+    Returns:
+        Formatted transition instruction string
+    """
+    if context.is_first_clip:
+        return "SCENE INTRODUCTION: Establish opening scene"
+
+    if not context.transition_from_previous:
+        return ""
+
+    transition_type = context.transition_from_previous.lower()
+
+    # Map transition types to instructions
+    transition_instructions = {
+        "cut": "TRANSITION: Direct cut, immediate scene change",
+        "crossfade": "TRANSITION: Smooth crossfade from previous scene",
+        "fade": "TRANSITION: Fade transition from previous scene",
+        "match_action": "TRANSITION: Match action from previous clip, maintain motion continuity",
+        "dissolve": "TRANSITION: Dissolve from previous scene",
+        "wipe": "TRANSITION: Wipe transition from previous scene",
+    }
+
+    return transition_instructions.get(transition_type, f"TRANSITION: {transition_type} from previous scene")
+
+
+def _is_face_heavy_shot(context: ClipContext) -> bool:
+    """
+    Detect if this is a face-heavy shot (close-up, portrait, etc.).
+
+    Face-heavy shots benefit from face-first prompt ordering to ensure
+    facial features are prioritized by the video generation model.
+
+    Args:
+        context: ClipContext with camera_angle information
+
+    Returns:
+        True if this is a face-heavy shot (close-up, extreme close-up, portrait)
+    """
+    if not context.camera_angle:
+        return False
+
+    camera = context.camera_angle.lower()
+
+    # Keywords indicating face-heavy shots
+    face_heavy_keywords = [
+        'close-up',
+        'close up',
+        'closeup',
+        'extreme close-up',
+        'extreme close up',
+        'extreme closeup',
+        'ecu',
+        'cu',
+        'portrait',
+        'head shot',
+        'headshot',
+        'face shot',
+        'tight shot',
+        'tight close-up'
+    ]
+
+    return any(keyword in camera for keyword in face_heavy_keywords)
+
+
+def _enhance_camera_description(metadata: dict) -> str:
+    """
+    Enhance camera movement description with detailed specifications.
+
+    PHASE 2.9: Maps camera movement keywords to detailed descriptions
+    that help the video generation model understand desired camera motion.
+
+    Args:
+        metadata: Beat metadata dictionary that may contain camera_angle
+
+    Returns:
+        Enhanced camera description string, or empty string if no camera info
+    """
+    if not metadata or 'camera_angle' not in metadata:
+        return ""
+
+    camera_angle = str(metadata['camera_angle']).lower()
+
+    # Map movement keywords to detailed descriptions
+    movement_descriptions = {
+        'tracking': "smooth tracking shot following subject movement, maintaining consistent framing",
+        'pan': "smooth horizontal pan across scene, steady camera movement",
+        'static': "static camera position, locked frame with no camera movement",
+        'orbit': "orbital camera movement around subject, circular motion maintaining center focus",
+        'push-in': "slow push-in/dolly forward towards subject, gradual approach",
+        'pull-out': "slow pull-out/dolly back from subject, gradual retreat",
+        'tilt': "smooth vertical tilt movement, camera angling up or down",
+        'crane': "crane shot with vertical camera movement, elevated perspective change",
+        'handheld': "handheld camera with natural subtle movement, organic camera shake",
+    }
+
+    # Check for movement keywords in camera_angle
+    for keyword, description in movement_descriptions.items():
+        if keyword in camera_angle:
+            return f"CAMERA MOVEMENT: {description}"
+
+    return ""
+
 
 def build_clip_prompt(context: ClipContext, include_comprehensive_style: bool = True) -> Tuple[str, str]:
     """
     Build deterministic prompt/negative prompt pair for a clip.
+
+    PHASE 2.8: Completely rewritten with conditional prompt ordering for lyrics prominence.
+    # PHASE 2.6: Adds explicit singing/lip sync instructions when lyrics are present. (COMMENTED OUT)
+
+    The ordering now adapts based on shot type and presence of lyrics:
+    # - Face-heavy shots with lyrics: character_identity, lyrics_block first (for lip sync) (COMMENTED OUT)
+    - Face-heavy shots without lyrics: character_identity first
+    - Non-face-heavy with lyrics: lyrics after action
+    - Standard: normal ordering
 
     Args:
         context: ClipContext with all prompt data
         include_comprehensive_style: If True, include comprehensive style block.
                                      If False, only include condensed style (for LLM optimization).
     """
-    fragments: List[str] = []
-    
-    # When using character reference images, we need to strongly emphasize the scene from the prompt
-    # and explicitly ignore the background from the character reference image
+    # Detect key conditions for conditional ordering
+    is_face_heavy = _is_face_heavy_shot(context)
+    has_lyrics = bool(context.lyrics_context and context.lyrics_context.strip())
     using_character_ref = bool(context.character_reference_urls)
-    
-    # If using character reference, start with explicit scene instruction
+
+    # Build all prompt components separately, then assemble based on conditions
+    components = {}
+
+    # 1. TRANSITION BLOCK (always first if present)
+    transition_block = _build_transition_block(context)
+    components['transition'] = transition_block if transition_block else None
+
+    # 2. CHARACTER IDENTITY (for face-heavy shots with character refs)
+    character_identity = None
+    if is_face_heavy and using_character_ref:
+        character_identity = "PRIORITY: Character facial features from reference image (face shape, skin tone, facial structure)"
+    components['character_identity'] = character_identity
+
+    # 3. SCENE SETTING (for character refs)
+    scene_setting = None
+    scene_instruction = None
     if using_character_ref:
-        # Put scene description FIRST and make it very explicit
         if context.scene_descriptions:
             scene_desc = ', '.join(context.scene_descriptions)
-            fragments.append(f"SCENE SETTING (ignore background from reference image): {scene_desc}")
+            scene_setting = f"SCENE SETTING (ignore background from reference image): {scene_desc}"
         elif context.visual_description:
-            fragments.append(f"SCENE SETTING (ignore background from reference image): {context.visual_description.strip()}")
+            scene_setting = f"SCENE SETTING (ignore background from reference image): {context.visual_description.strip()}"
         else:
-            fragments.append("SCENE SETTING (ignore background from reference image): Wide shot of the main scene consistent with the overall style")
-        
-        # Add explicit instruction to ignore image background
-        fragments.append("IMPORTANT: Use the scene description above, completely ignore any background or scene elements from the character reference image")
-    
-    # Core visual description
+            scene_setting = "SCENE SETTING (ignore background from reference image): Wide shot of the main scene consistent with the overall style"
+        scene_instruction = "IMPORTANT: Use the scene description above, completely ignore any background or scene elements from the character reference image"
+    components['scene_setting'] = scene_setting
+    components['scene_instruction'] = scene_instruction
+
+    # 4. VISUAL DESCRIPTION (core action/scene)
     description = context.visual_description.strip()
     if not description:
         description = "Wide shot of the main scene consistent with the overall style"
-    if not using_character_ref:  # Only add if we didn't already add it above
-        fragments.append(description)
 
+    # PHASE 2.6: Add explicit singing instructions if lyrics are present
+    # COMMENTED OUT: Lip sync instructions removed per user request
+    # if has_lyrics:
+    #     # Extract first 4 words from lyrics for mouth sync hint
+    #     lyrics_words = context.lyrics_context.strip().split()[:4]
+    #     lyrics_preview = " ".join(lyrics_words) if lyrics_words else context.lyrics_context.strip()[:30]
+    #
+    #     singing_instruction = f"Character singing lyrics with mouth movements matching words. Lips moving in sync with: {lyrics_preview}... Visible mouth articulation during singing."
+    #     # Append singing instruction to visual description
+    #     description = f"{description}. {singing_instruction}"
+
+    # Only add visual description if we didn't already add it as scene_setting
+    components['visual_description'] = description if not using_character_ref else None
+
+    # 5. MOTION
     motion = context.motion.strip() if context.motion else ""
     if not motion:
         motion = _default_motion(context.beat_intensity)
-    fragments.append(motion)
+    components['motion'] = motion
 
+    # 6. CAMERA
     camera = context.camera_angle.strip() if context.camera_angle else ""
     if not camera:
         camera = _default_camera(context.beat_intensity)
-    fragments.append(f"Camera: {camera}")
+    components['camera'] = f"Camera: {camera}"
 
-    # IMPORTANT: Do NOT add character descriptions to main prompt body
-    # Character identity blocks will be appended AFTER LLM optimization
-    # to ensure immutable, structured character features
-    #
-    # Legacy character_descriptions are only used as fallback when
-    # Character objects don't have structured features
-    #
-    # This prevents duplicate character information in prompts
-
+    # 7. SCENE CONTEXT (only if not using character ref)
+    scene_context = None
     if context.scene_descriptions and not using_character_ref:
-        # Only add scene descriptions here if we didn't already add them at the start
-        fragments.append(
-            f"Scene context: {', '.join(context.scene_descriptions)}"
-        )
+        scene_context = f"Scene context: {', '.join(context.scene_descriptions)}"
+    components['scene_context'] = scene_context
 
-    # NOTE: Lyrics are now appended AFTER LLM optimization (similar to character identity blocks)
-    # to ensure they are not modified by the LLM and remain exactly as extracted from audio parser
+    # 8. LYRICS BLOCK (for inline lyrics in certain orderings)
+    # PHASE 2.6: Inline lyrics with singing context
+    # COMMENTED OUT: Removed "SINGING:" label per user request (lip sync removal)
+    lyrics_inline = None
+    if has_lyrics:
+        lyrics_inline = f"\"{context.lyrics_context.strip()}\""
+    components['lyrics_inline'] = lyrics_inline
 
-    # PHASE 2: Conditionally include comprehensive style block
-    # When include_comprehensive_style=False (for LLM optimization), use condensed style
-    # When include_comprehensive_style=True (final prompts), use full structured style block
+    # 9. SCENE PERSISTENCE NOTE
+    components['persistence_note'] = context.scene_persistence_note if context.scene_persistence_note else None
+
+    # 10. STYLE BLOCK
     if include_comprehensive_style:
         style_block = build_comprehensive_style_block(context)
-        if style_block:
-            # Insert comprehensive style block AFTER core description but BEFORE quality boosters
-            # This gives it prominence without overwhelming the core visual description
-            fragments.append(style_block)
-        else:
-            # Fallback to condensed style for backward compatibility (if no full style available)
-            _add_condensed_style(fragments, context)
+        if not style_block:
+            # Fallback to condensed style
+            style_fragments = []
+            _add_condensed_style(style_fragments, context)
+            style_block = ", ".join(style_fragments)
     else:
-        # For LLM optimization: use condensed style (LLM will rewrite this naturally)
-        _add_condensed_style(fragments, context)
+        # For LLM optimization: use condensed style
+        style_fragments = []
+        _add_condensed_style(style_fragments, context)
+        style_block = ", ".join(style_fragments)
+    components['style'] = style_block
 
-    fragments.append("cinematic lighting, highly detailed, professional cinematography, 4K, 16:9 aspect ratio")
+    # 11. QUALITY KEYWORDS
+    components['quality'] = "professional cinematography, natural motion, temporal consistency, smooth camera movement, stable composition, coherent scene, high fidelity rendering, photorealistic quality, 4K resolution, 16:9 widescreen"
 
-    reference_hint = _build_reference_hint(context)
-    if reference_hint:
-        fragments.append(reference_hint)
-    
-    # Add final reminder if using character reference
+    # 12. REFERENCE HINTS
+    # Pass is_face_heavy to build_reference_hint for face feature control
+    reference_hint = _build_reference_hint(context, is_face_heavy)
+    components['reference_hint'] = reference_hint if reference_hint else None
+
+    # 13. FINAL REMINDER (for character refs)
+    final_reminder = None
     if using_character_ref:
-        fragments.append("REMINDER: Scene and background must come from the prompt description above, not from the character reference image")
+        final_reminder = "REMINDER: Scene and background must come from the prompt description above, not from the character reference image"
+    components['final_reminder'] = final_reminder
+
+    # PHASE 2.8: CONDITIONAL PROMPT ORDERING
+    # Assemble fragments based on shot type and lyrics presence
+    fragments: List[str] = []
+
+    # Always start with transition if present
+    if components['transition']:
+        fragments.append(components['transition'])
+
+    # ORDERING LOGIC:
+    if is_face_heavy and has_lyrics:
+        # Face-heavy shot with singing: prioritize character face + lyrics
+        # (Lip sync instructions removed per user request)
+        if components['character_identity']:
+            fragments.append(components['character_identity'])
+        if components['scene_setting']:
+            fragments.append(components['scene_setting'])
+        if components['scene_instruction']:
+            fragments.append(components['scene_instruction'])
+        if components['lyrics_inline']:
+            fragments.append(components['lyrics_inline'])
+        if components['visual_description']:
+            fragments.append(components['visual_description'])
+        if components['motion']:
+            fragments.append(components['motion'])
+        if components['camera']:
+            fragments.append(components['camera'])
+        if components['scene_context']:
+            fragments.append(components['scene_context'])
+    elif is_face_heavy:
+        # Face-heavy shot without lyrics: prioritize character face
+        if components['character_identity']:
+            fragments.append(components['character_identity'])
+        if components['scene_setting']:
+            fragments.append(components['scene_setting'])
+        if components['scene_instruction']:
+            fragments.append(components['scene_instruction'])
+        if components['visual_description']:
+            fragments.append(components['visual_description'])
+        if components['motion']:
+            fragments.append(components['motion'])
+        if components['camera']:
+            fragments.append(components['camera'])
+        if components['scene_context']:
+            fragments.append(components['scene_context'])
+    elif has_lyrics:
+        # Non-face-heavy with lyrics: lyrics after action
+        if components['scene_setting']:
+            fragments.append(components['scene_setting'])
+        if components['scene_instruction']:
+            fragments.append(components['scene_instruction'])
+        if components['visual_description']:
+            fragments.append(components['visual_description'])
+        if components['motion']:
+            fragments.append(components['motion'])
+        if components['lyrics_inline']:
+            fragments.append(components['lyrics_inline'])
+        if components['camera']:
+            fragments.append(components['camera'])
+        if components['scene_context']:
+            fragments.append(components['scene_context'])
+    else:
+        # Standard ordering (no special conditions)
+        if components['character_identity']:
+            fragments.append(components['character_identity'])
+        if components['scene_setting']:
+            fragments.append(components['scene_setting'])
+        if components['scene_instruction']:
+            fragments.append(components['scene_instruction'])
+        if components['visual_description']:
+            fragments.append(components['visual_description'])
+        if components['motion']:
+            fragments.append(components['motion'])
+        if components['camera']:
+            fragments.append(components['camera'])
+        if components['scene_context']:
+            fragments.append(components['scene_context'])
+
+    # Add remaining components (same for all orderings)
+    if components['persistence_note']:
+        fragments.append(components['persistence_note'])
+    if components['style']:
+        fragments.append(components['style'])
+    if components['quality']:
+        fragments.append(components['quality'])
+    if components['reference_hint']:
+        fragments.append(components['reference_hint'])
+    if components['final_reminder']:
+        fragments.append(components['final_reminder'])
 
     prompt = ", ".join(fragment for fragment in fragments if fragment)
     # Note: Removed word limit enforcement - more context is better for video generation
@@ -215,6 +469,8 @@ def build_comprehensive_style_block(context: ClipContext) -> str:
     PHASE 2: This provides the video generation model with complete artistic direction,
     including visual style, mood, lighting, cinematography, and color palette with hex codes.
 
+    PHASE 2.2: Now includes time of day with lighting guidance for consistency.
+
     Args:
         context: ClipContext with full style fields
 
@@ -233,6 +489,23 @@ def build_comprehensive_style_block(context: ClipContext) -> str:
     elif context.mood:
         lines.append(f"MOOD: {context.mood}")
 
+    # PHASE 2.2: Time of Day with lighting guidance
+    if context.time_of_day:
+        time_of_day_lower = context.time_of_day.lower()
+        # Map time of day to lighting guidance
+        lighting_guidance = {
+            "dawn": "soft golden hour light, warm rising sun, long shadows",
+            "morning": "bright natural daylight, fresh clear lighting, moderate shadows",
+            "midday": "bright overhead sunlight, harsh lighting, short shadows",
+            "afternoon": "warm afternoon light, golden tones, lengthening shadows",
+            "dusk": "golden hour light, warm sunset glow, long dramatic shadows",
+            "evening": "fading natural light, blue hour tones, soft ambient lighting",
+            "night": "artificial lighting, moonlight, deep shadows, dramatic contrast",
+            "midnight": "dark ambient lighting, deep shadows, minimal light sources",
+        }
+        guidance = lighting_guidance.get(time_of_day_lower, f"{context.time_of_day} lighting")
+        lines.append(f"TIME OF DAY: {context.time_of_day} ({guidance})")
+
     # Lighting (prefer full version, fallback to keyword version)
     if context.lighting_full:
         lines.append(f"LIGHTING: {context.lighting_full}")
@@ -244,6 +517,11 @@ def build_comprehensive_style_block(context: ClipContext) -> str:
         lines.append(f"CINEMATOGRAPHY: {context.cinematography_full}")
     elif context.cinematography:
         lines.append(f"CINEMATOGRAPHY: {context.cinematography}")
+
+    # PHASE 2.9: Enhanced camera movement description
+    camera_enhancement = _enhance_camera_description(context.beat_metadata)
+    if camera_enhancement:
+        lines.append(camera_enhancement)
 
     # Color Palette with hex codes
     if context.color_palette_full:
@@ -264,12 +542,13 @@ def build_comprehensive_style_block(context: ClipContext) -> str:
     return ", ".join(lines)
 
 
-def build_character_identity_block(context: ClipContext) -> str:
+def build_character_identity_block(context: ClipContext, is_face_heavy: bool = False) -> str:
     """
     Build character identity block with immutable character descriptions.
 
     PHASE 1: Now formats from structured CharacterFeatures instead of pre-formatted text.
     PHASE 3: Properly separates multiple characters with clear labels and roles.
+    # PHASE 2.7: Pass has_lyrics flag to add mouth emphasis for singing clips. (COMMENTED OUT - lip sync removed)
 
     This ensures identical character descriptions across all clips, preventing
     the LLM from modifying or paraphrasing character features.
@@ -279,14 +558,20 @@ def build_character_identity_block(context: ClipContext) -> str:
 
     Args:
         context: ClipContext with Character objects (with structured features)
+        is_face_heavy: If True, this is a close-up shot that needs detailed face features
 
     Returns:
         Formatted character identity block with proper multi-character separation
     """
+    # Detect if this clip has lyrics for mouth emphasis
+    has_lyrics = bool(context.lyrics_context and context.lyrics_context.strip())
+
     # Try to use structured Character objects first
     if context.characters:
         # Pass character_reference_urls to conditionally add face reference note
-        return _build_identity_from_characters(context.characters, context.character_reference_urls)
+        # Pass has_lyrics for mouth emphasis in singing clips
+        # Pass is_face_heavy to control face feature detail level
+        return _build_identity_from_characters(context.characters, context.character_reference_urls, has_lyrics, is_face_heavy)
 
     # Fallback: Use legacy character_descriptions if available
     if context.character_descriptions:
@@ -295,16 +580,19 @@ def build_character_identity_block(context: ClipContext) -> str:
     return ""
 
 
-def _build_identity_from_characters(characters: List[Any], character_reference_urls: List[str] = None) -> str:
+def _build_identity_from_characters(characters: List[Any], character_reference_urls: List[str] = None, has_lyrics: bool = False, is_face_heavy: bool = False) -> str:
     """
     Build character identity block from structured Character objects.
 
     PHASE 1: Formats from CharacterFeatures (no pre-formatted text).
     PHASE 3: Proper multi-character formatting with labels and roles.
+    # PHASE 2.7: Add mouth emphasis for singing clips when has_lyrics=True. (COMMENTED OUT - lip sync removed)
 
     Args:
         characters: List of Character objects with structured features
         character_reference_urls: Optional list of character reference image URLs
+        has_lyrics: If True, add critical mouth emphasis for lip sync (COMMENTED OUT - not used anymore)
+        is_face_heavy: If True (close-up), include detailed face features. If False (mid-shot), rely on reference image.
 
     Returns:
         Formatted character identity block
@@ -334,9 +622,80 @@ def _build_identity_from_characters(characters: List[Any], character_reference_u
 
         # Format features (NO "FIXED CHARACTER IDENTITY:" header - that caused nesting)
         features = char.features
+
+        # Format face_features if it's a FaceFeatures object, otherwise fallback to face string
+        # CRITICAL FIX: Only include detailed face features in close-ups
+        # Mid-shots should rely on reference image to prevent face warping
+        if hasattr(features, 'face_features') and features.face_features:
+            face_features = features.face_features
+
+            if is_face_heavy:
+                # CLOSE-UP: Check if reference images exist
+                # UPDATED 2025-11-18: When reference images exist, use minimal face features
+                # to avoid text/image conflicts. When no reference images, use detailed features.
+                using_character_refs = bool(character_reference_urls and len(character_reference_urls) > 0)
+
+                if using_character_refs:
+                    # CLOSE-UP WITH REFERENCE IMAGE: Minimal face features
+                    # Only include face shape and skin tone - let reference image handle details
+                    # PHASE 2.7: Add mouth emphasis for singing clips (COMMENTED OUT - lip sync removed)
+                    # if has_lyrics:
+                    #     face_block = f"""Face Shape: {face_features.shape}
+                    # Skin Tone: {face_features.skin_tone}
+                    # CRITICAL FOR LIP SYNC: Mouth movements matching sung lyrics."""
+                    # else:
+                    face_block = f"""Face Shape: {face_features.shape}
+Skin Tone: {face_features.skin_tone}"""
+
+                    # COMMENTED OUT 2025-11-18: Detailed face features commented out when reference
+                    # images exist to avoid text/image conflicts. Reference image should drive the
+                    # specific facial details (nose shape, mouth shape, cheek definition, jawline).
+                    # If testing shows we need these details, they can be uncommented.
+                    #
+                    # Full detailed face block (COMMENTED OUT):
+                    # mouth_line = f"Mouth: {face_features.mouth}"
+                    # if has_lyrics:
+                    #     mouth_line += f"\nCRITICAL FOR LIP SYNC: Character's mouth is {face_features.mouth}. Maintain consistent mouth shape during singing."
+                    #
+                    # face_block = f"""Face Shape: {face_features.shape}
+                    # Skin Tone: {face_features.skin_tone}
+                    # Nose: {face_features.nose}
+                    # {mouth_line}
+                    # Cheeks: {face_features.cheeks}
+                    # Jawline: {face_features.jawline}
+                    # Distinctive Marks: {face_features.distinctive_marks}"""
+                else:
+                    # CLOSE-UP WITHOUT REFERENCE IMAGE: Keep detailed face features as fallback
+                    # This ensures we still get good results when no reference image is available
+                    # PHASE 2.7: Add mouth emphasis for singing clips (COMMENTED OUT - lip sync removed)
+                    mouth_line = f"Mouth: {face_features.mouth}"
+                    # if has_lyrics:
+                    #     mouth_line += f"\nCRITICAL FOR LIP SYNC: Character's mouth is {face_features.mouth}. Maintain consistent mouth shape during singing."
+
+                    face_block = f"""Face Shape: {face_features.shape}
+Skin Tone: {face_features.skin_tone}
+Nose: {face_features.nose}
+{mouth_line}
+Cheeks: {face_features.cheeks}
+Jawline: {face_features.jawline}
+Distinctive Marks: {face_features.distinctive_marks}"""
+            else:
+                # MID-SHOT: Minimal face description - let reference image handle details
+                # (This code path is UNCHANGED - already minimal)
+                # COMMENTED OUT: Lip sync instructions removed per user request
+                # if has_lyrics:
+                #     face_block = f"Face: Match reference image exactly. CRITICAL FOR LIP SYNC: Mouth movements matching sung lyrics."
+                # else:
+                face_block = "Face: Match reference image exactly (face shape, skin tone, facial features)"
+        elif hasattr(features, 'face'):
+            # Backward compatibility: use old face string format
+            face_block = f"Face: {features.face}"
+        else:
+            face_block = ""
+
         char_block = f"""{char_label}:
 Hair: {features.hair}
-Face: {features.face}
+{face_block}
 Eyes: {features.eyes}
 Clothing: {features.clothing}
 Accessories: {features.accessories}
@@ -350,9 +709,20 @@ Age: {features.age}"""
 
     # PHASE 3: Proper multi-character formatting
     # Instruction to use faces from reference images (only if reference images are available)
+    #
+    # COMMENTED OUT 2025-11-18: This line is redundant with Layer 2 (reference hint at line 938-940)
+    # which already instructs the model to match the reference image. Having this additional
+    # CRITICAL statement creates over-prescription and may conflict with the "naturally" guidance
+    # in mid-shots. Reference images are already passed as a separate API parameter to Veo 3.1
+    # with high priority. If testing shows this is needed, we can uncomment it selectively for
+    # close-ups only.
+    #
+    # face_reference_note = ""
+    # if character_reference_urls and len(character_reference_urls) > 0:
+    #     face_reference_note = "\n\nCRITICAL: Use the face from the character reference image for each character. Match the exact facial features, structure, and appearance from the reference image."
+
+    # Set to empty string since we're not using it
     face_reference_note = ""
-    if character_reference_urls and len(character_reference_urls) > 0:
-        face_reference_note = "\n\nCRITICAL: Use the face from the character reference image for each character. Match the exact facial features, structure, and appearance from the reference image."
     
     if len(character_blocks) == 1:
         # Single character
@@ -607,7 +977,7 @@ def _default_camera(beat_intensity: Literal["low", "medium", "high"]) -> str:
     return "Medium wide shot with controlled motion"
 
 
-def _build_reference_hint(context: ClipContext) -> str:
+def _build_reference_hint(context: ClipContext, is_face_heavy: bool = False) -> str:
     hints: List[str] = []
     if context.scene_reference_url:
         hints.append("Match the look and composition of the established scene reference image")
@@ -615,7 +985,10 @@ def _build_reference_hint(context: ClipContext) -> str:
         # When using character reference images, focus on character/object appearance only
         # Ignore any scene/background in the character reference image - use the prompt's scene description instead
         # Make this very explicit since the model tends to use the image as first frame
-        hints.append("CRITICAL: Character reference image is ONLY for character appearance - completely ignore all background, scene, setting, or environment from the character reference image. The scene must come entirely from the prompt description above.")
+        if is_face_heavy:
+            hints.append("CRITICAL: Match character's face from reference image exactly (facial features, structure, appearance). Completely ignore all background/scene from reference image.")
+        else:
+            hints.append("CRITICAL: Match character's overall appearance from reference image (body, proportions, general look). Completely ignore all background/scene from reference image. Let the reference image guide facial features naturally.")
     return ", ".join(hints)
 
 

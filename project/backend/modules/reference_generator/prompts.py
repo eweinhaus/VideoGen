@@ -6,7 +6,7 @@ Enhanced with detailed character features similar to video generator prompts.
 """
 
 from typing import Literal, Optional
-from shared.models.scene import Style, Character, CharacterFeatures
+from shared.models.scene import Style, Character, CharacterFeatures, FaceFeatures
 from shared.errors import ValidationError
 from shared.logging import get_logger
 
@@ -122,33 +122,79 @@ def get_variation_suffix(variation_index: int) -> str:
     return get_character_variation_suffix(variation_index)
 
 
+def format_face_features(face_features: 'FaceFeatures') -> str:
+    """
+    Format FaceFeatures into a descriptive string.
+
+    Args:
+        face_features: FaceFeatures object with detailed facial attributes
+
+    Returns:
+        Formatted face description string
+    """
+    # SIMPLIFIED 2025-11-18: Only include face shape and skin tone to avoid over-emphasis
+    # on facial features which can cause disproportionately large heads.
+    # The AI image generator interprets detailed nose/mouth/cheek/jawline descriptions
+    # as a signal to prioritize facial details over body proportions.
+    parts = [
+        f"{face_features.shape} face",
+        f"{face_features.skin_tone} skin tone"
+    ]
+
+    face_desc = ", ".join(parts)
+
+    # Add distinctive marks if present (these are unique identifiers, not proportions)
+    if face_features.distinctive_marks and face_features.distinctive_marks.lower() != "none":
+        face_desc += f", {face_features.distinctive_marks}"
+
+    # COMMENTED OUT 2025-11-18: Detailed facial features cause disproportionate heads
+    # The reference image should show natural human proportions with the face shape and
+    # skin tone specified, but let the AI determine natural nose/mouth/cheek/jaw details
+    # based on overall human anatomy rather than over-specifying them.
+    #
+    # Original detailed face description (COMMENTED OUT):
+    # parts = [
+    #     f"{face_features.skin_tone} skin tone",
+    #     f"{face_features.shape} face",
+    #     face_features.nose,
+    #     face_features.mouth,
+    #     face_features.cheeks,
+    #     face_features.jawline
+    # ]
+
+    return face_desc
+
+
 def build_character_features_block(character: Optional[Character]) -> str:
     """
     Build detailed character features block from structured CharacterFeatures.
-    
+
     Similar to video generator's character identity block, but formatted for reference images.
-    
+
     Args:
         character: Character object with structured features
-        
+
     Returns:
         Formatted character features block, or empty string if no features available
     """
     if not character:
         return ""
-    
+
     # Try structured features first
     if character.features:
         features = character.features
         char_name = character.name or character.id
         char_role = character.role or ""
-        
+
         # Build character label
         if char_role and char_role != "character":
             char_label = f"{char_name} ({char_role})"
         else:
             char_label = char_name
-        
+
+        # Format face features from nested FaceFeatures object
+        face_description = format_face_features(features.face_features)
+
         # Format features for reference image
         # IMPORTANT: Use the EXACT feature descriptions from scene planner - don't truncate or simplify
         # This ensures reference images match the character descriptions exactly
@@ -157,7 +203,7 @@ def build_character_features_block(character: Optional[Character]) -> str:
         features_block = (
             f"{char_label}: "
             f"Hair: {features.hair}. "
-            f"Face: {features.face}. "
+            f"Face: {face_description}. "
             f"Eyes: {features.eyes}. "
             f"Clothing: {features.clothing}. "
             f"Accessories: {features.accessories}. "

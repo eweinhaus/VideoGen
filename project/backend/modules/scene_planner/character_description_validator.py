@@ -8,7 +8,7 @@ Does NOT format into text - that happens later in prompt_synthesizer.
 import re
 from typing import Dict, Any, Optional
 from shared.logging import get_logger
-from shared.models.scene import CharacterFeatures
+from shared.models.scene import CharacterFeatures, FaceFeatures
 
 logger = get_logger("scene_planner")
 
@@ -49,9 +49,15 @@ def extract_character_features(
 
     # Build CharacterFeatures object with extracted or default values
     # NOTE: ALWAYS returns CharacterFeatures (never None) to ensure proper formatting
+
+    # PHASE 1.2: Create nested FaceFeatures from extracted or default values
+    # Parse face string into structured FaceFeatures (or use defaults)
+    face_str = features_dict.get("Face") or "medium brown skin tone, oval face shape, smooth features, clean shaven"
+    face_features = _parse_face_features(face_str)
+
     features = CharacterFeatures(
         hair=features_dict.get("Hair") or "short dark brown hair, straight texture, neat style",
-        face=features_dict.get("Face") or "medium brown skin tone, oval face shape, smooth features, clean shaven",
+        face_features=face_features,
         eyes=features_dict.get("Eyes") or "dark brown eyes, medium eyebrows",
         clothing=features_dict.get("Clothing") or "dark gray hoodie, blue jeans, white sneakers",
         accessories=features_dict.get("Accessories") or "None",
@@ -116,9 +122,15 @@ def validate_and_reformat_character_description(
         return description
 
     # Build the old formatted description for backward compatibility
+    # Convert face_features back to string for old format
+    face_features = features.face_features
+    face_str = f"{face_features.skin_tone} skin tone, {face_features.shape} face shape, {face_features.nose}, {face_features.mouth}, {face_features.cheeks}, {face_features.jawline}"
+    if face_features.distinctive_marks != "none":
+        face_str += f", {face_features.distinctive_marks}"
+
     formatted = _build_formatted_description(name or character_name, {
         "Hair": features.hair,
-        "Face": features.face,
+        "Face": face_str,
         "Eyes": features.eyes,
         "Clothing": features.clothing,
         "Accessories": features.accessories,
@@ -145,6 +157,89 @@ def _has_correct_format(description: str) -> bool:
     has_all_features = all(feature in description for feature in required_features)
 
     return has_header and has_footer and has_all_features
+
+
+def _parse_face_features(face_description: str) -> FaceFeatures:
+    """
+    Parse a face description string into structured FaceFeatures.
+
+    PHASE 1.2: Convert flat face description into nested structured features.
+
+    Args:
+        face_description: Face description string (e.g., "fair skin, oval face, small nose")
+
+    Returns:
+        FaceFeatures object with structured facial attributes
+    """
+    # Lowercased for matching
+    desc_lower = face_description.lower()
+
+    # Extract skin tone
+    skin_tone = "medium"
+    if any(word in desc_lower for word in ["fair", "pale", "light"]):
+        skin_tone = "fair"
+    elif any(word in desc_lower for word in ["olive", "tan"]):
+        skin_tone = "olive"
+    elif any(word in desc_lower for word in ["brown", "dark"]):
+        skin_tone = "brown"
+
+    # Extract face shape
+    shape = "oval"
+    if "heart" in desc_lower:
+        shape = "heart-shaped"
+    elif "square" in desc_lower:
+        shape = "square"
+    elif "round" in desc_lower:
+        shape = "round"
+    elif "oval" in desc_lower:
+        shape = "oval"
+
+    # Extract nose
+    nose = "straight nose"
+    if "button" in desc_lower or "small" in desc_lower:
+        nose = "button nose"
+    elif "aquiline" in desc_lower or "prominent" in desc_lower:
+        nose = "aquiline nose"
+
+    # Extract mouth
+    mouth = "medium lips"
+    if "full" in desc_lower or "plump" in desc_lower:
+        mouth = "full lips"
+    elif "thin" in desc_lower:
+        mouth = "thin lips"
+    elif "wide" in desc_lower:
+        mouth = "wide smile"
+
+    # Extract cheeks
+    cheeks = "rounded cheeks"
+    if "high" in desc_lower and "cheek" in desc_lower:
+        cheeks = "high cheekbones"
+
+    # Extract jawline
+    jawline = "soft"
+    if "strong" in desc_lower or "angular" in desc_lower:
+        jawline = "strong"
+    elif "soft" in desc_lower or "rounded" in desc_lower:
+        jawline = "soft"
+
+    # Extract distinctive marks
+    distinctive_marks = "none"
+    if "freckle" in desc_lower:
+        distinctive_marks = "freckles"
+    elif "mole" in desc_lower:
+        distinctive_marks = "mole"
+    elif "scar" in desc_lower:
+        distinctive_marks = "scar"
+
+    return FaceFeatures(
+        shape=shape,
+        skin_tone=skin_tone,
+        nose=nose,
+        mouth=mouth,
+        cheeks=cheeks,
+        jawline=jawline,
+        distinctive_marks=distinctive_marks
+    )
 
 
 def _extract_features(description: str) -> Dict[str, str]:

@@ -121,6 +121,20 @@ def validate_scene_plan(
                 # Fix: remove invalid reference
                 clip.scenes = [s for s in clip.scenes if s != scene_id]
     
+    # Validate time_of_day for all scenes
+    valid_times_of_day = {
+        "dawn", "morning", "midday", "afternoon",
+        "dusk", "evening", "night", "midnight"
+    }
+    for scene in scene_plan.scenes:
+        if not hasattr(scene, 'time_of_day') or not scene.time_of_day:
+            issues.append(f"Scene '{scene.id}' is missing required 'time_of_day' field")
+        elif scene.time_of_day.lower() not in valid_times_of_day:
+            issues.append(
+                f"Scene '{scene.id}' has invalid time_of_day '{scene.time_of_day}'. "
+                f"Must be one of: {', '.join(sorted(valid_times_of_day))}"
+            )
+
     # Validate style guide
     if not scene_plan.style.color_palette:
         issues.append("Missing color palette")
@@ -129,16 +143,16 @@ def validate_scene_plan(
             f"Color palette too small: {len(scene_plan.style.color_palette)} colors "
             f"(minimum: 3)"
         )
-    
+
     if not scene_plan.style.visual_style:
         issues.append("Missing visual style description")
-    
+
     if not scene_plan.style.mood:
         issues.append("Missing mood description")
-    
+
     if not scene_plan.style.lighting:
         issues.append("Missing lighting description")
-    
+
     if not scene_plan.style.cinematography:
         issues.append("Missing cinematography description")
     

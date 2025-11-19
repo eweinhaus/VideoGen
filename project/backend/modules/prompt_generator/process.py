@@ -21,7 +21,8 @@ from .prompt_synthesizer import (
     build_character_identity_block,
     build_object_identity_block,
     build_lyrics_block,
-    compute_word_count
+    compute_word_count,
+    _is_face_heavy_shot
 )
 from .reference_mapper import map_references
 from .style_synthesizer import ensure_global_consistency, extract_style_keywords
@@ -185,8 +186,11 @@ def _append_identity_blocks(prompts: List[str], contexts: List[ClipContext]) -> 
 
     final_prompts = []
     for prompt, context in zip(prompts, contexts):
+        # Detect if this is a face-heavy shot (close-up) for detailed face features
+        is_face_heavy = _is_face_heavy_shot(context)
+
         # Build character identity block for this clip
-        identity_block = build_character_identity_block(context)
+        identity_block = build_character_identity_block(context, is_face_heavy)
 
         if identity_block:
             # Append identity block after style block
@@ -354,7 +358,7 @@ def _build_clip_contexts(
     objects = {obj.id: obj for obj in plan.objects}  # PHASE 3: Object support
     contexts: List[ClipContext] = []
 
-    for script in plan.clip_scripts:
+    for idx, script in enumerate(plan.clip_scripts):
         mapping = reference_mapping.get(script.clip_index)
         scene_desc = [
             scenes[scene_id].description for scene_id in script.scenes if scene_id in scenes
@@ -397,6 +401,38 @@ def _build_clip_contexts(
             beat_timestamps or []
         )
 
+        # PHASE 2.1: Extract transition from previous clip
+        # Skip transition for last clip (no clip after it, so transition would show at the very end)
+        transition_from_previous = None
+        is_last_clip = (idx == len(plan.clip_scripts) - 1)
+        if idx > 0 and idx <= len(plan.transitions) and not is_last_clip:
+            # Transitions are indexed by from_clip
+            transition = next((t for t in plan.transitions if t.from_clip == idx - 1 and t.to_clip == idx), None)
+            if transition:
+                transition_from_previous = transition.type
+
+        # PHASE 2.1: Determine if this is the first clip
+        is_first_clip = (script.clip_index == 0)
+
+        # PHASE 2.2: Extract time_of_day from scene
+        time_of_day = None
+        if script.scenes:
+            # Use time_of_day from primary scene (first scene in the list)
+            primary_scene_id = script.scenes[0]
+            if primary_scene_id in scenes:
+                time_of_day = scenes[primary_scene_id].time_of_day
+
+        # PHASE 2.3: Detect scene persistence (consecutive clips with same scene_id)
+        scene_persistence_note = ""
+        if idx > 0:
+            prev_script = plan.clip_scripts[idx - 1]
+            # Check if current and previous clips share the same primary scene
+            if script.scenes and prev_script.scenes:
+                current_primary = script.scenes[0] if script.scenes else None
+                prev_primary = prev_script.scenes[0] if prev_script.scenes else None
+                if current_primary and prev_primary and current_primary == prev_primary:
+                    scene_persistence_note = f"SCENE CONTINUITY: Same scene as previous clip (scene_id: {current_primary}), maintain consistent environment and lighting"
+
         contexts.append(
             ClipContext(
                 clip_index=script.clip_index,
@@ -432,6 +468,13 @@ def _build_clip_contexts(
                 object_descriptions=object_desc,
                 objects=clip_objects,
                 object_reference_urls=mapping.object_reference_urls if mapping and hasattr(mapping, 'object_reference_urls') else [],
+                # PHASE 2.1: Transition context
+                transition_from_previous=transition_from_previous,
+                is_first_clip=is_first_clip,
+                # PHASE 2.2: Time of day for lighting consistency
+                time_of_day=time_of_day,
+                # PHASE 2.3: Scene persistence notes
+                scene_persistence_note=scene_persistence_note,
             )
         )
     return contexts
