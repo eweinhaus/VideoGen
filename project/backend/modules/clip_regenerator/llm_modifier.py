@@ -52,6 +52,7 @@ Your task:
    - Low temperature (0.3-0.4): For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...", "only change...")
    - Medium-low temperature (0.4-0.5): For small but noticeable changes (e.g., "slightly adjust lighting", "make it a bit brighter")
    - Medium temperature (0.6-0.7): For moderate changes (e.g., "change lighting and add motion", "make it brighter", "adjust the mood")
+   - Medium-high temperature (0.7-0.8): For significant visual changes that require substantial variation (e.g., "make it nighttime", "make it daytime", "change the time of day", "completely different lighting")
    - High temperature (0.8-1.0): For complete regeneration (e.g., "completely regenerate", "start over", "completely change", "redo this scene")
 4. Preserve visual style, character consistency, and scene coherence
 5. Keep prompt under 200 words

@@ -4,6 +4,16 @@ import type { PipelineStage } from "@/components/StepSelector"
 import type { VideoModel } from "@/components/ModelSelector"
 import type { Template } from "@/components/TemplateSelector"
 
+interface ErrorDetails {
+  category?: string
+  error_type?: string
+  error_message?: string
+  user_message?: string
+  suggestions?: string[]
+  job_id?: string
+  timestamp?: string
+}
+
 interface UploadState {
   audioFile: File | null
   userPrompt: string
@@ -13,6 +23,7 @@ interface UploadState {
   template: Template
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
+  errorDetails: ErrorDetails | null
   setAudioFile: (file: File | null) => void
   setUserPrompt: (prompt: string) => void
   setStopAtStage: (stage: PipelineStage | null) => void
@@ -66,11 +77,12 @@ export const uploadStore = create<UploadState>((set, get) => ({
   audioFile: null,
   userPrompt: "",
   stopAtStage: getDefaultStopAtStage(),
-  videoModel: "kling_v25_turbo", // Default model
+  videoModel: "veo_31", // Default model
   aspectRatio: "16:9", // Default aspect ratio
   template: "standard", // Default template
   isSubmitting: false,
   errors: {},
+  errorDetails: null,
 
   setAudioFile: (file: File | null) => {
     if (!file) {
@@ -187,6 +199,16 @@ export const uploadStore = create<UploadState>((set, get) => ({
       return response.job_id
     } catch (error: any) {
       let errorMessage = error.message || "Upload failed"
+      let errorDetails: ErrorDetails | null = null
+      
+      // Extract error details if available
+      if (error.errorDetails) {
+        errorDetails = error.errorDetails
+        // Use user_message if available, otherwise fall back to error message
+        if (errorDetails.user_message) {
+          errorMessage = errorDetails.user_message
+        }
+      }
       
       // Handle authentication errors specifically
       if (error.statusCode === 401 || error.message?.includes("Unauthorized") || error.message?.includes("Not authenticated")) {
@@ -200,6 +222,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
           ...get().errors,
           audio: errorMessage,
         },
+        errorDetails: errorDetails,
       })
       throw error
     }
@@ -210,10 +233,11 @@ export const uploadStore = create<UploadState>((set, get) => ({
       audioFile: null,
       userPrompt: "",
       stopAtStage: getDefaultStopAtStage(), // Reset to default (composer)
-      videoModel: "kling_v25_turbo", // Reset to default model
+      videoModel: "veo_31", // Reset to default model
       aspectRatio: "16:9", // Reset to default aspect ratio
       template: "standard", // Reset to default template
       errors: {},
+      errorDetails: null,
       isSubmitting: false,
     })
   },

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Query Supabase for all job IDs created in the last 24 hours.
+Query Supabase for the 5 most recent job IDs with timestamps.
 """
 
 import os
@@ -25,7 +25,7 @@ else:
 
 
 def get_recent_job_ids():
-    """Get all job IDs created in the last 24 hours."""
+    """Get the 5 most recent job IDs with timestamps."""
     
     # Get Supabase credentials from environment
     supabase_url = os.getenv("SUPABASE_URL")
@@ -39,27 +39,38 @@ def get_recent_job_ids():
         # Create Supabase client
         client: Client = create_client(supabase_url, supabase_service_key)
         
-        # Calculate 24 hours ago
-        twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
-        
-        print(f"Querying for jobs created after {twenty_four_hours_ago.isoformat()}")
+        print("Querying for the 5 most recent jobs...")
         print()
         
-        # Query for all jobs created in last 24 hours
-        result = client.table("jobs").select("id, created_at, status").gte(
-            "created_at", twenty_four_hours_ago.isoformat()
-        ).order("created_at", desc=True).execute()
+        # Query for the 5 most recent jobs (no time filter)
+        result = client.table("jobs").select("id, created_at, status").order(
+            "created_at", desc=True
+        ).limit(5).execute()
         
         job_ids = []
         
         if result.data:
-            job_ids = [job["id"] for job in result.data]
-            print(f"Found {len(job_ids)} job(s) created in the last 24 hours:")
+            print(f"Most recent 5 jobs:")
             print()
-            for job_id in job_ids:
-                print(job_id)
+            for job in result.data:
+                job_id = job["id"]
+                created_at = job["created_at"]
+                status = job.get("status", "unknown")
+                job_ids.append(job_id)
+                
+                # Format timestamp nicely
+                try:
+                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+                except:
+                    formatted_time = created_at
+                
+                print(f"Job ID: {job_id}")
+                print(f"  Created: {formatted_time} ({created_at})")
+                print(f"  Status: {status}")
+                print()
         else:
-            print("No jobs found in the last 24 hours.")
+            print("No jobs found.")
         
         return job_ids
         

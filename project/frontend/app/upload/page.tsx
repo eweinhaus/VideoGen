@@ -28,6 +28,7 @@ export default function UploadPage() {
     template,
     isSubmitting,
     errors,
+    errorDetails,
     setAudioFile,
     setUserPrompt,
     setStopAtStage,
@@ -170,8 +171,59 @@ export default function UploadPage() {
 
             {errors.audio || errors.prompt ? (
               <Alert variant="destructive">
-                <AlertDescription>
-                  Please fix the errors above before submitting
+                <AlertDescription className="space-y-3">
+                  <div className="font-semibold">
+                    {errors.audio || errors.prompt}
+                  </div>
+                  
+                  {/* Show suggestions if available */}
+                  {errorDetails?.suggestions && errorDetails.suggestions.length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-sm font-medium mb-2">Suggestions:</div>
+                      <ul className="list-disc list-inside space-y-1 text-sm">
+                        {errorDetails.suggestions.map((suggestion, index) => (
+                          <li key={index}>{suggestion}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  
+                  {/* Expandable technical details */}
+                  {errorDetails && (
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground font-medium">
+                        Show technical details
+                      </summary>
+                      <div className="mt-2 p-3 bg-muted rounded-md space-y-2 text-xs font-mono">
+                        {errorDetails.category && (
+                          <div>
+                            <span className="font-semibold">Error Category:</span> {errorDetails.category}
+                          </div>
+                        )}
+                        {errorDetails.error_type && (
+                          <div>
+                            <span className="font-semibold">Error Type:</span> {errorDetails.error_type}
+                          </div>
+                        )}
+                        {errorDetails.error_message && (
+                          <div>
+                            <span className="font-semibold">Error Message:</span>
+                            <pre className="mt-1 whitespace-pre-wrap break-words">{errorDetails.error_message}</pre>
+                          </div>
+                        )}
+                        {errorDetails.job_id && (
+                          <div>
+                            <span className="font-semibold">Job ID:</span> {errorDetails.job_id}
+                          </div>
+                        )}
+                        {errorDetails.timestamp && (
+                          <div>
+                            <span className="font-semibold">Timestamp:</span> {new Date(errorDetails.timestamp).toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  )}
                 </AlertDescription>
               </Alert>
             ) : null}

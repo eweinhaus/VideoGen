@@ -33,17 +33,24 @@ interface Message {
   thumbnailUrl?: string | null
 }
 
+interface ClipData {
+  clip_index: number
+  thumbnail_url: string | null
+}
+
 interface ClipChatbotProps {
   jobId: string
-  clipIndex: number
   onRegenerationComplete?: (newVideoUrl: string) => void
 }
 
 export function ClipChatbot({
   jobId,
-  clipIndex,
   onRegenerationComplete,
 }: ClipChatbotProps) {
+  // Generate unique storage key for this job (unified chat)
+  const storageKey = `clip_chat_${jobId}`
+  const conversationHistoryKey = `clip_chat_history_${jobId}`
+  
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isProcessing, setIsProcessing] = useState(false)
@@ -54,33 +61,109 @@ export function ClipChatbot({
   const [progress, setProgress] = useState<number | null>(null)
   const [templateMatched, setTemplateMatched] = useState<string | null>(null)
   const [lastInstruction, setLastInstruction] = useState<string | null>(null)
-  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null)
+  const [lastClipIndex, setLastClipIndex] = useState<number | null>(null)
+  const [clips, setClips] = useState<ClipData[]>([])
+  const [selectedClipIndex, setSelectedClipIndex] = useState<number | null>(null)
+  const [loadingClips, setLoadingClips] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const conversationHistoryRef = useRef<Array<{ role: string; content: string }>>([])
+  const isInitializedRef = useRef(false)
 
-  // Fetch clip thumbnail when clipIndex changes
+  // Load clips on mount
   useEffect(() => {
     let mounted = true
 
-    async function fetchThumbnail() {
+    async function fetchClips() {
       try {
+        setLoadingClips(true)
         const response = await getJobClips(jobId)
-        const clip = response.clips.find((c) => c.clip_index === clipIndex)
-        if (mounted && clip) {
-          setThumbnailUrl(clip.thumbnail_url)
+        if (mounted) {
+          setClips(response.clips)
+          setLoadingClips(false)
         }
       } catch (err) {
-        console.error("Failed to fetch clip thumbnail:", err)
-        // Silently fail - thumbnail is optional
+        console.error("Failed to fetch clips:", err)
+        if (mounted) {
+          setLoadingClips(false)
+        }
       }
     }
 
-    fetchThumbnail()
+    fetchClips()
 
     return () => {
       mounted = false
     }
-  }, [jobId, clipIndex])
+  }, [jobId])
+
+  // Load messages and conversation history from localStorage on mount or when jobId changes
+  useEffect(() => {
+    // Reset initialization flag when jobId changes
+    isInitializedRef.current = false
+    
+    try {
+      // Load messages
+      const savedMessages = localStorage.getItem(storageKey)
+      if (savedMessages) {
+        const parsed = JSON.parse(savedMessages)
+        // Convert timestamp strings back to Date objects
+        const restoredMessages: Message[] = parsed.map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp),
+        }))
+        setMessages(restoredMessages)
+      } else {
+        // Clear messages if no saved data for this job
+        setMessages([])
+      }
+
+      // Load conversation history
+      const savedHistory = localStorage.getItem(conversationHistoryKey)
+      if (savedHistory) {
+        conversationHistoryRef.current = JSON.parse(savedHistory)
+      } else {
+        // Clear conversation history if no saved data
+        conversationHistoryRef.current = []
+      }
+    } catch (err) {
+      console.error("Failed to load chat history from localStorage:", err)
+      // Silently fail - start with empty chat
+      setMessages([])
+      conversationHistoryRef.current = []
+    }
+    
+    isInitializedRef.current = true
+  }, [jobId, storageKey, conversationHistoryKey])
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    if (!isInitializedRef.current) return
+    
+    try {
+      // Convert Date objects to ISO strings for storage
+      const messagesToSave = messages.map((msg) => ({
+        ...msg,
+        timestamp: msg.timestamp.toISOString(),
+      }))
+      localStorage.setItem(storageKey, JSON.stringify(messagesToSave))
+    } catch (err) {
+      console.error("Failed to save messages to localStorage:", err)
+      // Silently fail - chat will continue to work, just won't persist
+    }
+  }, [messages, storageKey])
+
+  // Helper function to save conversation history
+  const saveConversationHistory = () => {
+    if (!isInitializedRef.current) return
+    
+    try {
+      localStorage.setItem(conversationHistoryKey, JSON.stringify(conversationHistoryRef.current))
+    } catch (err) {
+      console.error("Failed to save conversation history to localStorage:", err)
+      // Silently fail - chat will continue to work, just won't persist
+    }
+  }
+
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -191,11 +274,12 @@ export function ClipChatbot({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!input.trim() || isProcessing) {
+    if (!input.trim() || isProcessing || selectedClipIndex === null) {
       return
     }
 
     const userMessage = input.trim()
+    const clipIndex = selectedClipIndex
     setInput("")
     setError(null)
     setLastError(null)
@@ -205,6 +289,10 @@ export function ClipChatbot({
     setCostEstimate(null)
     setTemplateMatched(null)
     setLastInstruction(userMessage) // Store for retry
+    setLastClipIndex(clipIndex) // Store for retry
+
+    // Find the selected clip for thumbnail
+    const selectedClip = clips.find((c) => c.clip_index === clipIndex)
 
     // Add user message to conversation
     const newUserMessage: Message = {
@@ -219,7 +307,7 @@ export function ClipChatbot({
       content: `Clip ${clipIndex + 1} attached`,
       timestamp: new Date(),
       attachedClipIndex: clipIndex,
-      thumbnailUrl: thumbnailUrl,
+      thumbnailUrl: selectedClip?.thumbnail_url || null,
     }
     
     setMessages((prev) => [...prev, newUserMessage, clipAttachmentMessage])
@@ -229,6 +317,7 @@ export function ClipChatbot({
       role: "user",
       content: userMessage,
     })
+    saveConversationHistory()
 
     try {
       // Call regeneration API
@@ -257,6 +346,7 @@ export function ClipChatbot({
         role: "assistant",
         content: assistantMessage.content,
       })
+      saveConversationHistory()
 
       // Progress will be updated via SSE events
     } catch (err) {
@@ -322,7 +412,7 @@ export function ClipChatbot({
   }
 
   const handleRetry = async () => {
-    if (!lastInstruction || isProcessing) {
+    if (!lastInstruction || !lastClipIndex || isProcessing) {
       return
     }
 
@@ -340,7 +430,7 @@ export function ClipChatbot({
 
     try {
       // Call regeneration API directly with last instruction
-      const response = await regenerateClip(jobId, clipIndex, {
+      const response = await regenerateClip(jobId, lastClipIndex, {
         instruction: lastInstruction,
         conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 messages
       })
@@ -397,8 +487,8 @@ export function ClipChatbot({
         <div className="h-64 overflow-y-auto border rounded-md p-4 space-y-3 bg-muted/30">
           {messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-8">
-              <p>Start a conversation to modify this clip.</p>
-              <p className="text-sm mt-2">Try: &quot;make it nighttime&quot; or &quot;add more motion&quot;</p>
+              <p>Start a conversation to modify a clip.</p>
+              <p className="text-sm mt-2">Select a clip above and try: &quot;make it nighttime&quot; or &quot;add more motion&quot;</p>
             </div>
           ) : (
             messages.map((message, index) => (
@@ -506,18 +596,60 @@ export function ClipChatbot({
 
         {/* Input Form */}
         <form onSubmit={handleSubmit} className="space-y-2">
+          {/* Clip Selection */}
+          {!loadingClips && clips.length > 0 && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Select clip to modify:</label>
+              <div className="flex flex-wrap gap-2">
+                {clips.map((clip) => (
+                  <Button
+                    key={clip.clip_index}
+                    type="button"
+                    variant={selectedClipIndex === clip.clip_index ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setSelectedClipIndex(clip.clip_index)}
+                    disabled={isProcessing}
+                    className="flex items-center gap-2"
+                  >
+                    {clip.thumbnail_url && (
+                      <div className="relative w-8 h-5 rounded overflow-hidden">
+                        <Image
+                          src={clip.thumbnail_url}
+                          alt={`Clip ${clip.clip_index + 1}`}
+                          fill
+                          className="object-cover"
+                          sizes="32px"
+                        />
+                      </div>
+                    )}
+                    <span>Clip {clip.clip_index + 1}</span>
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+          {loadingClips && (
+            <div className="text-sm text-muted-foreground">Loading clips...</div>
+          )}
+          {!loadingClips && clips.length === 0 && (
+            <Alert>
+              <AlertDescription className="text-xs">
+                No clips available. The video may not have completed generation yet.
+              </AlertDescription>
+            </Alert>
+          )}
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Enter your modification instruction..."
-            disabled={isProcessing}
+            disabled={isProcessing || selectedClipIndex === null}
             rows={2}
             className="resize-none"
           />
           <div className="flex gap-2">
             <Button
               type="submit"
-              disabled={!input.trim() || isProcessing}
+              disabled={!input.trim() || isProcessing || selectedClipIndex === null}
               className="flex-1"
             >
               {isProcessing ? (

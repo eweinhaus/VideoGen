@@ -603,8 +603,18 @@ async def regenerate_clip(
     temperature = 0.7  # Default temperature
     temperature_reasoning = "Template match - using default temperature"
     
-    if template_match:
-        # Step 3: Apply template transformation
+    # Templates that represent moderate visual changes should ALWAYS use LLM modification
+    # for better prompt rewriting. LLM can rewrite the prompt more effectively than just
+    # appending text, which is crucial for creating meaningful visual changes even with
+    # temperature control. This applies to all models, including Veo 3.1.
+    moderate_change_templates = {"nighttime", "daytime", "brighter", "darker"}
+    use_llm_for_template = (
+        template_match is not None 
+        and template_match.template_id in moderate_change_templates
+    )
+    
+    if template_match and not use_llm_for_template:
+        # Step 3: Apply template transformation (for simple changes or Veo 3.1)
         modified_prompt = apply_template(original_prompt.prompt, template_match)
         cost_estimate = estimate_clip_cost(original_clip.target_duration, environment)
         # Use default temperature for template matches
@@ -617,7 +627,8 @@ async def regenerate_clip(
                 "job_id": str(job_id),
                 "clip_index": clip_index,
                 "template_id": template_match.template_id,
-                "temperature": temperature
+                "temperature": temperature,
+                "video_model": video_model
             }
         )
         
