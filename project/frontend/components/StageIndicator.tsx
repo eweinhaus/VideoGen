@@ -34,7 +34,6 @@ const STAGE_ORDER = [
   "reference_generator",
   "prompt_generation",
   "video_generation",
-  "lipsync_processor",
   "composition",
 ]
 
@@ -83,7 +82,7 @@ export function StageIndicator({ stages, currentStage, showOnly }: StageIndicato
   return (
     <Card>
       <CardContent className="p-6">
-        <div className="flex flex-row flex-wrap gap-6">
+        <div className="flex flex-row justify-between">
           {orderedStages.map((stage, index) => (
             <div
               key={stage.name}

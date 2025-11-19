@@ -117,9 +117,13 @@ PYTHONPATH=. pytest modules/clip_regenerator/tests/test_data_loader.py -v
 
 The LLM analyzes user instructions and determines appropriate temperature for video generation:
 
-- **Precise Changes (0.3-0.5)**: User requests minimal changes (e.g., "keep scene same, change hair color")
-- **Moderate Changes (0.6-0.7)**: User requests moderate modifications (e.g., "change lighting")
+- **Very Low Temperature (0.2-0.3)**: For "almost exactly the same" requests with minor fixes (e.g., "regenerate almost exactly the same, avoid weird right arm", "keep everything identical except fix X")
+- **Low Temperature (0.3-0.4)**: For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...")
+- **Medium-Low Temperature (0.4-0.5)**: For small but noticeable changes (e.g., "slightly adjust lighting")
+- **Moderate Changes (0.6-0.7)**: User requests moderate modifications (e.g., "change lighting and add motion")
 - **Complete Regeneration (0.8-1.0)**: User requests complete regeneration (e.g., "completely regenerate")
+
+**Post-Processing Refinement**: If the LLM chooses 0.35 or higher but the user instruction contains phrases like "almost exactly the same", the system automatically refines the temperature downward to 0.2-0.3 for maximum consistency.
 
 ### Seed Reuse Strategy
 

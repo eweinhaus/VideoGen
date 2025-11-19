@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { regenerateClip } from "@/lib/api"
+import Image from "next/image"
+import { regenerateClip, getJobClips } from "@/lib/api"
 import { useSSE } from "@/hooks/useSSE"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -28,6 +29,8 @@ interface Message {
   content: string
   timestamp: Date
   type?: "info" | "warning" | "error" | "success"
+  attachedClipIndex?: number
+  thumbnailUrl?: string | null
 }
 
 interface ClipChatbotProps {
@@ -51,8 +54,33 @@ export function ClipChatbot({
   const [progress, setProgress] = useState<number | null>(null)
   const [templateMatched, setTemplateMatched] = useState<string | null>(null)
   const [lastInstruction, setLastInstruction] = useState<string | null>(null)
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const conversationHistoryRef = useRef<Array<{ role: string; content: string }>>([])
+
+  // Fetch clip thumbnail when clipIndex changes
+  useEffect(() => {
+    let mounted = true
+
+    async function fetchThumbnail() {
+      try {
+        const response = await getJobClips(jobId)
+        const clip = response.clips.find((c) => c.clip_index === clipIndex)
+        if (mounted && clip) {
+          setThumbnailUrl(clip.thumbnail_url)
+        }
+      } catch (err) {
+        console.error("Failed to fetch clip thumbnail:", err)
+        // Silently fail - thumbnail is optional
+      }
+    }
+
+    fetchThumbnail()
+
+    return () => {
+      mounted = false
+    }
+  }, [jobId, clipIndex])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -184,7 +212,17 @@ export function ClipChatbot({
       content: userMessage,
       timestamp: new Date(),
     }
-    setMessages((prev) => [...prev, newUserMessage])
+    
+    // Add clip attachment message right after user message
+    const clipAttachmentMessage: Message = {
+      role: "user",
+      content: `Clip ${clipIndex + 1} attached`,
+      timestamp: new Date(),
+      attachedClipIndex: clipIndex,
+      thumbnailUrl: thumbnailUrl,
+    }
+    
+    setMessages((prev) => [...prev, newUserMessage, clipAttachmentMessage])
 
     // Add to conversation history
     conversationHistoryRef.current.push({
@@ -374,7 +412,9 @@ export function ClipChatbot({
                 <div
                   className={cn(
                     "max-w-[80%] rounded-lg px-4 py-2",
-                    message.role === "user"
+                    message.attachedClipIndex !== undefined
+                      ? "bg-primary/60 text-primary-foreground text-xs"
+                      : message.role === "user"
                       ? "bg-primary text-primary-foreground"
                       : message.role === "assistant"
                       ? "bg-muted"
@@ -387,10 +427,29 @@ export function ClipChatbot({
                       : "bg-muted/50"
                   )}
                 >
-                  <p className="text-sm">{message.content}</p>
-                  <p className="text-xs opacity-70 mt-1">
-                    {message.timestamp.toLocaleTimeString()}
-                  </p>
+                  {message.attachedClipIndex !== undefined ? (
+                    <div className="flex items-center gap-2">
+                      {message.thumbnailUrl && (
+                        <div className="relative w-12 h-8 rounded overflow-hidden flex-shrink-0">
+                          <Image
+                            src={message.thumbnailUrl}
+                            alt={`Clip ${message.attachedClipIndex + 1} thumbnail`}
+                            fill
+                            className="object-cover"
+                            sizes="48px"
+                          />
+                        </div>
+                      )}
+                      <p className="text-xs">{message.content}</p>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-sm">{message.content}</p>
+                      <p className="text-xs opacity-70 mt-1">
+                        {message.timestamp.toLocaleTimeString()}
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             ))

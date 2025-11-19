@@ -6,7 +6,7 @@ error handling, and cost tracking.
 """
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 from decimal import Decimal
 
@@ -110,7 +110,8 @@ async def generate_lipsync_clip(
     clip_index: int,
     job_id: UUID,
     environment: str = "production",
-    progress_callback: Optional[callable] = None
+    progress_callback: Optional[callable] = None,
+    character_ids: Optional[List[str]] = None
 ) -> Clip:
     """
     Generate lipsynced video clip via Replicate PixVerse LipSync model.
@@ -122,6 +123,8 @@ async def generate_lipsync_clip(
         job_id: Job ID for logging
         environment: "production" or "development"
         progress_callback: Optional callback for progress updates
+        character_ids: Optional list of character IDs to target for lipsync
+                       (if None, syncs all visible characters)
         
     Returns:
         Clip model with lipsynced video URL
@@ -148,6 +151,22 @@ async def generate_lipsync_clip(
             "video": video_url,
             "audio": audio_url
         }
+        
+        # Add character selection if provided (if model supports it)
+        # Note: PixVerse lipsync may not support character selection yet,
+        # but we include it for future compatibility
+        if character_ids:
+            logger.info(
+                f"Character selection provided: {character_ids}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "character_ids": character_ids
+                }
+            )
+            # Some models might support a "character_ids" or "target_faces" parameter
+            # For now, we log it but don't pass it (model will sync all visible faces)
+            # Future: input_data["character_ids"] = character_ids
         
         # Create prediction
         logger.info(

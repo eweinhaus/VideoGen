@@ -29,6 +29,7 @@ from modules.lipsync_processor.process import process_single_clip_lipsync
 from modules.clip_regenerator.template_matcher import match_template, apply_template, is_lipsync_request
 from modules.clip_regenerator.llm_modifier import modify_prompt_with_llm, estimate_llm_cost
 from modules.clip_regenerator.context_builder import build_llm_context
+from modules.clip_regenerator.character_parser import parse_character_selection
 from modules.clip_regenerator.status_manager import update_job_status
 from modules.clip_regenerator.cost_tracker import track_regeneration_cost
 from modules.video_generator.generator import generate_video_clip
@@ -329,6 +330,35 @@ async def regenerate_clip(
         # Get audio URL
         audio_url = await get_audio_url(job_id)
         
+        # Parse character selection from instruction
+        character_ids = None
+        scene_plan = await load_scene_plan_from_job_stages(job_id)
+        if scene_plan:
+            character_ids = parse_character_selection(
+                instruction=user_instruction,
+                scene_plan=scene_plan,
+                clip_index=clip_index
+            )
+            if character_ids:
+                logger.info(
+                    f"Character selection parsed: {character_ids}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "character_ids": character_ids,
+                        "instruction": user_instruction
+                    }
+                )
+            else:
+                logger.info(
+                    f"No specific character selection found, will sync all visible characters",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "instruction": user_instruction
+                    }
+                )
+        
         # Process through lipsync processor
         lipsynced_clip = await process_single_clip_lipsync(
             clip=original_clip,
@@ -336,7 +366,8 @@ async def regenerate_clip(
             audio_url=audio_url,
             job_id=job_id,
             environment=environment,
-            event_publisher=event_publisher
+            event_publisher=event_publisher,
+            character_ids=character_ids if character_ids else None
         )
         
         # Return result in RegenerationResult format (for compatibility)
@@ -1119,6 +1150,53 @@ async def regenerate_clip_with_recomposition(
                 "video_url": video_output.video_url,
                 "duration": video_output.duration
             })
+        
+        # Save updated clips to database so subsequent regenerations use latest versions
+        try:
+            from api_gateway.services.db_helpers import update_job_stage
+            clips_dict = {
+                "job_id": str(updated_clips_obj.job_id),
+                "clips": [
+                    {
+                        "clip_index": clip.clip_index,
+                        "video_url": clip.video_url,
+                        "actual_duration": clip.actual_duration,
+                        "target_duration": clip.target_duration,
+                        "duration_diff": clip.duration_diff,
+                        "status": clip.status,
+                        "cost": str(clip.cost),
+                        "retry_count": clip.retry_count,
+                        "generation_time": clip.generation_time
+                    }
+                    for clip in updated_clips_obj.clips
+                ],
+                "total_clips": updated_clips_obj.total_clips,
+                "successful_clips": updated_clips_obj.successful_clips,
+                "failed_clips": updated_clips_obj.failed_clips,
+                "total_cost": str(updated_clips_obj.total_cost),
+                "total_generation_time": updated_clips_obj.total_generation_time
+            }
+            await update_job_stage(
+                job_id=job_id,
+                stage_name="video_generator",
+                status="completed",
+                metadata={"clips": clips_dict}
+            )
+            logger.info(
+                f"Saved updated clips to database after recomposition",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "total_clips": updated_clips_obj.total_clips
+                }
+            )
+        except Exception as e:
+            # Don't fail regeneration if database save fails, but log the warning
+            logger.warning(
+                f"Failed to save updated clips to database after recomposition: {e}",
+                extra={"job_id": str(job_id), "clip_index": clip_index},
+                exc_info=True
+            )
         
     except CompositionError as e:
         logger.error(

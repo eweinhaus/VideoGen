@@ -289,7 +289,8 @@ export async function regenerateClip(
   clipIndex: number,
   regenerationRequest: RegenerationRequest
 ): Promise<RegenerationResponse> {
-  // Use 30 second timeout for regeneration requests (initial response)
+  // Use 15 second timeout for regeneration requests (initial response)
+  // Only critical validations happen in initial request, rest moved to background task
   // Actual regeneration happens async with SSE events
   return request<RegenerationResponse>(
     `/api/v1/jobs/${jobId}/clips/${clipIndex}/regenerate`,
@@ -297,7 +298,7 @@ export async function regenerateClip(
       method: "POST",
       body: JSON.stringify(regenerationRequest),
     },
-    30000 // 30 second timeout
+    15000 // 15 second timeout (reduced since we moved validations to background)
   )
 }
 

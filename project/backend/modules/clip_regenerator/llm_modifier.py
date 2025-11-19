@@ -7,7 +7,7 @@ style consistency. Uses GPT-4o or Claude 3.5 Sonnet with retry logic.
 
 import json
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from uuid import UUID
 from decimal import Decimal
 
@@ -48,17 +48,21 @@ Your task:
 1. Understand the user's instruction and determine the level of change requested
 2. Modify the original prompt to incorporate the instruction
 3. Determine appropriate temperature (0.0-1.0) based on the instruction:
-   - Low temperature (0.3-0.5): For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...", "only change...")
+   - Very low temperature (0.2-0.3): For "almost exactly the same" requests with minor fixes (e.g., "regenerate almost exactly the same, avoid weird right arm", "keep everything identical except fix X", "same scene just fix Y", "almost identical but correct Z")
+   - Low temperature (0.3-0.4): For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...", "only change...")
+   - Medium-low temperature (0.4-0.5): For small but noticeable changes (e.g., "slightly adjust lighting", "make it a bit brighter")
    - Medium temperature (0.6-0.7): For moderate changes (e.g., "change lighting and add motion", "make it brighter", "adjust the mood")
    - High temperature (0.8-1.0): For complete regeneration (e.g., "completely regenerate", "start over", "completely change", "redo this scene")
 4. Preserve visual style, character consistency, and scene coherence
 5. Keep prompt under 200 words
 6. Maintain reference image compatibility
 
+IMPORTANT: When user says "almost exactly the same", "almost identical", "keep everything the same", or similar phrases indicating minimal change, use temperature 0.2-0.3 to maximize consistency.
+
 Output JSON format:
 {
   "prompt": "modified prompt text",
-  "temperature": 0.4,
+  "temperature": 0.3,
   "reasoning": "brief explanation of temperature choice"
 }
 
@@ -267,6 +271,73 @@ def _truncate_context_if_needed(
     return truncated_context
 
 
+def refine_temperature_for_minimal_change(
+    user_instruction: str,
+    llm_temperature: float,
+    llm_reasoning: str
+) -> Tuple[float, str]:
+    """
+    Refine temperature downward if user instruction indicates "almost exactly the same".
+    
+    This provides a safety net to ensure very low temperatures (0.2-0.3) are used
+    when user explicitly requests minimal changes, even if LLM chose a slightly higher value.
+    
+    Args:
+        user_instruction: User's modification instruction
+        llm_temperature: Temperature chosen by LLM
+        llm_reasoning: LLM's reasoning for temperature choice
+        
+    Returns:
+        Tuple of (refined_temperature, updated_reasoning)
+    """
+    # Phrases that indicate "almost exactly the same" - should use 0.2-0.3
+    minimal_change_phrases = [
+        "almost exactly the same",
+        "almost identical",
+        "keep everything the same",
+        "keep everything identical",
+        "same scene just",
+        "same but fix",
+        "same except",
+        "identical except",
+        "almost the same",
+        "nearly identical",
+        "regenerate almost exactly",
+        "almost exactly",
+    ]
+    
+    instruction_lower = user_instruction.lower()
+    
+    # Check if instruction contains minimal change phrases
+    has_minimal_change_phrase = any(
+        phrase in instruction_lower for phrase in minimal_change_phrases
+    )
+    
+    # If LLM chose 0.4 or higher but instruction indicates minimal change, refine downward
+    if has_minimal_change_phrase and llm_temperature >= 0.35:
+        refined_temperature = min(0.3, llm_temperature - 0.1)  # Reduce by 0.1, cap at 0.3
+        refined_temperature = max(0.2, refined_temperature)  # Ensure at least 0.2
+        
+        updated_reasoning = (
+            f"{llm_reasoning} [Refined: Detected 'almost exactly the same' phrase, "
+            f"adjusted temperature from {llm_temperature:.2f} to {refined_temperature:.2f} for maximum consistency]"
+        )
+        
+        logger.info(
+            f"Refined temperature for minimal change request",
+            extra={
+                "original_temperature": llm_temperature,
+                "refined_temperature": refined_temperature,
+                "instruction_preview": user_instruction[:100]
+            }
+        )
+        
+        return refined_temperature, updated_reasoning
+    
+    # No refinement needed
+    return llm_temperature, llm_reasoning
+
+
 @retry_with_backoff(max_attempts=3, base_delay=2)
 async def modify_prompt_with_llm(
     original_prompt: str,
@@ -396,6 +467,13 @@ async def modify_prompt_with_llm(
                 }
             )
             
+            # Refine temperature if user instruction indicates "almost exactly the same"
+            temperature, reasoning = refine_temperature_for_minimal_change(
+                user_instruction,
+                temperature,
+                reasoning
+            )
+            
         except json.JSONDecodeError as e:
             # Fallback: Try to extract prompt from text response
             logger.warning(
@@ -405,6 +483,13 @@ async def modify_prompt_with_llm(
             modified_prompt = parse_llm_prompt_response(content)
             temperature = 0.7  # Default fallback temperature
             reasoning = "JSON parsing failed, using default temperature"
+            
+            # Still refine temperature if user instruction indicates minimal change
+            temperature, reasoning = refine_temperature_for_minimal_change(
+                user_instruction,
+                temperature,
+                reasoning
+            )
         
         # Track cost
         if job_id:

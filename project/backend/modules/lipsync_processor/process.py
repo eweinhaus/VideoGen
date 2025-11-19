@@ -29,7 +29,8 @@ async def process_single_clip_lipsync(
     audio_url: str,
     job_id: UUID,
     environment: str = "production",
-    event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None
+    event_publisher: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    character_ids: Optional[List[str]] = None
 ) -> Clip:
     """
     Apply lipsync to a single video clip.
@@ -45,6 +46,8 @@ async def process_single_clip_lipsync(
         job_id: Job ID
         environment: "production" or "development"
         event_publisher: Optional callback for SSE events
+        character_ids: Optional list of character IDs to target for lipsync
+                       (if None, syncs all visible characters)
         
     Returns:
         Clip object with lipsynced video (replaces original clip)
@@ -163,7 +166,8 @@ async def process_single_clip_lipsync(
                 clip_index=clip_index,
                 job_id=job_id,
                 environment=environment,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                character_ids=character_ids
             )
             
             # Preserve original clip metadata
