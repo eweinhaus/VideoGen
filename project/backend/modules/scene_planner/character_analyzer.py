@@ -253,6 +253,92 @@ def _role_to_name(role: str) -> str:
     return role.replace("_", " ").title()
 
 
+def _parse_face_string_to_features(face_description: str) -> FaceFeatures:
+    """
+    Parse a face description string into structured FaceFeatures.
+
+    Args:
+        face_description: Face description string (e.g., "fair skin, oval face, small nose")
+
+    Returns:
+        FaceFeatures object with structured facial attributes
+    """
+    # Lowercased for matching
+    desc_lower = face_description.lower()
+
+    # Extract skin tone
+    skin_tone = "medium"
+    if any(word in desc_lower for word in ["fair", "pale", "light"]):
+        skin_tone = "fair"
+    elif any(word in desc_lower for word in ["olive", "tan"]):
+        skin_tone = "olive"
+    elif any(word in desc_lower for word in ["brown", "dark"]):
+        skin_tone = "brown"
+
+    # Extract face shape
+    shape = "oval"
+    if "heart" in desc_lower:
+        shape = "heart-shaped"
+    elif "square" in desc_lower:
+        shape = "square"
+    elif "round" in desc_lower:
+        shape = "round"
+    elif "oval" in desc_lower:
+        shape = "oval"
+    elif "angular" in desc_lower:
+        shape = "square"
+
+    # Extract nose
+    nose = "straight nose"
+    if "button" in desc_lower or "small" in desc_lower:
+        nose = "button nose"
+    elif "aquiline" in desc_lower or "prominent" in desc_lower:
+        nose = "aquiline nose"
+
+    # Extract mouth
+    mouth = "medium lips"
+    if "full" in desc_lower or "plump" in desc_lower:
+        mouth = "full lips"
+    elif "thin" in desc_lower:
+        mouth = "thin lips"
+    elif "wide" in desc_lower or "smile" in desc_lower:
+        mouth = "wide smile"
+
+    # Extract cheeks
+    cheeks = "rounded cheeks"
+    if "high" in desc_lower and "cheek" in desc_lower:
+        cheeks = "high cheekbones"
+
+    # Extract jawline
+    jawline = "soft"
+    if "strong" in desc_lower or "angular" in desc_lower or "square" in desc_lower:
+        jawline = "strong"
+    elif "soft" in desc_lower or "rounded" in desc_lower:
+        jawline = "soft"
+
+    # Extract distinctive marks
+    distinctive_marks = "none"
+    if "freckle" in desc_lower:
+        distinctive_marks = "freckles"
+    elif "mole" in desc_lower:
+        distinctive_marks = "mole"
+    elif "scar" in desc_lower:
+        distinctive_marks = "scar"
+    elif "beard" in desc_lower or "goatee" in desc_lower or "stubble" in desc_lower:
+        # Facial hair is not a distinctive mark, but we note it
+        distinctive_marks = "none"
+
+    return FaceFeatures(
+        shape=shape,
+        skin_tone=skin_tone,
+        nose=nose,
+        mouth=mouth,
+        cheeks=cheeks,
+        jawline=jawline,
+        distinctive_marks=distinctive_marks
+    )
+
+
 def _generate_features_for_role(role: str) -> CharacterFeatures:
     """
     Generate character features based on role.
@@ -267,9 +353,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
         CharacterFeatures object with all 7 features
     """
     # Default features (generic background character)
+    face_str = "medium skin tone, oval face shape, clean shaven"
     features = {
         "hair": "short dark brown hair, neat style",
-        "face": "medium skin tone, oval face shape, clean shaven",
         "eyes": "brown eyes, medium eyebrows",
         "clothing": "casual button-up shirt, dark jeans",
         "accessories": "None",
@@ -279,9 +365,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
 
     # Customize features based on role
     if role == "bartender":
+        face_str = "fair skin tone, weathered features, full gray beard"
         features.update({
             "hair": "short gray hair with receding hairline",
-            "face": "fair skin tone, weathered features, full gray beard",
             "eyes": "blue eyes, bushy gray eyebrows",
             "clothing": "white button-up shirt, black vest, black slacks",
             "accessories": "None",
@@ -289,9 +375,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
             "age": "appears late 50s"
         })
     elif role == "band_guitarist":
+        face_str = "tan skin tone, angular face shape, light stubble"
         features.update({
             "hair": "shoulder-length black hair, slightly wavy, middle part",
-            "face": "tan skin tone, angular face shape, light stubble",
             "eyes": "dark brown eyes, thick eyebrows",
             "clothing": "black leather jacket, dark gray t-shirt, black jeans, black boots",
             "accessories": "silver chain necklace, black wristband on right wrist",
@@ -299,9 +385,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
             "age": "appears mid-20s"
         })
     elif role == "band_drummer":
+        face_str = "fair skin tone, round face shape, clean shaven"
         features.update({
             "hair": "short spiky blonde hair, styled with gel",
-            "face": "fair skin tone, round face shape, clean shaven",
             "eyes": "green eyes, thin eyebrows",
             "clothing": "white tank top, dark blue jeans, red sneakers",
             "accessories": "black sweatband on forehead, silver earring in left ear",
@@ -309,9 +395,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
             "age": "appears early 30s"
         })
     elif role == "band_bassist":
+        face_str = "dark brown skin tone, oval face shape, goatee"
         features.update({
             "hair": "long black hair in dreadlocks, tied back with red band",
-            "face": "dark brown skin tone, oval face shape, goatee",
             "eyes": "dark brown eyes, thick eyebrows",
             "clothing": "red flannel shirt unbuttoned, black t-shirt underneath, dark jeans",
             "accessories": "multiple silver rings on both hands, black beanie",
@@ -319,9 +405,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
             "age": "appears late 20s"
         })
     elif role == "crowd":
+        face_str = "medium skin tone, friendly features, slight smile"
         features.update({
             "hair": "medium length brown hair, casual style",
-            "face": "medium skin tone, friendly features, slight smile",
             "eyes": "hazel eyes, expressive eyebrows",
             "clothing": "casual graphic t-shirt, blue jeans, sneakers",
             "accessories": "baseball cap, smartwatch on left wrist",
@@ -329,9 +415,9 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
             "age": "appears mid-20s"
         })
     elif role == "patron":
+        face_str = "fair skin tone, square jaw, clean shaven"
         features.update({
             "hair": "short auburn hair, neat professional style",
-            "face": "fair skin tone, square jaw, clean shaven",
             "eyes": "gray eyes, medium eyebrows",
             "clothing": "collared button-up shirt, khaki pants, brown leather shoes",
             "accessories": "silver watch on left wrist, wedding ring",
@@ -339,7 +425,19 @@ def _generate_features_for_role(role: str) -> CharacterFeatures:
             "age": "appears early 40s"
         })
 
-    return CharacterFeatures(**features)
+    # Parse face string into FaceFeatures object
+    face_features = _parse_face_string_to_features(face_str)
+
+    # Create CharacterFeatures with face_features as FaceFeatures object
+    return CharacterFeatures(
+        hair=features["hair"],
+        face_features=face_features,
+        eyes=features["eyes"],
+        clothing=features["clothing"],
+        accessories=features["accessories"],
+        build=features["build"],
+        age=features["age"]
+    )
 
 
 def update_clip_scripts_with_characters(
