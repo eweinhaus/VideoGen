@@ -199,6 +199,7 @@ export function ProgressTracker({
             "reference_generator",
             "prompt_generation",
             "video_generation",
+            "lipsync_processor",
             "composition",
           ]
           const updated = prev.map((s) => {
@@ -256,6 +257,7 @@ export function ProgressTracker({
           if (n === "reference_generation") return "reference_generator"
           if (n === "prompt_generator") return "prompt_generation"
           if (n === "video_generator") return "video_generation"
+          if (n === "lipsync_processor") return "lipsync_processor"
           if (n === "composer") return "composition"
           return n
         }

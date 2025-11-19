@@ -5,8 +5,9 @@ Modifies video generation prompts based on user instructions while preserving
 style consistency. Uses GPT-4o or Claude 3.5 Sonnet with retry logic.
 """
 
+import json
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from uuid import UUID
 from decimal import Decimal
 
@@ -44,13 +45,30 @@ def get_system_prompt() -> str:
     return """You are a video editing assistant. Modify video generation prompts based on user instructions while preserving style consistency.
 
 Your task:
-1. Understand the user's instruction
+1. Understand the user's instruction and determine the level of change requested
 2. Modify the original prompt to incorporate the instruction
-3. Preserve visual style, character consistency, and scene coherence
-4. Keep prompt under 200 words
-5. Maintain reference image compatibility
+3. Determine appropriate temperature (0.0-1.0) based on the instruction:
+   - Very low temperature (0.2-0.3): For "almost exactly the same" requests with minor fixes (e.g., "regenerate almost exactly the same, avoid weird right arm", "keep everything identical except fix X", "same scene just fix Y", "almost identical but correct Z")
+   - Low temperature (0.3-0.4): For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...", "only change...")
+   - Medium-low temperature (0.4-0.5): For small but noticeable changes (e.g., "slightly adjust lighting", "make it a bit brighter")
+   - Medium temperature (0.6-0.7): For moderate changes (e.g., "change lighting and add motion", "make it brighter", "adjust the mood")
+   - High temperature (0.8-1.0): For complete regeneration (e.g., "completely regenerate", "start over", "completely change", "redo this scene")
+4. Preserve visual style, character consistency, and scene coherence
+5. Keep prompt under 200 words
+6. Maintain reference image compatibility
 
-Output only the modified prompt, no explanations."""
+IMPORTANT: When user says "almost exactly the same", "almost identical", "keep everything the same", or similar phrases indicating minimal change, use temperature 0.2-0.3 to maximize consistency.
+
+Output JSON format:
+{
+  "prompt": "modified prompt text",
+  "temperature": 0.3,
+  "reasoning": "brief explanation of temperature choice"
+}
+
+The temperature controls randomness in video generation:
+- Lower temperature = more deterministic, preserves original scene better
+- Higher temperature = more creative variation, allows larger changes"""
 
 
 def build_user_prompt(
@@ -253,6 +271,73 @@ def _truncate_context_if_needed(
     return truncated_context
 
 
+def refine_temperature_for_minimal_change(
+    user_instruction: str,
+    llm_temperature: float,
+    llm_reasoning: str
+) -> Tuple[float, str]:
+    """
+    Refine temperature downward if user instruction indicates "almost exactly the same".
+    
+    This provides a safety net to ensure very low temperatures (0.2-0.3) are used
+    when user explicitly requests minimal changes, even if LLM chose a slightly higher value.
+    
+    Args:
+        user_instruction: User's modification instruction
+        llm_temperature: Temperature chosen by LLM
+        llm_reasoning: LLM's reasoning for temperature choice
+        
+    Returns:
+        Tuple of (refined_temperature, updated_reasoning)
+    """
+    # Phrases that indicate "almost exactly the same" - should use 0.2-0.3
+    minimal_change_phrases = [
+        "almost exactly the same",
+        "almost identical",
+        "keep everything the same",
+        "keep everything identical",
+        "same scene just",
+        "same but fix",
+        "same except",
+        "identical except",
+        "almost the same",
+        "nearly identical",
+        "regenerate almost exactly",
+        "almost exactly",
+    ]
+    
+    instruction_lower = user_instruction.lower()
+    
+    # Check if instruction contains minimal change phrases
+    has_minimal_change_phrase = any(
+        phrase in instruction_lower for phrase in minimal_change_phrases
+    )
+    
+    # If LLM chose 0.4 or higher but instruction indicates minimal change, refine downward
+    if has_minimal_change_phrase and llm_temperature >= 0.35:
+        refined_temperature = min(0.3, llm_temperature - 0.1)  # Reduce by 0.1, cap at 0.3
+        refined_temperature = max(0.2, refined_temperature)  # Ensure at least 0.2
+        
+        updated_reasoning = (
+            f"{llm_reasoning} [Refined: Detected 'almost exactly the same' phrase, "
+            f"adjusted temperature from {llm_temperature:.2f} to {refined_temperature:.2f} for maximum consistency]"
+        )
+        
+        logger.info(
+            f"Refined temperature for minimal change request",
+            extra={
+                "original_temperature": llm_temperature,
+                "refined_temperature": refined_temperature,
+                "instruction_preview": user_instruction[:100]
+            }
+        )
+        
+        return refined_temperature, updated_reasoning
+    
+    # No refinement needed
+    return llm_temperature, llm_reasoning
+
+
 @retry_with_backoff(max_attempts=3, base_delay=2)
 async def modify_prompt_with_llm(
     original_prompt: str,
@@ -260,12 +345,13 @@ async def modify_prompt_with_llm(
     context: Dict[str, Any],
     conversation_history: List[Dict[str, str]],
     job_id: Optional[UUID] = None
-) -> str:
+) -> Dict[str, Any]:
     """
     Modify prompt using LLM.
     
     Uses GPT-4o to modify the original prompt based on user instruction
-    while preserving style consistency.
+    while preserving style consistency. Also determines appropriate temperature
+    for video generation based on the level of change requested.
     
     Args:
         original_prompt: Original video generation prompt
@@ -275,7 +361,10 @@ async def modify_prompt_with_llm(
         job_id: Optional job ID for cost tracking
         
     Returns:
-        Modified prompt string
+        Dictionary with keys:
+        - "prompt": Modified prompt string
+        - "temperature": Float between 0.0 and 1.0
+        - "reasoning": Brief explanation of temperature choice
         
     Raises:
         GenerationError: If LLM call fails after retries
@@ -328,7 +417,8 @@ async def modify_prompt_with_llm(
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.7,
-            max_tokens=300,  # Output only (prompt should be under 200 words)
+            max_tokens=400,  # Increased for JSON response with reasoning
+            response_format={"type": "json_object"},  # Force JSON output
             timeout=30.0
         )
         
@@ -337,8 +427,69 @@ async def modify_prompt_with_llm(
         if not content:
             raise GenerationError("Empty response from LLM", job_id=job_id)
         
-        # Parse and clean response
-        modified_prompt = parse_llm_prompt_response(content)
+        # Parse JSON response
+        try:
+            result = json.loads(content)
+            modified_prompt = result.get("prompt", "").strip()
+            temperature = result.get("temperature", 0.7)  # Default to 0.7 if missing
+            reasoning = result.get("reasoning", "")
+            
+            # Validate and clamp temperature to valid range
+            try:
+                temperature = float(temperature)
+                temperature = max(0.0, min(1.0, temperature))  # Clamp to 0.0-1.0
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Invalid temperature value '{temperature}', using default 0.7",
+                    extra={"job_id": str(job_id) if job_id else None}
+                )
+                temperature = 0.7
+            
+            # If prompt is empty, try to extract from text fallback
+            if not modified_prompt:
+                logger.warning(
+                    f"Empty prompt in JSON response, attempting text parsing fallback",
+                    extra={"job_id": str(job_id) if job_id else None}
+                )
+                modified_prompt = parse_llm_prompt_response(content)
+            
+            logger.info(
+                f"Successfully parsed JSON response from LLM",
+                extra={
+                    "job_id": str(job_id) if job_id else None,
+                    "temperature": temperature,
+                    "reasoning": reasoning[:100] if reasoning else "",  # Truncate for logging
+                    "instruction_type": (
+                        "precise" if temperature < 0.5 
+                        else "moderate" if temperature < 0.8 
+                        else "complete_regeneration"
+                    )
+                }
+            )
+            
+            # Refine temperature if user instruction indicates "almost exactly the same"
+            temperature, reasoning = refine_temperature_for_minimal_change(
+                user_instruction,
+                temperature,
+                reasoning
+            )
+            
+        except json.JSONDecodeError as e:
+            # Fallback: Try to extract prompt from text response
+            logger.warning(
+                f"Failed to parse JSON response, falling back to text parsing: {e}",
+                extra={"job_id": str(job_id) if job_id else None, "response_preview": content[:200]}
+            )
+            modified_prompt = parse_llm_prompt_response(content)
+            temperature = 0.7  # Default fallback temperature
+            reasoning = "JSON parsing failed, using default temperature"
+            
+            # Still refine temperature if user instruction indicates minimal change
+            temperature, reasoning = refine_temperature_for_minimal_change(
+                user_instruction,
+                temperature,
+                reasoning
+            )
         
         # Track cost
         if job_id:
@@ -350,12 +501,7 @@ async def modify_prompt_with_llm(
                 job_id=job_id,
                 stage_name="clip_regeneration",
                 api_name=model,
-                cost=cost,
-                metadata={
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "operation": "prompt_modification"
-                }
+                cost=cost
             )
         
         logger.info(
@@ -363,11 +509,17 @@ async def modify_prompt_with_llm(
             extra={
                 "job_id": str(job_id) if job_id else None,
                 "original_length": len(original_prompt),
-                "modified_length": len(modified_prompt)
+                "modified_length": len(modified_prompt),
+                "temperature": temperature,
+                "has_reasoning": bool(reasoning)
             }
         )
         
-        return modified_prompt
+        return {
+            "prompt": modified_prompt,
+            "temperature": temperature,
+            "reasoning": reasoning
+        }
         
     except RateLimitError as e:
         logger.warning(f"Rate limit error in LLM call: {e}", extra={"job_id": str(job_id) if job_id else None})

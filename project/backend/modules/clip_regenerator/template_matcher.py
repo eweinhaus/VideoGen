@@ -56,12 +56,63 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
 }
 
 
+def is_lipsync_request(instruction: str) -> bool:
+    """
+    Detect if user instruction is a lipsync request.
+    
+    Checks for keywords related to lipsync/lip sync operations.
+    This should be checked BEFORE template matching to route
+    lipsync requests to the lipsync processor instead of regeneration.
+    
+    Args:
+        instruction: User instruction string
+        
+    Returns:
+        True if instruction is a lipsync request, False otherwise
+        
+    Example:
+        >>> is_lipsync_request("make him lipsync")
+        True
+        >>> is_lipsync_request("make it brighter")
+        False
+    """
+    if not instruction or not instruction.strip():
+        return False
+    
+    instruction_lower = instruction.lower().strip()
+    
+    # Lipsync keywords (check for exact phrase matches first, then word matches)
+    lipsync_keywords = [
+        "lipsync", "lip sync", "lip-sync",
+        "synchronize lips", "sync lips", "synchronise lips",
+        "make him lipsync", "make her lipsync", "make them lipsync",
+        "make it lipsync", "add lipsync", "apply lipsync",
+        "lipsync this", "sync mouth", "mouth sync"
+    ]
+    
+    for keyword in lipsync_keywords:
+        if keyword in instruction_lower:
+            logger.info(
+                f"Lipsync request detected",
+                extra={
+                    "instruction": instruction,
+                    "matched_keyword": keyword
+                }
+            )
+            return True
+    
+    return False
+
+
 def match_template(instruction: str) -> Optional[TemplateMatch]:
     """
     Match user instruction to template.
     
     Uses first match wins strategy - templates checked in order defined in TEMPLATES dict.
     All matches are logged for future analysis and template expansion.
+    
+    NOTE: This function should NOT be called for lipsync requests.
+    Use is_lipsync_request() first to detect lipsync requests.
     
     Args:
         instruction: User instruction string

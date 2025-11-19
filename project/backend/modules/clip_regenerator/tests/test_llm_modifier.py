@@ -26,6 +26,8 @@ class TestSystemPrompt:
         assert len(prompt) > 0
         assert "video editing assistant" in prompt.lower()
         assert "preserve" in prompt.lower()
+        assert "temperature" in prompt.lower()  # Should include temperature instructions
+        assert "json" in prompt.lower()  # Should request JSON format
 
 
 class TestBuildUserPrompt:
@@ -109,11 +111,12 @@ class TestBuildUserPrompt:
             conversation_history
         )
         
-        # Should only include last 3 messages
+        # Should only include last 3 messages (response 2, message 3, response 3)
         assert "message 1" not in prompt
         assert "response 1" not in prompt
-        assert "message 2" in prompt
+        assert "response 2" in prompt  # Last 3 messages include this
         assert "message 3" in prompt
+        assert "response 3" in prompt
 
 
 class TestParseLLMPromptResponse:
@@ -219,12 +222,72 @@ class TestModifyPromptWithLLM:
     @patch('modules.clip_regenerator.llm_modifier.get_openai_client')
     @patch('modules.clip_regenerator.llm_modifier.cost_tracker')
     async def test_modify_prompt_success(self, mock_cost_tracker, mock_get_client):
-        """Test successful prompt modification."""
+        """Test successful prompt modification with JSON response."""
         # Mock OpenAI client
         mock_client = AsyncMock()
         mock_get_client.return_value = mock_client
         
-        # Mock response
+        # Mock JSON response
+        import json
+        json_response = {
+            "prompt": "A modified cyberpunk street scene with nighttime lighting",
+            "temperature": 0.6,
+            "reasoning": "Moderate change requested"
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(json_response)
+        mock_response.usage = MagicMock()
+        mock_response.usage.prompt_tokens = 100
+        mock_response.usage.completion_tokens = 50
+        
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        
+        # Mock cost tracker
+        mock_cost_tracker.track_cost = AsyncMock()
+        
+        original_prompt = "A cyberpunk street scene"
+        user_instruction = "make it nighttime"
+        context = {
+            "style_info": "cyberpunk",
+            "character_names": [],
+            "scene_locations": [],
+            "mood": "dark"
+        }
+        conversation_history = []
+        job_id = UUID("12345678-1234-5678-1234-567812345678")
+        
+        result = await modify_prompt_with_llm(
+            original_prompt,
+            user_instruction,
+            context,
+            conversation_history,
+            job_id=job_id
+        )
+        
+        assert isinstance(result, dict)
+        assert "prompt" in result
+        assert "temperature" in result
+        assert "reasoning" in result
+        assert result["prompt"] == json_response["prompt"]
+        assert result["temperature"] == 0.6
+        assert result["reasoning"] == json_response["reasoning"]
+        mock_client.chat.completions.create.assert_called_once()
+        # Check that response_format is set to json_object
+        call_args = mock_client.chat.completions.create.call_args
+        assert call_args[1]["response_format"]["type"] == "json_object"
+        mock_cost_tracker.track_cost.assert_called_once()
+    
+    @pytest.mark.asyncio
+    @patch('modules.clip_regenerator.llm_modifier.get_openai_client')
+    @patch('modules.clip_regenerator.llm_modifier.cost_tracker')
+    async def test_modify_prompt_json_fallback(self, mock_cost_tracker, mock_get_client):
+        """Test fallback when JSON parsing fails."""
+        # Mock OpenAI client
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+        
+        # Mock text response (invalid JSON)
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "A modified cyberpunk street scene with nighttime lighting"
@@ -256,10 +319,48 @@ class TestModifyPromptWithLLM:
             job_id=job_id
         )
         
-        assert result is not None
-        assert len(result) > 0
-        mock_client.chat.completions.create.assert_called_once()
-        mock_cost_tracker.track_cost.assert_called_once()
+        # Should fallback to text parsing with default temperature
+        assert isinstance(result, dict)
+        assert "prompt" in result
+        assert "temperature" in result
+        assert result["temperature"] == 0.7  # Default fallback
+        assert "nighttime" in result["prompt"].lower()
+    
+    @pytest.mark.asyncio
+    @patch('modules.clip_regenerator.llm_modifier.get_openai_client')
+    @patch('modules.clip_regenerator.llm_modifier.cost_tracker')
+    async def test_modify_prompt_temperature_validation(self, mock_cost_tracker, mock_get_client):
+        """Test temperature validation and clamping."""
+        # Mock OpenAI client
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+        
+        # Mock JSON response with invalid temperature
+        import json
+        json_response = {
+            "prompt": "A modified scene",
+            "temperature": 1.5,  # Invalid: > 1.0
+            "reasoning": "Test"
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps(json_response)
+        mock_response.usage = MagicMock()
+        mock_response.usage.prompt_tokens = 100
+        mock_response.usage.completion_tokens = 50
+        
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_cost_tracker.track_cost = AsyncMock()
+        
+        result = await modify_prompt_with_llm(
+            "test prompt",
+            "test instruction",
+            {"style_info": "test"},
+            []
+        )
+        
+        # Temperature should be clamped to 1.0
+        assert result["temperature"] == 1.0
     
     @pytest.mark.asyncio
     @patch('modules.clip_regenerator.llm_modifier.get_openai_client')

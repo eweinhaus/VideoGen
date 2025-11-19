@@ -36,6 +36,8 @@ async def process_job(job_data: dict) -> None:
     user_prompt = job_data.get("user_prompt")
     stop_at_stage = job_data.get("stop_at_stage")  # Optional: for testing
     video_model = job_data.get("video_model", "kling_v21")  # Default to kling_v21 if not provided
+    aspect_ratio = job_data.get("aspect_ratio", "16:9")  # Default to 16:9 if not provided
+    template = job_data.get("template", "standard")  # Default to standard if not provided
     
     if not all([job_id, user_id, audio_url, user_prompt]):
         logger.error("Invalid job data", extra={"job_data": job_data})
@@ -43,7 +45,14 @@ async def process_job(job_data: dict) -> None:
     
     logger.info(
         "Processing job",
-        extra={"job_id": job_id, "user_id": user_id, "stop_at_stage": stop_at_stage, "video_model": video_model}
+        extra={
+            "job_id": job_id,
+            "user_id": user_id,
+            "stop_at_stage": stop_at_stage,
+            "video_model": video_model,
+            "aspect_ratio": aspect_ratio,
+            "template": template
+        }
     )
     
     try:
@@ -64,11 +73,8 @@ async def process_job(job_data: dict) -> None:
             }).eq("id", job_id).execute()
             return
         
-        # Extract aspect_ratio from job data
-        aspect_ratio = job_data.get("aspect_ratio", "16:9")
-        
-        # Execute pipeline (pass stop_at_stage, video_model, and aspect_ratio)
-        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio)
+        # Execute pipeline (pass stop_at_stage, video_model, aspect_ratio, and template)
+        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template)
         
         logger.info("Job processed successfully", extra={"job_id": job_id})
         
