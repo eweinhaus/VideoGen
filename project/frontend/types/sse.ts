@@ -234,6 +234,8 @@ export interface RegenerationCompleteEvent {
   new_clip_url: string
   cost: number
   video_url?: string  // Added for recomposition result
+  temperature?: number | null  // Temperature used for video generation (Veo 3.1 only)
+  seed?: number | null  // Seed used for video generation (Veo 3.1 only)
 }
 
 export interface RegenerationFailedEvent {

@@ -25,7 +25,8 @@ from modules.clip_regenerator.data_loader import (
     get_audio_url,
     get_aspect_ratio
 )
-from modules.clip_regenerator.template_matcher import match_template, apply_template
+from modules.lipsync_processor.process import process_single_clip_lipsync
+from modules.clip_regenerator.template_matcher import match_template, apply_template, is_lipsync_request
 from modules.clip_regenerator.llm_modifier import modify_prompt_with_llm, estimate_llm_cost
 from modules.clip_regenerator.context_builder import build_llm_context
 from modules.clip_regenerator.status_manager import update_job_status
@@ -51,6 +52,7 @@ class RegenerationResult:
     video_output: Optional[VideoOutput] = None  # Added for recomposition result
     temperature: Optional[float] = None  # LLM-determined temperature for video generation
     temperature_reasoning: Optional[str] = None  # Brief explanation of temperature choice
+    seed: Optional[int] = None  # Seed used for video generation (reused for precise changes)
 
 
 async def _get_job_config(job_id: UUID) -> Dict[str, str]:
@@ -284,7 +286,86 @@ async def regenerate_clip(
         }
     )
     
-    # Publish regeneration_started event
+    # Check if this is a lipsync request (must be checked BEFORE template matching)
+    if is_lipsync_request(user_instruction):
+        logger.info(
+            f"Lipsync request detected, routing to lipsync processor",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "instruction": user_instruction
+            }
+        )
+        
+        # Publish lipsync_started event
+        if event_publisher:
+            await event_publisher("lipsync_started", {
+                "clip_index": clip_index,
+                "instruction": user_instruction
+            })
+        
+        # Load clips to get the specific clip
+        clips = await load_clips_from_job_stages(job_id)
+        if not clips:
+            raise ValidationError(
+                f"Failed to load clips for job {job_id}. "
+                "The job may not have completed video generation yet."
+            )
+        
+        # Find the specific clip
+        original_clip = None
+        for clip in clips.clips:
+            if clip.clip_index == clip_index:
+                original_clip = clip
+                break
+        
+        if original_clip is None:
+            available_indices = [c.clip_index for c in clips.clips]
+            raise ValidationError(
+                f"Clip with index {clip_index} not found. "
+                f"Available clip indices: {available_indices if available_indices else 'none'}."
+            )
+        
+        # Get audio URL
+        audio_url = await get_audio_url(job_id)
+        
+        # Process through lipsync processor
+        lipsynced_clip = await process_single_clip_lipsync(
+            clip=original_clip,
+            clip_index=clip_index,
+            audio_url=audio_url,
+            job_id=job_id,
+            environment=environment,
+            event_publisher=event_publisher
+        )
+        
+        # Return result in RegenerationResult format (for compatibility)
+        # Note: For lipsync, we don't modify the prompt, so we use the original prompt
+        clip_prompts = await load_clip_prompts_from_job_stages(job_id)
+        original_prompt_text = ""
+        if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
+            original_prompt_text = clip_prompts.clip_prompts[clip_index].prompt
+        
+        logger.info(
+            f"Lipsync processing complete",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "cost": float(lipsynced_clip.cost)
+            }
+        )
+        
+        return RegenerationResult(
+            clip=lipsynced_clip,
+            modified_prompt=original_prompt_text,  # No prompt modification for lipsync
+            template_used="lipsync",  # Special template identifier
+            cost=lipsynced_clip.cost,
+            temperature=None,  # No temperature for lipsync (not regenerating)
+            temperature_reasoning="Lipsync operation - no video regeneration",
+            seed=None  # No seed for lipsync
+        )
+    
+    # Publish regeneration_started event (for non-lipsync requests)
     if event_publisher:
         await event_publisher("regeneration_started", {
             "sequence": 1,
@@ -742,7 +823,8 @@ async def regenerate_clip(
             template_used=template_match.template_id if template_match else None,
             cost=cost_estimate,
             temperature=temperature,
-            temperature_reasoning=temperature_reasoning
+            temperature_reasoning=temperature_reasoning,
+            seed=seed
         )
         
     except Exception as e:
@@ -1152,6 +1234,9 @@ async def regenerate_clip_with_recomposition(
         modified_prompt=regeneration_result.modified_prompt,
         template_used=regeneration_result.template_used,
         cost=regeneration_result.cost,
-        video_output=video_output
+        video_output=video_output,
+        temperature=regeneration_result.temperature,
+        temperature_reasoning=regeneration_result.temperature_reasoning,
+        seed=regeneration_result.seed
     )
 

@@ -163,6 +163,26 @@ class AsyncTableQueryBuilder:
         self._query_builder = self._query_builder.eq(*args, **kwargs)
         return self
     
+    def gte(self, *args, **kwargs):
+        """Chain gte (greater than or equal) filter."""
+        self._query_builder = self._query_builder.gte(*args, **kwargs)
+        return self
+    
+    def gt(self, *args, **kwargs):
+        """Chain gt (greater than) filter."""
+        self._query_builder = self._query_builder.gt(*args, **kwargs)
+        return self
+    
+    def lte(self, *args, **kwargs):
+        """Chain lte (less than or equal) filter."""
+        self._query_builder = self._query_builder.lte(*args, **kwargs)
+        return self
+    
+    def lt(self, *args, **kwargs):
+        """Chain lt (less than) filter."""
+        self._query_builder = self._query_builder.lt(*args, **kwargs)
+        return self
+    
     def limit(self, *args, **kwargs):
         """Chain limit operation."""
         self._query_builder = self._query_builder.limit(*args, **kwargs)

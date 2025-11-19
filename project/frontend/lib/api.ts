@@ -243,7 +243,8 @@ export async function uploadAudio(
   userPrompt: string,
   stopAtStage: string | null = null,
   videoModel: string = "kling_v21",
-  aspectRatio: string = "16:9"
+  aspectRatio: string = "16:9",
+  template: string = "standard"
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -253,6 +254,7 @@ export async function uploadAudio(
   }
   formData.append("video_model", videoModel)
   formData.append("aspect_ratio", aspectRatio)
+  formData.append("template", template)
 
   // Use longer timeout for upload (180 seconds = 3 minutes)
   // Backend has 150s timeout for storage upload, plus buffer for validation, DB ops, etc.

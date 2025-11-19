@@ -56,6 +56,10 @@ class Clip(BaseModel):
     cost: Decimal
     retry_count: int = Field(default=0, ge=0)
     generation_time: float = Field(description="Generation time in seconds")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Metadata: generation_seed, etc."
+    )
     
     def __init__(self, **data):
         """Initialize Clip with default original_target_duration if not provided."""

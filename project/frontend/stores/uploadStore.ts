@@ -2,6 +2,7 @@ import { create } from "zustand"
 import { uploadAudio } from "@/lib/api"
 import type { PipelineStage } from "@/components/StepSelector"
 import type { VideoModel } from "@/components/ModelSelector"
+import type { Template } from "@/components/TemplateSelector"
 
 interface UploadState {
   audioFile: File | null
@@ -9,6 +10,7 @@ interface UploadState {
   stopAtStage: PipelineStage | null
   videoModel: VideoModel
   aspectRatio: string
+  template: Template
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   setAudioFile: (file: File | null) => void
@@ -16,6 +18,7 @@ interface UploadState {
   setStopAtStage: (stage: PipelineStage | null) => void
   setVideoModel: (model: VideoModel) => void
   setAspectRatio: (aspectRatio: string) => void
+  setTemplate: (template: Template) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -65,6 +68,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   stopAtStage: getDefaultStopAtStage(),
   videoModel: "kling_v25_turbo", // Default model
   aspectRatio: "16:9", // Default aspect ratio
+  template: "standard", // Default template
   isSubmitting: false,
   errors: {},
 
@@ -125,6 +129,10 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ aspectRatio })
   },
 
+  setTemplate: (template: Template) => {
+    set({ template })
+  },
+
   validate: () => {
     const { audioFile, userPrompt } = get()
     const errors: { audio?: string; prompt?: string } = {}
@@ -172,8 +180,8 @@ export const uploadStore = create<UploadState>((set, get) => ({
         ? "composer" 
         : get().stopAtStage || "composer"
       
-      const { aspectRatio } = get()
-      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio)
+      const { aspectRatio, template } = get()
+      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio, template)
       // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
       // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
@@ -204,6 +212,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       stopAtStage: getDefaultStopAtStage(), // Reset to default (composer)
       videoModel: "kling_v25_turbo", // Reset to default model
       aspectRatio: "16:9", // Reset to default aspect ratio
+      template: "standard", // Reset to default template
       errors: {},
       isSubmitting: false,
     })

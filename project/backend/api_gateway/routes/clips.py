@@ -137,23 +137,8 @@ async def get_job_clips(
         HTTPException: 404 if job not found, 403 if access denied, 400 if job not completed
     """
     try:
-        # Verify job exists and belongs to user
-        job_result = await db_client.table("jobs").select("*").eq("id", job_id).execute()
-        
-        if not job_result.data or len(job_result.data) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Job not found"
-            )
-        
-        job = job_result.data[0]
-        
-        # Verify ownership
-        if job.get("user_id") != current_user["user_id"]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied"
-            )
+        # Verify job ownership (includes admin bypass for etweinhaus@gmail.com)
+        job = await verify_job_ownership(job_id, current_user)
         
         # Check job status
         if job.get("status") != "completed":
@@ -768,13 +753,15 @@ async def regenerate_clip_endpoint(
                     }
                 )
                 
-                # Publish completion event
-                await event_pub("regeneration_completed", {
-                    "regeneration_id": regeneration_id,
-                    "status": "completed",
-                    "template_matched": result.template_used,
+                # Publish completion event (event name matches frontend expectation: "regeneration_complete")
+                await event_pub("regeneration_complete", {
+                    "sequence": 1000,
+                    "clip_index": clip_index,
+                    "new_clip_url": result.clip.video_url if result.clip else None,
+                    "cost": float(result.cost),
                     "video_url": result.video_output.video_url if result.video_output else None,
-                    "cost": float(result.cost)
+                    "temperature": result.temperature,
+                    "seed": result.seed
                 })
                 
             except ValidationError as e:

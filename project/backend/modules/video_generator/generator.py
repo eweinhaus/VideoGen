@@ -1083,6 +1083,11 @@ async def generate_video_clip(
                 }
             )
             
+            # Build metadata dict with seed if available
+            clip_metadata = {}
+            if seed is not None:
+                clip_metadata["generation_seed"] = seed
+            
             return Clip(
                 clip_index=clip_prompt.clip_index,
                 video_url=final_url,
@@ -1093,7 +1098,8 @@ async def generate_video_clip(
                 status="success",
                 cost=cost,
                 retry_count=0,
-                generation_time=generation_time
+                generation_time=generation_time,
+                metadata=clip_metadata
             )
         else:
             # Check if we should try fallback model

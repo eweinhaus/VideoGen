@@ -107,7 +107,23 @@ export function ClipChatbot({
       setError(null)
       setLastError(null)
       setIsRetryable(false)
-      addSystemMessage("Regeneration and recomposition complete!", "success")
+      
+      // Build completion message with temperature and seed info
+      let completionMessage = "Regeneration and recomposition complete!"
+      const infoParts: string[] = []
+      
+      if (data.temperature != null) {
+        infoParts.push(`Temperature: ${data.temperature.toFixed(2)}`)
+      }
+      if (data.seed != null) {
+        infoParts.push(`Seed: ${data.seed}`)
+      }
+      
+      if (infoParts.length > 0) {
+        completionMessage += ` (${infoParts.join(", ")})`
+      }
+      
+      addSystemMessage(completionMessage, "success")
       
       // Use video_url from recomposition if available, otherwise use new_clip_url
       const finalVideoUrl = data.video_url || data.new_clip_url
