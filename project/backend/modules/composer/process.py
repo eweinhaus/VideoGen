@@ -508,11 +508,13 @@ async def process(
             
             try:
                 # Perform the actual upload (this is blocking but runs in executor)
+                # Use overwrite=True to handle recomposition scenarios where the file already exists
                 video_url = await storage.upload_file(
                     bucket=VIDEO_OUTPUTS_BUCKET,
                     path=storage_path,
                     file_data=final_video_bytes,
-                    content_type="video/mp4"
+                    content_type="video/mp4",
+                    overwrite=True
                 )
             finally:
                 # Cancel the periodic update task once upload completes

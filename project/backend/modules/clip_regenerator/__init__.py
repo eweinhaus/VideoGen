@@ -14,6 +14,11 @@ from modules.clip_regenerator.data_loader import (
     load_scene_plan_from_job_stages,
     load_reference_images_from_job_stages
 )
+from modules.clip_regenerator.style_analyzer import extract_style_keywords, extract_style_with_llm, StyleKeywords
+from modules.clip_regenerator.style_applier import apply_style_to_prompt, StyleTransferOptions
+from modules.clip_regenerator.style_transfer import transfer_style
+from modules.clip_regenerator.suggestion_generator import generate_suggestions, Suggestion
+from modules.clip_regenerator.instruction_parser import parse_multi_clip_instruction, ClipInstruction
 
 __all__ = [
     "regenerate_clip",
@@ -27,5 +32,15 @@ __all__ = [
     "load_clip_prompts_from_job_stages",
     "load_scene_plan_from_job_stages",
     "load_reference_images_from_job_stages",
+    "extract_style_keywords",
+    "extract_style_with_llm",
+    "StyleKeywords",
+    "apply_style_to_prompt",
+    "StyleTransferOptions",
+    "transfer_style",
+    "generate_suggestions",
+    "Suggestion",
+    "parse_multi_clip_instruction",
+    "ClipInstruction",
 ]
 

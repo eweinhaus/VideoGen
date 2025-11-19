@@ -11,10 +11,13 @@ import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { ClipSelector } from "@/components/ClipSelector"
 import { ClipChatbot } from "@/components/ClipChatbot"
+import { AnalyticsDashboard } from "@/components/AnalyticsDashboard"
+import { ClipComparison } from "@/components/ClipComparison"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
 import { useSSE } from "@/hooks/useSSE"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, BarChart3, GitCompare } from "lucide-react"
+import { getClipComparison } from "@/lib/api"
 import { jobStore } from "@/stores/jobStore"
 import type { StageUpdateEvent } from "@/types/sse"
 
@@ -26,6 +29,27 @@ export default function JobProgressPage() {
   const { job, isLoading: jobLoading, error, fetchJob } = useJob(jobId)
   const [sseError, setSseError] = useState<string | null>(null)
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | undefined>(undefined)
+  const [showComparison, setShowComparison] = useState(false)
+  const [comparisonData, setComparisonData] = useState<any>(null)
+  const [showAnalytics, setShowAnalytics] = useState(false)
+  const [loadingComparison, setLoadingComparison] = useState(false)
+  
+  const handleCompare = async () => {
+    if (selectedClipIndex === undefined) return
+    
+    setLoadingComparison(true)
+    
+    try {
+      const data = await getClipComparison(jobId, selectedClipIndex)
+      setComparisonData(data)
+      setShowComparison(true)
+    } catch (err) {
+      console.error("Failed to load comparison:", err)
+      // Error is logged, user can retry
+    } finally {
+      setLoadingComparison(false)
+    }
+  }
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -262,7 +286,59 @@ export default function JobProgressPage() {
               <div className="space-y-4">
                 <Alert variant="destructive">
                   <AlertDescription>
-                    {job.errorMessage || "Video generation failed"}
+                    <div className="space-y-3">
+                      <div className="font-semibold">
+                        {job.errorMessage || "Video generation failed"}
+                      </div>
+                      {/* Display detailed error information if available in error message */}
+                      {job.errorMessage && (
+                        <div className="mt-3 pt-3 border-t border-destructive/20">
+                          <div className="text-sm space-y-2">
+                            {/* Check if error message contains detailed clip failure information */}
+                            {job.errorMessage.includes("Failed clips:") && (
+                              <>
+                                {job.errorMessage.split("\n\n").map((section, idx) => {
+                                  if (section.includes("Failed clips:") || section.includes("Clip ")) {
+                                    const lines = section.split("\n")
+                                    const failedClipsLines = lines.filter(line => 
+                                      line.trim().startsWith("Clip ") || line.trim().startsWith("Failed clips:")
+                                    )
+                                    if (failedClipsLines.length > 0) {
+                                      return (
+                                        <div key={idx} className="space-y-1">
+                                          <div className="font-medium mb-2">Failed Clips Details:</div>
+                                          {failedClipsLines.map((clipError, clipIdx) => {
+                                            // Skip the "Failed clips:" header line
+                                            if (clipError.trim() === "Failed clips:") return null
+                                            return (
+                                              <div key={clipIdx} className="pl-4 border-l-2 border-destructive/30 text-xs font-mono break-words">
+                                                {clipError.trim()}
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      )
+                                    }
+                                  }
+                                  return null
+                                })}
+                              </>
+                            )}
+                            {/* If error message is long, show it in a scrollable area */}
+                            {job.errorMessage.length > 200 && (
+                              <details className="mt-2">
+                                <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                                  Show full error message
+                                </summary>
+                                <pre className="mt-2 text-xs p-2 bg-destructive/10 rounded overflow-auto max-h-60 font-mono whitespace-pre-wrap break-words">
+                                  {job.errorMessage}
+                                </pre>
+                              </details>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </AlertDescription>
                 </Alert>
                 {sseError && (
@@ -295,28 +371,75 @@ export default function JobProgressPage() {
                             setSelectedClipIndex(clipIndex)
                           }}
                           selectedClipIndex={selectedClipIndex}
+                          totalClips={undefined}
                         />
                       </CardContent>
                     </Card>
                     
                     {/* ClipChatbot appears when a clip is selected */}
                     {selectedClipIndex !== undefined && (
-                      <Card>
-                        <CardContent className="pt-6">
-                          <ClipChatbot
-                            jobId={jobId}
-                            clipIndex={selectedClipIndex}
-                            onRegenerationComplete={(newVideoUrl) => {
-                              // Refresh job to get updated video URL
-                              fetchJob(jobId).catch((error) => {
-                                console.error("Failed to refresh job after regeneration:", error)
-                              })
-                              console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
-                            }}
+                      <>
+                        <Card>
+                          <CardContent className="pt-6">
+                            <div className="flex items-center justify-between mb-4">
+                              <h3 className="text-lg font-semibold">Clip {selectedClipIndex} - Regeneration</h3>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleCompare}
+                                disabled={loadingComparison}
+                              >
+                                <GitCompare className="h-4 w-4 mr-2" />
+                                {loadingComparison ? "Loading..." : "Compare Versions"}
+                              </Button>
+                            </div>
+                            <ClipChatbot
+                              jobId={jobId}
+                              clipIndex={selectedClipIndex}
+                              onRegenerationComplete={(newVideoUrl) => {
+                                // Refresh job to get updated video URL
+                                fetchJob(jobId).catch((error) => {
+                                  console.error("Failed to refresh job after regeneration:", error)
+                                })
+                                console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                              }}
+                            />
+                          </CardContent>
+                        </Card>
+                        
+                        {/* Comparison Modal */}
+                        {showComparison && comparisonData && (
+                          <ClipComparison
+                            originalClip={comparisonData.original}
+                            regeneratedClip={comparisonData.regenerated}
+                            mode="side-by-side"
+                            syncPlayback={true}
+                            onClose={() => setShowComparison(false)}
                           />
-                        </CardContent>
-                      </Card>
+                        )}
+                      </>
                     )}
+                    
+                    {/* Analytics Dashboard */}
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-center justify-between">
+                          <CardTitle>Analytics</CardTitle>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setShowAnalytics(!showAnalytics)}
+                          >
+                            {showAnalytics ? "Hide" : "Show"} Analytics
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      {showAnalytics && (
+                        <CardContent>
+                          <AnalyticsDashboard jobId={jobId} />
+                        </CardContent>
+                      )}
+                    </Card>
                   </div>
                 )}
                 <ProgressTracker

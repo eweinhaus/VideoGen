@@ -34,6 +34,7 @@ from modules.video_generator.generator import generate_video_clip
 from modules.video_generator.config import get_generation_settings
 from modules.video_generator.cost_estimator import estimate_clip_cost
 from modules.composer.process import process as composer_process
+from modules.analytics.tracking import track_regeneration_async
 
 logger = get_logger("clip_regenerator.process")
 
@@ -102,6 +103,7 @@ async def regenerate_clip(
     job_id: UUID,
     clip_index: int,
     user_instruction: str,
+    user_id: Optional[UUID] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
     event_publisher: Optional[callable] = None
 ) -> RegenerationResult:
@@ -429,7 +431,7 @@ async def regenerate_clip(
     )
     
     # Get generation settings
-    settings_dict = get_generation_settings(environment, video_model)
+    settings_dict = get_generation_settings(environment)
     
     # Publish video_generating event
     if event_publisher:
@@ -478,6 +480,18 @@ async def regenerate_clip(
             }
         )
         
+        # Track regeneration success (for analytics) - non-blocking
+        if user_id:
+            track_regeneration_async(
+                job_id=job_id,
+                user_id=user_id,
+                clip_index=clip_index,
+                instruction=user_instruction,
+                template_id=template_match.template_id if template_match else None,
+                cost=cost_estimate,
+                success=True
+            )
+        
         return RegenerationResult(
             clip=new_clip,
             modified_prompt=modified_prompt,
@@ -486,6 +500,19 @@ async def regenerate_clip(
         )
         
     except Exception as e:
+        # Track regeneration failure (for analytics) - non-blocking
+        if user_id:
+            # Use cost estimate calculated earlier (template or LLM path)
+            track_regeneration_async(
+                job_id=job_id,
+                user_id=user_id,
+                clip_index=clip_index,
+                instruction=user_instruction,
+                template_id=template_match.template_id if template_match else None,
+                cost=cost_estimate,
+                success=False
+            )
+        
         logger.error(
             f"Failed to generate new clip: {e}",
             extra={
@@ -516,6 +543,7 @@ async def regenerate_clip_with_recomposition(
     job_id: UUID,
     clip_index: int,
     user_instruction: str,
+    user_id: Optional[UUID] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
     event_publisher: Optional[callable] = None
 ) -> RegenerationResult:
@@ -566,6 +594,7 @@ async def regenerate_clip_with_recomposition(
         job_id=job_id,
         clip_index=clip_index,
         user_instruction=user_instruction,
+        user_id=user_id,
         conversation_history=conversation_history,
         event_publisher=event_publisher
     )
@@ -601,33 +630,62 @@ async def regenerate_clip_with_recomposition(
         }
     )
     
-    # Validate clip_index
-    if clip_index < 0 or clip_index >= len(clips.clips):
+    # Find clip by clip_index (not by array position, since clips may not be sequential)
+    clip_position = None
+    for i, clip in enumerate(clips.clips):
+        if clip.clip_index == clip_index:
+            clip_position = i
+            break
+    
+    if clip_position is None:
+        available_indices = [c.clip_index for c in clips.clips]
         logger.error(
-            f"Invalid clip_index during recomposition",
+            f"Clip not found during recomposition: clip_index does not exist",
             extra={
                 "job_id": str(job_id),
                 "clip_index": clip_index,
-                "total_clips": len(clips.clips)
+                "total_clips": len(clips.clips),
+                "available_clip_indices": available_indices
             }
         )
         raise ValidationError(
-            f"Invalid clip_index: {clip_index}. Valid range: 0-{len(clips.clips) - 1}"
+            f"Clip with index {clip_index} not found. "
+            f"Available clip indices: {available_indices if available_indices else 'none'}. "
+            f"The requested clip may be incomplete or not yet generated."
         )
     
-    # Replace clip at clip_index with regenerated clip
+    # Ensure new_clip has the correct clip_index
+    if new_clip.clip_index != clip_index:
+        logger.warning(
+            f"New clip has incorrect clip_index ({new_clip.clip_index}), correcting to {clip_index}",
+            extra={
+                "job_id": str(job_id),
+                "expected_clip_index": clip_index,
+                "actual_clip_index": new_clip.clip_index
+            }
+        )
+        # Create a copy with corrected clip_index
+        if hasattr(new_clip, 'model_copy'):
+            new_clip = new_clip.model_copy(update={'clip_index': clip_index})
+        else:
+            from copy import deepcopy
+            new_clip = deepcopy(new_clip)
+            new_clip.clip_index = clip_index
+    
+    # Replace clip at found position with regenerated clip
     logger.debug(
-        f"Replacing clip at index {clip_index}",
+        f"Replacing clip at position {clip_position} (clip_index {clip_index})",
         extra={
             "job_id": str(job_id),
             "clip_index": clip_index,
-            "old_clip_url": clips.clips[clip_index].video_url,
+            "clip_position": clip_position,
+            "old_clip_url": clips.clips[clip_position].video_url,
             "new_clip_url": new_clip.video_url
         }
     )
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
-    updated_clips[clip_index] = new_clip
+    updated_clips[clip_position] = new_clip
     
     # Reconstruct Clips object with updated clip
     updated_clips_obj = Clips(

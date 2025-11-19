@@ -695,10 +695,48 @@ async def process(
         # Check if we have ANY successful clips
         if len(successful) == 0:
             # Absolute failure - no clips generated at all
-            raise PipelineError(
+            # Build detailed error message with per-clip failure information
+            error_details = []
+            error_summary = {
+                "total_clips": len(clip_prompts.clip_prompts),
+                "successful": 0,
+                "failed": len(failed_clips),
+                "rate_limit_failures": rate_limit_failures,
+                "failed_clips": []
+            }
+            
+            for clip_prompt, error_info in failed_clips:
+                clip_error = {
+                    "clip_index": clip_prompt.clip_index,
+                    "error": error_info.get("error", "Unknown error"),
+                    "error_type": error_info.get("error_type", "Unknown"),
+                    "is_rate_limit": error_info.get("is_rate_limit", False),
+                    "prompt_preview": clip_prompt.prompt[:100] + "..." if len(clip_prompt.prompt) > 100 else clip_prompt.prompt
+                }
+                error_summary["failed_clips"].append(clip_error)
+                
+                # Build human-readable error details
+                error_type_label = "Rate Limit" if error_info.get("is_rate_limit") else error_info.get("error_type", "Error")
+                error_details.append(
+                    f"Clip {clip_prompt.clip_index}: {error_type_label} - {error_info.get('error', 'Unknown error')}"
+                )
+            
+            # Create detailed error message
+            base_message = (
                 f"Complete failure: 0 clips generated successfully out of {len(clip_prompts.clip_prompts)} clips. "
-                f"All clips failed. Check API credentials, rate limits, and model availability."
+                f"All clips failed."
             )
+            
+            if rate_limit_failures > 0:
+                base_message += f" {rate_limit_failures} clip(s) failed due to rate limits."
+            
+            detailed_message = base_message + "\n\nFailed clips:\n" + "\n".join(error_details)
+            
+            # Create error with detailed information
+            error = PipelineError(detailed_message, job_id=job_id)
+            # Attach structured error data for API response
+            error.error_details = error_summary
+            raise error
         elif len(successful) < min_clips:
             # Insufficient clips, but we have at least 1
             if allow_partial_failure:
@@ -716,13 +754,56 @@ async def process(
                 # Continue execution - don't crash
             else:
                 # Strict mode: crash on insufficient clips
+                # Build detailed error message with per-clip failure information
+                error_details = []
+                error_summary = {
+                    "total_clips": len(clip_prompts.clip_prompts),
+                    "successful": len(successful),
+                    "failed": final_failed_count,
+                    "min_required": min_clips,
+                    "rate_limit_failures": rate_limit_failures,
+                    "failed_clips": []
+                }
+                
+                # Only include failed clips that weren't retried successfully
+                for clip_prompt, error_info in failed_clips:
+                    # Skip if this clip was retried successfully
+                    if any(c.clip_index == clip_prompt.clip_index for c in retry_successful):
+                        continue
+                    
+                    clip_error = {
+                        "clip_index": clip_prompt.clip_index,
+                        "error": error_info.get("error", "Unknown error"),
+                        "error_type": error_info.get("error_type", "Unknown"),
+                        "is_rate_limit": error_info.get("is_rate_limit", False),
+                        "prompt_preview": clip_prompt.prompt[:100] + "..." if len(clip_prompt.prompt) > 100 else clip_prompt.prompt
+                    }
+                    error_summary["failed_clips"].append(clip_error)
+                    
+                    # Build human-readable error details
+                    error_type_label = "Rate Limit" if error_info.get("is_rate_limit") else error_info.get("error_type", "Error")
+                    error_details.append(
+                        f"Clip {clip_prompt.clip_index}: {error_type_label} - {error_info.get('error', 'Unknown error')}"
+                    )
+                
                 rate_limit_msg = f" ({rate_limit_failures} rate limit failures detected)" if rate_limit_failures > 0 else ""
-                raise PipelineError(
+                base_message = (
                     f"Insufficient clips generated: {len(successful)} < {min_clips} (minimum required). "
                     f"Failed clips: {final_failed_count}.{rate_limit_msg} "
                     f"Set VIDEO_GENERATOR_ALLOW_PARTIAL_FAILURE=true to continue with fewer clips. "
                     f"Set VIDEO_GENERATOR_AUTO_RETRY_ON_FAILURE=false to disable automatic retry."
                 )
+                
+                if error_details:
+                    detailed_message = base_message + "\n\nFailed clips:\n" + "\n".join(error_details)
+                else:
+                    detailed_message = base_message
+                
+                # Create error with detailed information
+                error = PipelineError(detailed_message, job_id=job_id)
+                # Attach structured error data for API response
+                error.error_details = error_summary
+                raise error
     
     # Calculate total cost and check budget
     total_cost = sum(c.cost for c in successful)

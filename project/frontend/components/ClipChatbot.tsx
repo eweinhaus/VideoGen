@@ -89,7 +89,8 @@ export function ClipChatbot({
     },
     onRecompositionComplete: (data: RecompositionCompleteEvent) => {
       setProgress(100)
-      addSystemMessage(`Video recomposition complete! Duration: ${data.duration.toFixed(1)}s`, "success")
+      const durationText = data.duration != null ? `${data.duration.toFixed(1)}s` : "complete"
+      addSystemMessage(`Video recomposition complete! Duration: ${durationText}`, "success")
       // Final completion will be handled by regeneration_complete
     },
     onRecompositionFailed: (data: RecompositionFailedEvent) => {
@@ -187,11 +188,12 @@ export function ClipChatbot({
       setTemplateMatched(response.template_matched || null)
 
       // Add assistant response
+      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : "calculating..."
       const assistantMessage: Message = {
         role: "assistant",
         content: response.template_matched
-          ? `I'll apply the "${response.template_matched}" transformation to this clip. Estimated cost: $${response.estimated_cost.toFixed(2)}`
-          : `I'll modify this clip based on your instruction. Estimated cost: $${response.estimated_cost.toFixed(2)}`,
+          ? `I'll apply the "${response.template_matched}" transformation to this clip. Estimated cost: ${costText}`
+          : `I'll modify this clip based on your instruction. Estimated cost: ${costText}`,
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, assistantMessage])
@@ -294,11 +296,12 @@ export function ClipChatbot({
       setTemplateMatched(response.template_matched || null)
 
       // Add assistant response
+      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : "calculating..."
       const assistantMessage: Message = {
         role: "assistant",
         content: response.template_matched
-          ? `Retrying with "${response.template_matched}" transformation. Estimated cost: $${response.estimated_cost.toFixed(2)}`
-          : `Retrying regeneration. Estimated cost: $${response.estimated_cost.toFixed(2)}`,
+          ? `Retrying with "${response.template_matched}" transformation. Estimated cost: ${costText}`
+          : `Retrying regeneration. Estimated cost: ${costText}`,
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, assistantMessage])
@@ -341,7 +344,7 @@ export function ClipChatbot({
           {messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-8">
               <p>Start a conversation to modify this clip.</p>
-              <p className="text-sm mt-2">Try: "make it nighttime" or "add more motion"</p>
+              <p className="text-sm mt-2">Try: &quot;make it nighttime&quot; or &quot;add more motion&quot;</p>
             </div>
           ) : (
             messages.map((message, index) => (
@@ -400,7 +403,7 @@ export function ClipChatbot({
         )}
 
         {/* Cost Estimate */}
-        {costEstimate !== null && (
+        {costEstimate != null && typeof costEstimate === "number" && (
           <div className="text-sm text-muted-foreground">
             Estimated cost: <span className="font-semibold">${costEstimate.toFixed(2)}</span>
             {templateMatched && (

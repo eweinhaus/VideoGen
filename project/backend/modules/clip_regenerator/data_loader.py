@@ -5,12 +5,13 @@ Loads clip data, prompts, scene plans, and reference images from job_stages.meta
 All data is stored as JSON in the metadata column, not in separate tables.
 """
 import json
-from typing import Optional, List
+from typing import Optional, List, Dict
 from uuid import UUID
 
 from shared.database import DatabaseClient
 from shared.models.video import Clips, ClipPrompts
 from shared.models.scene import ScenePlan, ReferenceImages, Transition
+from shared.models.audio import AudioAnalysis
 from shared.logging import get_logger
 
 logger = get_logger("clip_regenerator.data_loader")
@@ -260,12 +261,21 @@ async def load_clip_prompts_from_job_stages(job_id: UUID) -> Optional[ClipPrompt
                 )
                 return None
         
+        # The orchestrator saves metadata as {"clip_prompts": clip_prompts_dict}
+        # Check if we have a nested structure and extract the actual clip_prompts dict
+        if "clip_prompts" in metadata and isinstance(metadata.get("clip_prompts"), dict):
+            # Nested structure: metadata = {"clip_prompts": {...}}
+            clip_prompts_data = metadata["clip_prompts"]
+        else:
+            # Direct structure: metadata = {...} (for backward compatibility)
+            clip_prompts_data = metadata
+        
         # Fill in missing required fields
-        if "job_id" not in metadata:
-            metadata["job_id"] = str(job_id)
+        if "job_id" not in clip_prompts_data:
+            clip_prompts_data["job_id"] = str(job_id)
         
         # Calculate total_clips from clip_prompts list if missing
-        clip_prompts_list = metadata.get("clip_prompts", [])
+        clip_prompts_list = clip_prompts_data.get("clip_prompts", [])
         if not isinstance(clip_prompts_list, list):
             logger.error(
                 f"Invalid clip_prompts data structure: clip_prompts is not a list",
@@ -273,16 +283,16 @@ async def load_clip_prompts_from_job_stages(job_id: UUID) -> Optional[ClipPrompt
             )
             return None
         
-        if "total_clips" not in metadata:
-            metadata["total_clips"] = len(clip_prompts_list)
+        if "total_clips" not in clip_prompts_data:
+            clip_prompts_data["total_clips"] = len(clip_prompts_list)
         
         # Set default generation_time if missing
-        if "generation_time" not in metadata:
-            metadata["generation_time"] = 0.0
+        if "generation_time" not in clip_prompts_data:
+            clip_prompts_data["generation_time"] = 0.0
         
         # Reconstruct Pydantic model
         try:
-            clip_prompts = ClipPrompts(**metadata)
+            clip_prompts = ClipPrompts(**clip_prompts_data)
             logger.debug(
                 f"Successfully loaded clip prompts from job_stages",
                 extra={"job_id": str(job_id), "total_clips": clip_prompts.total_clips}
@@ -294,6 +304,7 @@ async def load_clip_prompts_from_job_stages(job_id: UUID) -> Optional[ClipPrompt
                 extra={
                     "job_id": str(job_id),
                     "metadata_keys": list(metadata.keys()) if isinstance(metadata, dict) else "not_a_dict",
+                    "clip_prompts_data_keys": list(clip_prompts_data.keys()) if isinstance(clip_prompts_data, dict) else "not_a_dict",
                     "clip_prompts_count": len(clip_prompts_list) if isinstance(clip_prompts_list, list) else 0
                 },
                 exc_info=True
@@ -634,6 +645,86 @@ async def get_audio_url(job_id: UUID) -> str:
         raise
 
 
+async def load_audio_data_from_job_stages(job_id: UUID) -> Optional[AudioAnalysis]:
+    """
+    Load AudioAnalysis object from job_stages.metadata (audio_parser stage).
+    
+    Args:
+        job_id: Job ID to load audio data for
+        
+    Returns:
+        AudioAnalysis object if found, None if stage not found or invalid
+    """
+    try:
+        db = DatabaseClient()
+        result = await db.table("job_stages").select("metadata").eq(
+            "job_id", str(job_id)
+        ).eq("stage_name", "audio_parser").execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.debug(
+                f"No audio_parser stage found for job {job_id}",
+                extra={"job_id": str(job_id)}
+            )
+            return None
+        
+        metadata = result.data[0].get("metadata")
+        if not metadata:
+            logger.warning(
+                f"Empty metadata for audio_parser stage, job {job_id}",
+                extra={"job_id": str(job_id)}
+            )
+            return None
+        
+        # Handle JSON string or dict
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError as e:
+                logger.error(
+                    f"Failed to parse metadata JSON: {e}",
+                    extra={"job_id": str(job_id)}
+                )
+                return None
+        
+        # Check if audio_analysis is nested or at top level
+        audio_data = metadata.get("audio_analysis")
+        if not audio_data:
+            # Try top level
+            audio_data = metadata
+        
+        # Fill in missing required fields
+        if "job_id" not in audio_data:
+            audio_data["job_id"] = str(job_id)
+        
+        # Reconstruct Pydantic model
+        try:
+            audio_analysis = AudioAnalysis(**audio_data)
+            logger.debug(
+                f"Successfully loaded audio analysis from job_stages",
+                extra={"job_id": str(job_id), "bpm": audio_analysis.bpm}
+            )
+            return audio_analysis
+        except Exception as e:
+            logger.error(
+                f"Failed to reconstruct AudioAnalysis model: {e}",
+                extra={
+                    "job_id": str(job_id),
+                    "audio_data_keys": list(audio_data.keys()) if isinstance(audio_data, dict) else "not_a_dict"
+                },
+                exc_info=True
+            )
+            return None
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to load audio data from job_stages: {e}",
+            extra={"job_id": str(job_id)},
+            exc_info=True
+        )
+        return None
+
+
 async def get_aspect_ratio(job_id: UUID) -> str:
     """
     Get aspect ratio from job data.
@@ -683,4 +774,99 @@ async def get_aspect_ratio(job_id: UUID) -> str:
             extra={"job_id": str(job_id)}
         )
         return "16:9"
+
+
+async def load_clip_version(
+    job_id: UUID,
+    clip_index: int,
+    version_number: Optional[int] = None
+) -> Optional[Dict]:
+    """
+    Load clip version data for comparison.
+    
+    Loads from clip_versions table if version_number is specified,
+    otherwise loads current version (is_current=True) or original from clips table.
+    
+    Args:
+        job_id: Job ID
+        clip_index: Index of clip
+        version_number: Optional version number (1 = original, 2+ = regenerated)
+                       If None, loads current version or original
+        
+    Returns:
+        Dict with video_url, thumbnail_url, prompt, version_number, duration, user_instruction
+        None if version not found
+    """
+    try:
+        db = DatabaseClient()
+        
+        # If version_number is specified, try to load from clip_versions table
+        if version_number is not None:
+            # Check if clip_versions table exists (Part 4 dependency)
+            try:
+                result = await db.table("clip_versions").select("*").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_index).eq("version_number", version_number).execute()
+                
+                if result.data and len(result.data) > 0:
+                    version_data = result.data[0]
+                    return {
+                        "video_url": version_data.get("video_url"),
+                        "thumbnail_url": version_data.get("thumbnail_url"),
+                        "prompt": version_data.get("prompt"),
+                        "version_number": version_data.get("version_number"),
+                        "duration": None,  # Duration not stored in clip_versions, extract from video if needed
+                        "user_instruction": version_data.get("user_instruction"),
+                        "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
+                        "created_at": version_data.get("created_at")
+                    }
+            except Exception as e:
+                # Table may not exist (Part 4 not implemented yet)
+                logger.debug(
+                    f"clip_versions table not available: {e}",
+                    extra={"job_id": str(job_id), "clip_index": clip_index}
+                )
+        
+        # Fallback: Load from clips table (original version)
+        clips = await load_clips_from_job_stages(job_id)
+        if clips:
+            for clip in clips.clips:
+                if clip.clip_index == clip_index:
+                    # Get thumbnail URL if available
+                    thumbnail_url = None
+                    try:
+                        thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+                            "job_id", str(job_id)
+                        ).eq("clip_index", clip_index).limit(1).execute()
+                        if thumb_result.data and len(thumb_result.data) > 0:
+                            thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+                    except Exception:
+                        pass  # Table may not exist
+                    
+                    # Get prompt
+                    clip_prompts = await load_clip_prompts_from_job_stages(job_id)
+                    prompt = ""
+                    if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
+                        prompt = clip_prompts.clip_prompts[clip_index].prompt
+                    
+                    return {
+                        "video_url": clip.video_url,
+                        "thumbnail_url": thumbnail_url,
+                        "prompt": prompt,
+                        "version_number": 1,  # Original version
+                        "duration": clip.actual_duration or clip.target_duration,
+                        "user_instruction": None,  # Original has no instruction
+                        "cost": float(clip.cost) if clip.cost else None,
+                        "created_at": None
+                    }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to load clip version: {e}",
+            extra={"job_id": str(job_id), "clip_index": clip_index, "version_number": version_number},
+            exc_info=True
+        )
+        return None
 

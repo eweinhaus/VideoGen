@@ -232,6 +232,26 @@ async def test_load_clip_prompts_from_job_stages_success(sample_job_id, sample_c
 
 
 @pytest.mark.asyncio
+async def test_load_clip_prompts_from_job_stages_nested_structure(sample_job_id, sample_clip_prompts_metadata, mock_database_client):
+    """Test loading clip prompts with nested metadata structure (as saved by orchestrator)."""
+    # Mock database response with nested structure: {"clip_prompts": {...}}
+    nested_metadata = {"clip_prompts": sample_clip_prompts_metadata}
+    mock_result = MagicMock()
+    mock_result.data = [{"metadata": nested_metadata}]
+    
+    mock_table = mock_database_client.table.return_value
+    mock_table.execute = AsyncMock(return_value=mock_result)
+    
+    with patch("modules.clip_regenerator.data_loader.DatabaseClient", return_value=mock_database_client):
+        clip_prompts = await load_clip_prompts_from_job_stages(sample_job_id)
+    
+    assert clip_prompts is not None
+    assert isinstance(clip_prompts, ClipPrompts)
+    assert len(clip_prompts.clip_prompts) == 1
+    assert clip_prompts.clip_prompts[0].clip_index == 0
+
+
+@pytest.mark.asyncio
 async def test_load_clip_prompts_from_job_stages_missing_stage(sample_job_id, mock_database_client):
     """Test loading clip prompts when stage not found."""
     # Mock empty database response

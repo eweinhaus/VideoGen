@@ -7,13 +7,17 @@ import { ClipData } from "@/types/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
+import { Button } from "@/components/ui/button"
 import { formatDuration } from "@/lib/utils"
 import { cn } from "@/lib/utils"
+import { StyleTransferDialog } from "@/components/StyleTransferDialog"
+import { MultiClipInstructionInput } from "@/components/MultiClipInstructionInput"
 
 interface ClipSelectorProps {
   jobId: string
   onClipSelect: (clipIndex: number) => void
   selectedClipIndex?: number
+  totalClips?: number
 }
 
 /**
@@ -49,10 +53,14 @@ export function ClipSelector({
   jobId,
   onClipSelect,
   selectedClipIndex,
+  totalClips,
 }: ClipSelectorProps) {
   const [clips, setClips] = useState<ClipData[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [styleTransferSource, setStyleTransferSource] = useState<number | null>(null)
+  const [showStyleTransfer, setShowStyleTransfer] = useState(false)
+  const [showMultiClip, setShowMultiClip] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -121,9 +129,71 @@ export function ClipSelector({
     )
   }
 
+  const handleClipClick = (clipIndex: number, e: React.MouseEvent) => {
+    // Check for Ctrl/Cmd click for style transfer
+    if (e.ctrlKey || e.metaKey) {
+      if (styleTransferSource === null) {
+        setStyleTransferSource(clipIndex)
+        setShowStyleTransfer(false)
+      } else if (styleTransferSource !== clipIndex) {
+        setShowStyleTransfer(true)
+      }
+    } else {
+      onClipSelect(clipIndex)
+      setStyleTransferSource(null)
+      setShowStyleTransfer(false)
+    }
+  }
+
   return (
-    <div className="w-full">
-      <h2 className="mb-4 text-lg font-semibold">Select a Clip to Edit</h2>
+    <div className="w-full space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Select a Clip to Edit</h2>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowMultiClip(!showMultiClip)}
+          >
+            {showMultiClip ? "Hide" : "Multi-Clip"} Mode
+          </Button>
+        </div>
+      </div>
+
+      {showMultiClip && (
+        <MultiClipInstructionInput
+          jobId={jobId}
+          totalClips={clips.length}
+          onCancel={() => setShowMultiClip(false)}
+        />
+      )}
+
+      {showStyleTransfer && styleTransferSource !== null && selectedClipIndex !== undefined && (
+        <StyleTransferDialog
+          jobId={jobId}
+          sourceClipIndex={styleTransferSource}
+          targetClipIndex={selectedClipIndex}
+          totalClips={clips.length}
+          onTransferComplete={() => {
+            setShowStyleTransfer(false)
+            setStyleTransferSource(null)
+            // Refresh clips
+            window.location.reload()
+          }}
+          onCancel={() => {
+            setShowStyleTransfer(false)
+            setStyleTransferSource(null)
+          }}
+        />
+      )}
+
+      {styleTransferSource !== null && !showStyleTransfer && (
+        <Alert>
+          <AlertDescription>
+            Source clip selected: {styleTransferSource + 1}. Ctrl/Cmd+Click another clip to transfer style, or click normally to select.
+          </AlertDescription>
+        </Alert>
+      )}
       
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
         {clips.map((clip) => {
@@ -140,7 +210,7 @@ export function ClipSelector({
                   ? "ring-2 ring-primary ring-offset-2"
                   : "hover:border-primary/50"
               )}
-              onClick={() => onClipSelect(clip.clip_index)}
+              onClick={(e) => handleClipClick(clip.clip_index, e)}
             >
               <CardContent className="p-0">
                 {/* Thumbnail */}

@@ -79,14 +79,70 @@ export interface RegenerationResponse {
   template_matched?: string | null
 }
 
+export interface StyleTransferOptions {
+  color_palette?: boolean
+  lighting?: boolean
+  mood?: boolean
+  camera_angle?: boolean
+  motion?: boolean
+  preserve_characters?: boolean
+}
+
+export interface Suggestion {
+  type: "quality" | "consistency" | "creative"
+  description: string
+  example_instruction: string
+  confidence: number
+}
+
+export interface SuggestionsResponse {
+  suggestions: Suggestion[]
+  cached: boolean
+}
+
+export interface ClipInstruction {
+  clip_index: number
+  instruction: string
+}
+
+export interface MultiClipInstructionResponse {
+  target_clips: number[]
+  per_clip_instructions: ClipInstruction[]
+  estimated_cost: number
+  per_clip_costs: Array<{
+    clip_index: number
+    cost: number
+  }>
+  batch_discount_applied: boolean
+}
+
+export interface ErrorDetails {
+  total_clips?: number
+  successful?: number
+  failed?: number
+  min_required?: number
+  rate_limit_failures?: number
+  failed_clips?: Array<{
+    clip_index: number
+    error: string
+    error_type: string
+    is_rate_limit: boolean
+    prompt_preview?: string
+  }>
+}
+
 export class APIError extends Error {
+  public errorDetails?: ErrorDetails
+  
   constructor(
     message: string,
     public statusCode: number,
-    public retryable: boolean = false
+    public retryable: boolean = false,
+    errorDetails?: ErrorDetails
   ) {
     super(message)
     this.name = "APIError"
+    this.errorDetails = errorDetails
   }
 }
 
