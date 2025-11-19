@@ -14,6 +14,7 @@ Generate video clips in **parallel** (5 concurrent) using text-to-video models w
 - Retry Logic (3 attempts per clip with exponential backoff)
 - Progress Updates (SSE event after each clip completes)
 - Partial Success (accept ≥3 clips, don't require all)
+- **Thumbnail Generation** (async, non-blocking): Automatically generates thumbnails for all clips during video generation
 
 ## Generation Settings
 - Resolution: 1024x576 or 768x768
@@ -46,6 +47,39 @@ The video generator implements a buffer strategy to request longer durations tha
   - Request `min(target * buffer_multiplier, 10.0)` (25% buffer default, capped at 10s)
   - Configurable via `VIDEO_GENERATOR_DURATION_BUFFER` env var
 - **Cost Impact**: <20% average increase (25% buffer)
+
+## Thumbnail Generation
+
+The video generator automatically generates thumbnails for all clips during video generation. This is an **async, non-blocking** operation that doesn't interfere with the video generation pipeline.
+
+### How It Works
+
+1. **After Clip Upload**: When a clip is successfully uploaded to Supabase Storage, a thumbnail generation task is started asynchronously
+2. **FFmpeg Extraction**: Uses FFmpeg to extract the first frame from the video
+3. **Resize**: Resizes the frame to 320x180 (16:9 aspect ratio) for optimal display
+4. **Storage**: Uploads thumbnail to `clip-thumbnails` bucket in Supabase Storage
+5. **Database**: Stores thumbnail URL in `clip_thumbnails` table
+
+### Implementation
+
+- **Module**: `modules/video_generator/thumbnail_generator.py`
+- **Function**: `generate_clip_thumbnail(clip_url, job_id, clip_index)`
+- **Integration**: Called via `asyncio.create_task()` after clip upload (fire-and-forget)
+- **Error Handling**: Failures are logged but don't block video generation
+
+### Configuration
+
+- **Thumbnail Size**: 320x180 pixels (16:9 aspect ratio)
+- **Format**: JPEG
+- **Quality**: High quality (`-q:v 2`)
+- **Storage Bucket**: `clip-thumbnails` (private)
+- **Storage Path**: `{job_id}/clip_{clip_index}_thumbnail.jpg`
+
+### Performance
+
+- **Generation Time**: ~200-400ms per thumbnail (async, non-blocking)
+- **Impact**: No impact on video generation pipeline (runs in background)
+- **Failure Handling**: Missing thumbnails show placeholder in UI
 
 ### Original Target Duration
 - The original target duration (before buffer) is preserved in the `Clip` model as `original_target_duration`

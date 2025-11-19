@@ -200,16 +200,6 @@ async def update_progress(
         await publish_event(job_id, "progress", progress_data)
         await broadcast_event(job_id, "progress", progress_data)
         
-        logger.info(
-            "Progress updated",
-            extra={
-                "job_id": job_id,
-                "progress": progress,
-                "stage": stage_name,
-                "estimated_remaining": estimated_remaining
-            }
-        )
-        
     except Exception as e:
         logger.error("Failed to update progress", exc_info=e, extra={"job_id": job_id})
 
@@ -314,6 +304,9 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
     """
+    # Ensure handle_pipeline_error is available (defensive programming for reload issues)
+    error_handler = handle_pipeline_error
+    
     logger.info(
         f"execute_pipeline called for job {job_id}",
         extra={
@@ -362,7 +355,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         }).eq("id", job_id).execute()
         
         if await check_cancellation(job_id):
-            await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
+            await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
         # Import and call Audio Parser
@@ -383,14 +376,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             await update_progress(job_id, 5, "audio_parser")
             # Convert job_id from str to UUID for audio parser
             job_id_uuid = UUID(job_id)
-            logger.info(f"Calling audio parser for job {job_id}", extra={"job_id": job_id, "audio_url": audio_url})
             audio_data = await process_audio_analysis(job_id_uuid, audio_url)
-            logger.info(
-                f"Audio parser completed successfully for job {job_id}: "
-                f"BPM={audio_data.bpm:.1f}, duration={audio_data.duration:.2f}s, "
-                f"beats={len(audio_data.beat_timestamps)}",
-                extra={"job_id": job_id}
-            )
             
             # Store audio duration in Redis for time estimation
             try:
@@ -563,24 +549,9 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 status="completed",
                 metadata={"audio_analysis": audio_analysis_dict}
             )
-            logger.info("Audio analysis saved to database", extra={"job_id": job_id})
         except Exception as e:
             logger.error("Failed to save audio analysis to database", exc_info=e, extra={"job_id": job_id})
             # Don't fail the pipeline, but log the error
-        
-        # Log audio parser results
-        logger.info(
-            "Audio parser results",
-            extra={
-                "job_id": job_id,
-                "bpm": audio_data.bpm,
-                "duration": audio_data.duration,
-                "beat_count": len(audio_data.beat_timestamps),
-                "structure_segments": len(audio_data.song_structure),
-                "mood": audio_data.mood.primary if hasattr(audio_data.mood, 'primary') else str(audio_data.mood),
-                "energy_level": audio_data.mood.energy_level if hasattr(audio_data.mood, 'energy_level') else None
-            }
-        )
         
         # Publish audio parser results for frontend display (before checking stop)
         # Extract metadata if available
@@ -670,7 +641,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         await update_progress(job_id, 12, "scene_planner")
         
         if await check_cancellation(job_id):
-            await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
+            await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
         try:
@@ -700,7 +671,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         except (ValidationError, GenerationError) as e:
             # Scene Planner validation or generation error
             logger.error("Scene Planner failed", exc_info=e, extra={"job_id": job_id})
-            await handle_pipeline_error(job_id, e)
+            await error_handler(job_id, e)
             raise
         except ImportError:
             logger.warning("Scene Planner module not found, using stub", extra={"job_id": job_id})
@@ -832,14 +803,12 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 status="completed",
                 metadata={"scene_plan": scene_plan_dict}
             )
-            logger.info("Scene plan saved to database", extra={"job_id": job_id})
         except Exception as e:
             logger.error("Failed to save scene plan to database", exc_info=e, extra={"job_id": job_id})
             # Don't fail the pipeline, but log the error
         
         # Publish scene planner results for frontend display (before checking stop)
         try:
-            logger.info("Publishing scene planner results", extra={"job_id": job_id, "plan_has_clips": len(plan.clip_scripts) if plan else 0})
             await publish_event(job_id, "scene_planner_results", {
                 "job_id": str(plan.job_id),
                 "video_summary": plan.video_summary,
@@ -892,7 +861,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                     for trans in plan.transitions
                 ]
             })
-            logger.info("Scene planner results published successfully", extra={"job_id": job_id})
         except Exception as e:
             logger.error("Failed to publish scene planner results", exc_info=e, extra={"job_id": job_id})
             # Don't fail the pipeline, but log the error
@@ -943,7 +911,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         await update_progress(job_id, 25, "reference_generator", num_images=num_images)
         
         if await check_cancellation(job_id):
-            await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
+            await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
         # Load scene plan from database if not available in memory (fallback for pipeline restarts)
@@ -1026,59 +994,12 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 )
                 raise PipelineError("Scene plan has no characters - cannot generate references")
             
-            logger.info(
-                f"Starting reference generator for job {job_id}",
-                extra={
-                    "job_id": job_id,
-                    "plan_has_scenes": len(plan.scenes),
-                    "plan_has_characters": len(plan.characters),
-                    "scene_ids": [s.id for s in plan.scenes],
-                    "character_ids": [c.id for c in plan.characters]
-                }
-            )
             from modules.reference_generator.process import process as generate_references
             # Convert job_id to UUID and pass duration_seconds for budget checks
             job_id_uuid = UUID(job_id)
             duration_seconds = audio_data.duration if hasattr(audio_data, 'duration') else None
-            logger.info(
-                f"Calling generate_references for job {job_id}",
-                extra={
-                    "job_id": job_id,
-                    "job_id_uuid": str(job_id_uuid),
-                    "duration_seconds": duration_seconds,
-                    "scenes_count": len(plan.scenes),
-                    "characters_count": len(plan.characters),
-                    "total_images_to_generate": len(plan.scenes) + len(plan.characters)
-                }
-            )
             # Reference generator returns tuple: (Optional[ReferenceImages], List[Dict[str, Any]])
-            start_time = time.time()
             references, reference_events = await generate_references(job_id_uuid, plan, duration_seconds)
-            elapsed_time = time.time() - start_time
-            
-            logger.info(
-                f"Reference generator returned for job {job_id}",
-                extra={
-                    "job_id": job_id,
-                    "references_is_none": references is None,
-                    "events_count": len(reference_events),
-                    "has_references": references is not None,
-                    "elapsed_seconds": elapsed_time,
-                    "scene_refs_count": len(references.scene_references) if references else 0,
-                    "character_refs_count": len(references.character_references) if references else 0,
-                    "total_refs": references.total_references if references else 0
-                }
-            )
-            
-            # Log event types for debugging
-            event_types = {}
-            for event in reference_events:
-                event_type = event.get("event_type", "unknown")
-                event_types[event_type] = event_types.get(event_type, 0) + 1
-            logger.info(
-                f"Reference generator events for job {job_id}",
-                extra={"job_id": job_id, "event_types": event_types}
-            )
             
             # Track progress as images complete (for more frequent updates)
             reference_progress_tracker = {
@@ -1196,7 +1117,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                         status="completed",
                         metadata={"reference_images": reference_images_dict}
                     )
-                    logger.info("Reference images saved to database", extra={"job_id": job_id})
                 except Exception as e:
                     logger.error("Failed to save reference images to database", exc_info=e, extra={"job_id": job_id})
                     # Don't fail the pipeline, but log the error
@@ -1267,7 +1187,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             logger.warning("Failed to track prompt generator start time", exc_info=e, extra={"job_id": job_id})
         
         if await check_cancellation(job_id):
-            await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
+            await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
         # Check fallback mode from job_stages
@@ -1352,7 +1272,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                     status="completed",
                     metadata={"clip_prompts": clip_prompts_dict}
                 )
-                logger.info("Clip prompts saved to database", extra={"job_id": job_id})
             except Exception as e:
                 logger.error("Failed to save clip prompts to database", exc_info=e, extra={"job_id": job_id})
                 # Don't fail the pipeline, but log the error
@@ -1398,7 +1317,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             logger.warning("Failed to track video generator start time", exc_info=e, extra={"job_id": job_id})
         
         if await check_cancellation(job_id):
-            await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
+            await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
         # Set initial progress for video generator stage (40% - start of stage)
@@ -1750,7 +1669,6 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                 status="completed",
                 metadata={"clips": clips_dict}
             )
-            logger.info("Video clips saved to database", extra={"job_id": job_id})
         except Exception as e:
             logger.error("Failed to save video clips to database", exc_info=e, extra={"job_id": job_id})
             # Don't fail the pipeline, but log the error
@@ -1788,7 +1706,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             logger.warning("Failed to track composer start time", exc_info=e, extra={"job_id": job_id})
         
         if await check_cancellation(job_id):
-            await handle_pipeline_error(job_id, PipelineError("Job cancelled by user"))
+            await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
         # Set initial progress for composer stage (85% - start of stage)
@@ -1860,12 +1778,11 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "total_cost": float(total_cost)
         })
         
-        logger.info("Pipeline completed successfully", extra={"job_id": job_id, "total_cost": total_cost})
         
     except (BudgetExceededError, PipelineError) as e:
-        await handle_pipeline_error(job_id, e)
+        await error_handler(job_id, e)
         raise
     except Exception as e:
         logger.error("Pipeline execution failed", exc_info=e, extra={"job_id": job_id})
-        await handle_pipeline_error(job_id, PipelineError(f"Pipeline execution failed: {str(e)}"))
+        await error_handler(job_id, PipelineError(f"Pipeline execution failed: {str(e)}"))
         raise

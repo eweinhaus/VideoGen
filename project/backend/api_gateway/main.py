@@ -129,14 +129,20 @@ async def retryable_error_handler(request: Request, exc: RetryableError):
 @app.exception_handler(PipelineError)
 async def pipeline_error_handler(request: Request, exc: PipelineError):
     """Handle pipeline errors."""
+    response_content = {
+        "error": str(exc),
+        "code": "MODULE_FAILURE",
+        "retryable": False,
+        "request_id": getattr(request.state, "request_id", None)
+    }
+    
+    # Include detailed error information if available
+    if hasattr(exc, "error_details"):
+        response_content["error_details"] = exc.error_details
+    
     return JSONResponse(
         status_code=500,
-        content={
-            "error": str(exc),
-            "code": "MODULE_FAILURE",
-            "retryable": False,
-            "request_id": getattr(request.state, "request_id", None)
-        }
+        content=response_content
     )
 
 
@@ -160,7 +166,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 # Register routes
-from api_gateway.routes import upload, health, jobs, download, stream, models
+from api_gateway.routes import upload, health, jobs, download, stream, models, clips, analytics
 
 app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
@@ -168,6 +174,8 @@ app.include_router(jobs.router, prefix="/api/v1", tags=["jobs"])
 app.include_router(download.router, prefix="/api/v1", tags=["download"])
 app.include_router(stream.router, prefix="/api/v1", tags=["stream"])
 app.include_router(models.router, prefix="/api/v1", tags=["models"])
+app.include_router(clips.router, prefix="/api/v1", tags=["clips"])
+app.include_router(analytics.router, prefix="/api/v1", tags=["analytics"])
 
 
 @app.get("/")

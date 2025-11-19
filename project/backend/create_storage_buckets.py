@@ -42,6 +42,11 @@ REQUIRED_BUCKETS = {
         "public": False,
         "file_size_limit": 500 * 1024 * 1024,  # 500MB
         "allowed_mime_types": ["video/mp4"]
+    },
+    "clip-thumbnails": {
+        "public": False,
+        "file_size_limit": 1 * 1024 * 1024,  # 1MB (thumbnails are small)
+        "allowed_mime_types": ["image/jpeg", "image/jpg"]
     }
 }
 

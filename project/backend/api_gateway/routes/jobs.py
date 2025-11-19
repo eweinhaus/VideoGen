@@ -327,21 +327,14 @@ async def list_jobs(
         count_result = await count_query.execute()
         total = count_result.count if hasattr(count_result, "count") else 0
         
-        # Apply pagination
-        # Note: Supabase uses order() method, but our wrapper may not support it yet
-        # For now, we'll fetch all and sort in Python (not ideal for large datasets)
-        # TODO: Add order() method to AsyncTableQueryBuilder
-        query = query.limit(limit + offset)  # Fetch more than needed for offset
+        # Apply ordering and pagination
+        # Order by created_at descending (most recent first)
+        query = query.order("created_at", desc=True)
+        query = query.range(offset, offset + limit - 1)  # Supabase uses range() for offset/limit
         
         # Execute query
         result = await query.execute()
-        all_jobs = result.data if result.data else []
-        
-        # Sort by created_at descending (most recent first)
-        all_jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        
-        # Apply offset and limit
-        jobs = all_jobs[offset:offset + limit]
+        jobs = result.data if result.data else []
         
         return {
             "jobs": jobs,

@@ -15,7 +15,8 @@ project/
 │   │   ├── reference_generator/ # Module 5: SDXL reference image generation
 │   │   ├── prompt_generator/    # Module 6: Optimized video prompts
 │   │   ├── video_generator/     # Module 7: Parallel video clip generation
-│   │   └── composer/            # Module 8: FFmpeg video composition
+│   │   ├── composer/            # Module 8: FFmpeg video composition
+│   │   └── clip_regenerator/   # Clip chatbot: Data loading for clip regeneration
 │   └── shared/           # Shared utilities and common code
 └── infrastructure/       # Docker, configs, deployment files
 ```

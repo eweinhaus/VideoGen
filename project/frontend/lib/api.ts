@@ -1,13 +1,16 @@
 import { authStore } from "@/stores/authStore"
-import { APIError, UploadResponse, JobResponse } from "@/types/api"
+import {
+  APIError,
+  UploadResponse,
+  JobResponse,
+  RegenerationRequest,
+  RegenerationResponse,
+  StyleTransferOptions,
+  SuggestionsResponse,
+  MultiClipInstructionResponse,
+} from "@/types/api"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-
-// Debug: Log API base URL (only in browser)
-if (typeof window !== "undefined") {
-  console.log("🔧 API_BASE_URL:", API_BASE_URL)
-  console.log("🔧 NEXT_PUBLIC_API_URL env:", process.env.NEXT_PUBLIC_API_URL)
-}
 
 /**
  * Make a public request without authentication (for public endpoints)
@@ -28,10 +31,6 @@ async function publicRequest<T>(
 
   try {
     const fullUrl = `${API_BASE_URL}${endpoint}`
-    // Debug: Log full URL being requested
-    if (typeof window !== "undefined") {
-      console.log("🌐 Making public request to:", fullUrl)
-    }
     
     // Add timeout to prevent hanging
     const controller = new AbortController()
@@ -49,20 +48,31 @@ async function publicRequest<T>(
       let errorMessage = "An error occurred"
       let retryable = false
 
+      let errorData: any = {}
+      try {
+        const contentType = response.headers.get("content-type")
+        if (contentType?.includes("application/json")) {
+          errorData = await response.json().catch(() => ({}))
+        }
+      } catch (e) {
+        // If JSON parsing fails, use empty object
+      }
+
       if (response.status === 429) {
         const retryAfter = response.headers.get("retry-after")
         errorMessage = `Too many requests. Please try again${retryAfter ? ` after ${retryAfter} seconds` : ""}`
         retryable = true
       } else if (response.status === 400) {
-        const data = await response.json().catch(() => ({}))
-        errorMessage = data.error || data.message || "Validation error"
+        errorMessage = errorData.error || errorData.message || errorData.detail || "Validation error"
         retryable = false
       } else if (response.status >= 500) {
-        errorMessage = "Server error. Please try again later"
+        errorMessage = errorData.detail || errorData.error || errorData.message || "Server error. Please try again later"
         retryable = true
       }
 
-      throw new APIError(errorMessage, response.status, retryable)
+      // Extract detailed error information if available (for publicRequest)
+      const errorDetails = errorData?.error_details
+      throw new APIError(errorMessage, response.status, retryable, errorDetails)
     }
 
     // Handle empty responses
@@ -98,7 +108,6 @@ async function request<T>(
 
   if (token) {
     headers["Authorization"] = `Bearer ${token}`
-    console.log("Sending request with token:", endpoint, "Token:", token.substring(0, 20) + "...")
   } else {
     // Try to get token from Supabase session as fallback (similar to SSE)
     try {
@@ -106,19 +115,9 @@ async function request<T>(
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.access_token) {
         const fallbackToken = session.access_token
-        console.log("✅ Found token in Supabase session, using for request")
         headers["Authorization"] = `Bearer ${fallbackToken}`
         // Update authStore with the token
         authStore.setState({ token: fallbackToken })
-      } else {
-        // Debug: Log when token is missing
-        console.error("❌ No auth token found for request to:", endpoint)
-        console.error("Auth store state:", {
-          user: authStore.getState().user?.email,
-          hasToken: !!authStore.getState().token,
-          isLoading: authStore.getState().isLoading
-        })
-        // Don't throw error here - let the API handle 401
       }
     } catch (err) {
       console.error("❌ Failed to get token from Supabase session:", err)
@@ -132,10 +131,6 @@ async function request<T>(
 
   try {
     const fullUrl = `${API_BASE_URL}${endpoint}`
-    // Debug: Log full URL being requested
-    if (typeof window !== "undefined") {
-      console.log("🌐 Making request to:", fullUrl)
-    }
     
     // Add timeout to prevent hanging (configurable, default 30 seconds)
     // Use longer timeout for job status requests during long operations
@@ -154,42 +149,60 @@ async function request<T>(
       let errorMessage = "An error occurred"
       let retryable = false
 
+      // Try to extract detailed error message from response
+      let errorData: any = {}
+      try {
+        const contentType = response.headers.get("content-type")
+        if (contentType?.includes("application/json")) {
+          errorData = await response.json()
+        }
+      } catch (e) {
+        // If JSON parsing fails, use empty object
+        console.warn("Failed to parse error response as JSON:", e)
+      }
+
+      // FastAPI returns errors in 'detail' field, but also check 'error' and 'message' for compatibility
+      errorMessage = errorData.detail || errorData.error || errorData.message || errorMessage
+      
+      // Extract detailed error information if available
+      const errorDetails = errorData.error_details
+
       if (response.status === 401) {
-        // Log the error response for debugging
-        const errorData = await response.json().catch(() => ({}))
-        console.error("❌ 401 Unauthorized error:", errorData)
-        console.error("Request endpoint:", endpoint)
-        console.error("Token was:", token ? `${token.substring(0, 20)}...` : "missing")
+        console.error("❌ 401 Unauthorized error:", endpoint)
         
         // Clear auth state and redirect to login
         authStore.getState().logout()
         if (typeof window !== "undefined") {
           window.location.href = "/login"
         }
-        throw new APIError("Unauthorized", 401, false)
+        throw new APIError(errorMessage || "Unauthorized", 401, false)
       }
 
       if (response.status === 429) {
         const retryAfter = response.headers.get("retry-after")
-        errorMessage = `Too many requests. Please try again${retryAfter ? ` after ${retryAfter} seconds` : ""}`
+        errorMessage = errorMessage || `Too many requests. Please try again${retryAfter ? ` after ${retryAfter} seconds` : ""}`
         retryable = true
       } else if (response.status === 400) {
-        const data = await response.json().catch(() => ({}))
-        errorMessage = data.error || data.message || "Validation error"
-        // Log validation errors for debugging
-        console.error("❌ Validation error:", {
-          error: data.error,
-          code: data.code,
-          message: data.message,
-          fullResponse: data
-        })
+        errorMessage = errorMessage || "Invalid request. Please check your input."
+        retryable = false
+      } else if (response.status === 404) {
+        errorMessage = errorMessage || "Resource not found."
+        retryable = false
+      } else if (response.status === 403) {
+        errorMessage = errorMessage || "You don't have permission to perform this action."
+        retryable = false
+      } else if (response.status === 409) {
+        errorMessage = errorMessage || "A conflicting operation is already in progress."
+        retryable = true
+      } else if (response.status === 402) {
+        errorMessage = errorMessage || "Payment or budget limit exceeded."
         retryable = false
       } else if (response.status >= 500) {
-        errorMessage = "Server error. Please try again later"
+        errorMessage = errorMessage || "Server error. Please try again later."
         retryable = true
       }
 
-      throw new APIError(errorMessage, response.status, retryable)
+      throw new APIError(errorMessage, response.status, retryable, errorDetails)
     }
 
     // Handle empty responses
@@ -260,6 +273,95 @@ export async function getJob(jobId: string, timeoutMs: number = 300000): Promise
   return request<JobResponse>(`/api/v1/jobs/${jobId}`, {}, timeoutMs)
 }
 
+export async function getJobClips(jobId: string): Promise<import("@/types/api").ClipListResponse> {
+  // Use 10 second timeout for clips requests
+  return request<import("@/types/api").ClipListResponse>(
+    `/api/v1/jobs/${jobId}/clips`,
+    { method: "GET" },
+    10000 // 10 second timeout
+  )
+}
+
+export async function regenerateClip(
+  jobId: string,
+  clipIndex: number,
+  regenerationRequest: RegenerationRequest
+): Promise<RegenerationResponse> {
+  // Use 30 second timeout for regeneration requests (initial response)
+  // Actual regeneration happens async with SSE events
+  return request<RegenerationResponse>(
+    `/api/v1/jobs/${jobId}/clips/${clipIndex}/regenerate`,
+    {
+      method: "POST",
+      body: JSON.stringify(regenerationRequest),
+    },
+    30000 // 30 second timeout
+  )
+}
+
+export async function transferStyle(
+  jobId: string,
+  sourceClipIndex: number,
+  targetClipIndex: number,
+  transferOptions: StyleTransferOptions,
+  additionalInstruction?: string
+): Promise<RegenerationResponse> {
+  return request<RegenerationResponse>(
+    `/api/v1/jobs/${jobId}/clips/style-transfer`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source_clip_index: sourceClipIndex,
+        target_clip_index: targetClipIndex,
+        transfer_options: transferOptions,
+        additional_instruction: additionalInstruction,
+      }),
+    },
+    30000
+  )
+}
+
+export async function getSuggestions(
+  jobId: string,
+  clipIndex: number
+): Promise<SuggestionsResponse> {
+  return request<SuggestionsResponse>(
+    `/api/v1/jobs/${jobId}/clips/${clipIndex}/suggestions`,
+    {
+      method: "GET",
+    },
+    10000
+  )
+}
+
+export async function applySuggestion(
+  jobId: string,
+  clipIndex: number,
+  suggestionId: string
+): Promise<RegenerationResponse> {
+  return request<RegenerationResponse>(
+    `/api/v1/jobs/${jobId}/clips/${clipIndex}/suggestions/${suggestionId}/apply`,
+    {
+      method: "POST",
+    },
+    30000
+  )
+}
+
+export async function parseMultiClipInstruction(
+  jobId: string,
+  instruction: string
+): Promise<MultiClipInstructionResponse> {
+  return request<MultiClipInstructionResponse>(
+    `/api/v1/jobs/${jobId}/clips/multi-clip-instruction`,
+    {
+      method: "POST",
+      body: JSON.stringify({ instruction }),
+    },
+    10000
+  )
+}
+
 export async function downloadVideo(jobId: string): Promise<Blob> {
   const token = authStore.getState().token
   const headers: Record<string, string> = {}
@@ -304,5 +406,126 @@ export async function downloadVideo(jobId: string): Promise<Blob> {
 
   // Return the video blob
   return await videoResponse.blob()
+}
+
+export interface ClipComparisonResponse {
+  original: {
+    video_url: string | null
+    thumbnail_url: string | null
+    prompt: string
+    version_number: number
+    duration: number
+    user_instruction?: string | null
+    cost?: number | null
+  }
+  regenerated: {
+    video_url: string | null
+    thumbnail_url: string | null
+    prompt: string
+    version_number: number
+    duration: number
+    user_instruction?: string | null
+    cost?: number | null
+  }
+  duration_mismatch: boolean
+  duration_diff: number
+}
+
+export async function getClipComparison(
+  jobId: string,
+  clipIndex: number,
+  originalVersion?: number,
+  regeneratedVersion?: number
+): Promise<ClipComparisonResponse> {
+  const params = new URLSearchParams()
+  if (originalVersion !== undefined) {
+    params.append("original_version", originalVersion.toString())
+  }
+  if (regeneratedVersion !== undefined) {
+    params.append("regenerated_version", regeneratedVersion.toString())
+  }
+  
+  const queryString = params.toString()
+  const url = `/api/v1/jobs/${jobId}/clips/${clipIndex}/versions/compare${queryString ? `?${queryString}` : ""}`
+  
+  return request<ClipComparisonResponse>(url, { method: "GET" }, 10000)
+}
+
+export interface JobAnalyticsResponse {
+  job_id: string
+  total_regenerations: number
+  success_rate: number
+  average_cost: number
+  most_common_modifications: Array<{
+    instruction: string
+    count: number
+  }>
+  average_time_seconds: number | null
+}
+
+export async function getJobAnalytics(jobId: string): Promise<JobAnalyticsResponse> {
+  return request<JobAnalyticsResponse>(
+    `/api/v1/jobs/${jobId}/analytics`,
+    { method: "GET" },
+    5000
+  )
+}
+
+export interface UserAnalyticsResponse {
+  user_id: string
+  total_regenerations: number
+  most_used_templates: Array<{
+    template_id: string
+    count: number
+  }>
+  success_rate: number
+  total_cost: number
+  average_cost_per_regeneration: number
+  average_iterations_per_clip: number
+}
+
+export async function getUserAnalytics(userId: string): Promise<UserAnalyticsResponse> {
+  return request<UserAnalyticsResponse>(
+    `/api/v1/users/${userId}/analytics`,
+    { method: "GET" },
+    5000
+  )
+}
+
+export async function exportJobAnalytics(jobId: string): Promise<Blob> {
+  const token = authStore.getState().token
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  }
+  
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
+  
+  const fullUrl = `${API_BASE_URL}/api/v1/jobs/${jobId}/analytics/export`
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10000)
+  
+  try {
+    const response = await fetch(fullUrl, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    })
+    
+    clearTimeout(timeoutId)
+    
+    if (!response.ok) {
+      throw new APIError("Failed to export analytics", response.status, false)
+    }
+    
+    return await response.blob()
+  } catch (error) {
+    clearTimeout(timeoutId)
+    if (error instanceof APIError) {
+      throw error
+    }
+    throw new APIError("Failed to export analytics", 500, false)
+  }
 }
 

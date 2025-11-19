@@ -16,6 +16,23 @@ const nextConfig = {
       },
     ],
   },
+  webpack: (config, { isServer }) => {
+    // Fix for Supabase vendor chunk issues
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        net: false,
+        tls: false,
+      }
+    }
+    // Ensure Supabase is properly handled
+    config.externals = config.externals || []
+    if (isServer) {
+      config.externals.push('@supabase/supabase-js')
+    }
+    return config
+  },
 }
 
 module.exports = nextConfig

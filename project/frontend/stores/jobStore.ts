@@ -97,8 +97,6 @@ export const jobStore = create<JobState>((set, get) => ({
       }
       
       const job = jobResponseToJob(response)
-      console.log("✅ Job converted:", job)
-      console.log("🔍 Job stages after conversion:", job.stages)
       set({ currentJob: job, isLoading: false })
     } catch (error: any) {
       console.error("❌ Failed to fetch job:", error)
