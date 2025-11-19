@@ -434,7 +434,7 @@ You must output a valid JSON object matching this exact structure:
     {{
       "id": "scene_id",
       "description": "Detailed scene description (location, atmosphere, time of day, key visual elements)",
-      "time_of_day": "night|day|dawn|dusk"
+      "time_of_day": "REQUIRED: Must be one of: dawn|morning|midday|afternoon|dusk|evening|night|midnight"
     }}
   ],
   "objects": [

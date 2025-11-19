@@ -40,15 +40,17 @@ def test_synthesize_prompt_character():
         lighting="bright",
         cinematography="dynamic"
     )
-    
+
     description = "Young woman, 25-30, futuristic jacket"
     prompt = synthesize_prompt(description, style, "character")
-    
+
     assert "Young woman, 25-30, futuristic jacket" in prompt
-    assert "realistic" in prompt
+    # Character images force photorealistic style and use "natural lighting"
+    assert "photorealistic" in prompt
     assert "#FF5733 #33FF57" in prompt
-    assert "bright" in prompt
-    assert "dynamic" in prompt
+    assert "mood: energetic" in prompt
+    # Character images use portrait photography keywords instead of style's lighting/cinematography
+    assert "natural lighting" in prompt or "studio quality" in prompt
 
 
 def test_synthesize_prompt_color_palette_formatting():
@@ -68,7 +70,7 @@ def test_synthesize_prompt_color_palette_formatting():
 
 
 def test_synthesize_prompt_truncation():
-    """Test that prompts are truncated if >500 characters."""
+    """Test that prompts are truncated if too long."""
     style = Style(
         color_palette=["#FF0000"],
         visual_style="test",
@@ -76,12 +78,14 @@ def test_synthesize_prompt_truncation():
         lighting="test",
         cinematography="test"
     )
-    
+
     # Create a very long description
-    long_description = "A" * 600
+    # Scene prompts have a 1500 character limit, character prompts have 2000
+    long_description = "A" * 1600
     prompt = synthesize_prompt(long_description, style, "scene")
-    
-    assert len(prompt) <= 500
+
+    # Should be truncated to 1500 for scenes
+    assert len(prompt) <= 1500
 
 
 def test_synthesize_prompt_empty_description():

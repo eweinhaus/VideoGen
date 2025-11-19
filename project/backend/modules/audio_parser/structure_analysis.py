@@ -120,14 +120,17 @@ def _labels_to_segments(
     sr: int,
     duration: float,
     hop_length: int = 512,
-    min_segment_duration: float = 5.0
+    min_segment_duration: float = 7.0
 ) -> List[Tuple[float, float, int]]:
     """
     Convert frame-level labels into contiguous time segments.
-    
+
     Uses a smarter approach: finds cluster boundaries by identifying
     where labels change, then uses median positions of each cluster
     to determine segment boundaries.
+
+    Note: min_segment_duration (default 7.0s) is for structure segments.
+    Structure segments will be subdivided into multiple 5-8s clips by the boundaries generator.
     """
     logger.info(f"🔍 DETAILED: _labels_to_segments called: n_frames={len(labels)}, duration={duration:.2f}s, min_segment_duration={min_segment_duration}s")
     
@@ -366,9 +369,10 @@ def analyze_structure(
         # This helps enforce that segments are contiguous
         frame_indices = np.arange(n_frames)
         temporal_dist_matrix = np.abs(frame_indices[:, None] - frame_indices[None, :]) / n_frames
-        # Scale penalty: 0.15 means 15% of max distance for frames at opposite ends
-        # This prevents distant frames from clustering together even if they're similar
-        temporal_penalty = temporal_dist_matrix * 0.15
+        # Increase temporal penalty to strongly encourage contiguous segments
+        # This prevents distant frames from clustering together even if harmonically similar
+        # 0.35 = 35% weight on temporal proximity vs 65% on chroma similarity
+        temporal_penalty = temporal_dist_matrix * 0.35
         
         # Combine distance with temporal penalty
         # This makes distant frames less likely to cluster together
@@ -389,8 +393,11 @@ def analyze_structure(
         
         # Use agglomerative clustering on temporally-constrained distance matrix
         # Determine number of clusters based on duration (rough estimate)
-        # Aim for 3-8 segments for typical songs
-        n_segments = max(3, min(8, int(duration / 30)))  # ~30s per segment
+        # Request fewer clusters to encourage longer segments
+        # For 32s: int(32/45) = 0, clamped to 2 clusters
+        # For 90s: int(90/45) = 2 clusters
+        # For 180s: int(180/45) = 4 clusters
+        n_segments = max(2, min(4, int(duration / 45)))  # ~45s per segment target
         
         logger.info(
             f"Clustering setup: target_segments={n_segments} (based on duration={duration:.2f}s / 30s), "
@@ -462,7 +469,10 @@ def analyze_structure(
                     energy="medium"
                 )], True)
             
-            n_segments = max(3, min(8, int(duration / 30)))
+            # For fallback, create fewer, longer segments for better musical structure
+            # Aim for 15-20s per segment (better for chorus/verse detection)
+            # This allows clip boundaries to create multiple varied clips per segment
+            n_segments = max(2, min(6, int(duration / 18)))
             segment_length = duration / n_segments
             segments = []
             for i in range(n_segments):
@@ -512,13 +522,23 @@ def analyze_structure(
                     energy_level = "high"
                 else:
                     energy_level = "medium"
-                
-                song_structure.append(SongStructure(
+
+                # Create segment object
+                segment_obj = SongStructure(
                     type=seg_type,
                     start=start,
                     end=end,
                     energy=energy_level
-                ))
+                )
+
+                # Calculate beat intensity if beat_timestamps are provided
+                if beat_timestamps:
+                    beat_intensity = calculate_segment_beat_intensity(
+                        segment_obj, beat_timestamps, y, sr
+                    )
+                    segment_obj.beat_intensity = beat_intensity
+
+                song_structure.append(segment_obj)
             
             # Ensure we return at least one segment
             if len(song_structure) == 0:
@@ -631,17 +651,31 @@ def analyze_structure(
             else:
                 energy_level = "medium"
             
-            logger.debug(
-                f"Segment {i}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
-                f"energy={energy:.3f} ({energy_level}), type={seg_type}"
-            )
-            
-            song_structure.append(SongStructure(
+            # Create segment object
+            segment_obj = SongStructure(
                 type=seg_type,
                 start=start,
                 end=end,
                 energy=energy_level
-            ))
+            )
+
+            # Calculate beat intensity if beat_timestamps are provided
+            if beat_timestamps:
+                beat_intensity = calculate_segment_beat_intensity(
+                    segment_obj, beat_timestamps, y, sr
+                )
+                segment_obj.beat_intensity = beat_intensity
+                logger.debug(
+                    f"Segment {i}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
+                    f"energy={energy:.3f} ({energy_level}), type={seg_type}, beat_intensity={beat_intensity}"
+                )
+            else:
+                logger.debug(
+                    f"Segment {i}: {start:.1f}-{end:.1f}s (duration={segment_duration:.1f}s), "
+                    f"energy={energy:.3f} ({energy_level}), type={seg_type}"
+                )
+
+            song_structure.append(segment_obj)
         
         logger.info(
             f"Structure analysis complete: {len(song_structure)} segments detected via clustering. "

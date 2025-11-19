@@ -8,7 +8,7 @@ then generates character profiles for them to ensure consistency across clips.
 import re
 from typing import List, Dict, Set, Tuple
 from shared.logging import get_logger
-from shared.models.scene import Character, CharacterFeatures, ClipScript
+from shared.models.scene import Character, CharacterFeatures, FaceFeatures, ClipScript
 
 logger = get_logger("scene_planner")
 
@@ -187,19 +187,51 @@ def _generate_character_profile(char_id: str, role: str) -> Character:
     )
 
 
+def _format_face_features(face_features: FaceFeatures) -> str:
+    """
+    Format FaceFeatures into a descriptive string.
+
+    Args:
+        face_features: FaceFeatures object with detailed facial attributes
+
+    Returns:
+        Formatted face description string
+    """
+    # Build base face description
+    parts = [
+        f"{face_features.skin_tone} skin tone",
+        f"{face_features.shape} face",
+        face_features.nose,
+        face_features.mouth,
+        face_features.cheeks,
+        face_features.jawline
+    ]
+
+    face_desc = ", ".join(parts)
+
+    # Add distinctive marks if present
+    if face_features.distinctive_marks and face_features.distinctive_marks.lower() != "none":
+        face_desc += f", {face_features.distinctive_marks}"
+
+    return face_desc
+
+
 def _build_description_from_features(name: str, features: CharacterFeatures, role: str) -> str:
     """
     Build description string from structured features for backward compatibility.
-    
+
     Args:
         name: Character name
         features: CharacterFeatures object
         role: Character role category
-        
+
     Returns:
         Formatted description string
     """
-    return f"{name} ({role}) - FIXED CHARACTER IDENTITY:\n- Hair: {features.hair}\n- Face: {features.face}\n- Eyes: {features.eyes}\n- Clothing: {features.clothing}\n- Accessories: {features.accessories}\n- Build: {features.build}\n- Age: {features.age}"
+    # Format face features from nested FaceFeatures object
+    face_description = _format_face_features(features.face_features)
+
+    return f"{name} ({role}) - FIXED CHARACTER IDENTITY:\n- Hair: {features.hair}\n- Face: {face_description}\n- Eyes: {features.eyes}\n- Clothing: {features.clothing}\n- Accessories: {features.accessories}\n- Build: {features.build}\n- Age: {features.age}"
 
 
 def _role_to_name(role: str) -> str:

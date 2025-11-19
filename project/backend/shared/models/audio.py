@@ -5,7 +5,7 @@ Defines models for audio analysis results including beats, structure, lyrics, mo
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from enum import Enum
 
@@ -59,6 +59,7 @@ class ClipBoundary(BaseModel):
     start: float = Field(..., ge=0, description="Clip start time in seconds")
     end: float = Field(..., gt=0, description="Clip end time in seconds")
     duration: float = Field(..., ge=3, le=25, description="Clip duration in seconds (3-25s, flexible, typically 3-7s with last clip up to 10s)")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata for the clip")
 
 
 class AudioAnalysis(BaseModel):
