@@ -7,6 +7,7 @@ Authentication, authorization, and request utilities.
 import hashlib
 import json
 from typing import Optional
+from uuid import UUID
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
@@ -66,7 +67,7 @@ async def get_current_user(
         cached = await redis_client.get(cache_key)
         if cached:
             user_data = json.loads(cached)
-            logger.debug("JWT validated from cache", extra={"user_id": user_data.get("user_id")})
+            logger.debug("JWT validated from cache", extra={"user_id": user_data.get("user_id"), "email": user_data.get("email")})
             return user_data
     except Exception as e:
         logger.warning("Failed to check JWT cache", exc_info=e)
@@ -99,7 +100,32 @@ async def get_current_user(
                 detail="Invalid token: missing user_id"
             )
         
+        # Log JWT payload keys for debugging (without sensitive values)
+        logger.debug(
+            "JWT payload keys",
+            extra={
+                "user_id": user_id,
+                "payload_keys": list(payload.keys()),
+                "has_email": "email" in payload
+            }
+        )
+        
+        # Extract email from JWT payload if available
+        email = payload.get("email")
         user_data = {"user_id": user_id}
+        if email:
+            user_data["email"] = email
+        else:
+            # If email not in JWT, fetch from auth.users table
+            try:
+                user_result = await db_client.table("auth.users").select("email").eq("id", user_id).execute()
+                if user_result.data and len(user_result.data) > 0:
+                    email = user_result.data[0].get("email")
+                    if email:
+                        user_data["email"] = email
+                        logger.debug("Fetched email from auth.users", extra={"user_id": user_id, "email": email})
+            except Exception as e:
+                logger.warning("Failed to fetch email from auth.users", exc_info=e, extra={"user_id": user_id})
         
         # Cache valid token for 5 minutes
         try:
@@ -111,7 +137,7 @@ async def get_current_user(
         except Exception as e:
             logger.warning("Failed to cache JWT", exc_info=e)
         
-        logger.debug("JWT validated successfully", extra={"user_id": user_id})
+        logger.debug("JWT validated successfully", extra={"user_id": user_id, "email": user_data.get("email")})
         return user_data
         
     except JWTError as e:
@@ -142,19 +168,42 @@ async def verify_job_ownership(
     """
     Verify that the job belongs to the current user.
     
+    Admin users (etweinhaus@gmail.com) can bypass ownership checks and access all jobs.
+    
     Args:
         job_id: Job ID to verify
-        current_user: Current user from get_current_user dependency
+        current_user: Current user from get_current_user dependency (must include email)
         
     Returns:
         Job data dictionary
         
     Raises:
-        HTTPException: If job not found or doesn't belong to user
+        HTTPException: If job not found or doesn't belong to user (unless admin)
     """
     try:
+        # Validate UUID format before querying
+        try:
+            # Try to parse as UUID to validate format
+            uuid_obj = UUID(job_id)
+            # Use the properly formatted UUID string
+            job_id_formatted = str(uuid_obj)
+        except ValueError as e:
+            logger.error(
+                "Invalid job ID format",
+                extra={
+                    "job_id": job_id,
+                    "job_id_length": len(job_id),
+                    "error": str(e),
+                    "current_user_id": current_user.get("user_id")
+                }
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid job ID format: {job_id}. Job IDs must be valid UUIDs (e.g., '123e4567-e89b-12d3-a456-426614174000')."
+            )
+        
         # Query job from database (using 'id' as job_id since schema uses 'id' as PK)
-        result = await db_client.table("jobs").select("*").eq("id", job_id).execute()
+        result = await db_client.table("jobs").select("*").eq("id", job_id_formatted).execute()
         
         if not result.data or len(result.data) == 0:
             raise HTTPException(
@@ -165,7 +214,35 @@ async def verify_job_ownership(
         job = result.data[0]
         
         # Verify ownership
-        if job.get("user_id") != current_user["user_id"]:
+        # Allow admin email to bypass ownership check
+        user_email = current_user.get("email")
+        user_id = current_user.get("user_id")
+        is_admin = user_email == "etweinhaus@gmail.com"
+        
+        # Log for debugging
+        logger.debug(
+            "Verifying job ownership",
+            extra={
+                "job_id": job_id,
+                "job_user_id": job.get("user_id"),
+                "current_user_id": user_id,
+                "current_user_email": user_email,
+                "is_admin": is_admin,
+                "ownership_match": job.get("user_id") == user_id
+            }
+        )
+        
+        if job.get("user_id") != user_id and not is_admin:
+            logger.warning(
+                "Job ownership verification failed",
+                extra={
+                    "job_id": job_id,
+                    "job_user_id": job.get("user_id"),
+                    "current_user_id": user_id,
+                    "current_user_email": user_email,
+                    "is_admin": is_admin
+                }
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Job does not belong to user"
@@ -176,8 +253,18 @@ async def verify_job_ownership(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to verify job ownership", exc_info=e, extra={"job_id": job_id})
+        logger.error(
+            "Failed to verify job ownership",
+            exc_info=e,
+            extra={
+                "job_id": job_id,
+                "current_user_id": current_user.get("user_id"),
+                "current_user_email": current_user.get("email"),
+                "error_type": type(e).__name__,
+                "error_message": str(e)
+            }
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to verify job ownership"
+            detail=f"Failed to verify job ownership: {str(e)}"
         )

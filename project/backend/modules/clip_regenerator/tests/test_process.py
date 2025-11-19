@@ -236,7 +236,12 @@ class TestRegenerateClip:
             "scene_locations": [],
             "mood": "dark"
         }
-        mock_modify_llm.return_value = "A modified cyberpunk street scene with custom changes"
+        # Mock LLM returning dict with prompt, temperature, and reasoning
+        mock_modify_llm.return_value = {
+            "prompt": "A modified cyberpunk street scene with custom changes",
+            "temperature": 0.7,
+            "reasoning": "Moderate change requested"
+        }
         
         mock_get_config.return_value = {"video_model": "kling_v21", "aspect_ratio": "16:9"}
         mock_get_settings.return_value = {}
@@ -269,10 +274,14 @@ class TestRegenerateClip:
         assert result.clip == new_clip
         assert result.template_used is None
         assert "modified" in result.modified_prompt.lower()
+        assert result.temperature == 0.7  # Should have temperature from LLM
+        assert result.temperature_reasoning is not None
         mock_match_template.assert_called_once()
         mock_build_context.assert_called_once()
         mock_modify_llm.assert_called_once()
         mock_generate_clip.assert_called_once()
+        # Verify temperature was passed to video generation (if model is veo_31)
+        # Note: This test uses kling_v21, so temperature won't be passed
     
     @pytest.mark.asyncio
     @patch('modules.clip_regenerator.process.load_clips_from_job_stages')

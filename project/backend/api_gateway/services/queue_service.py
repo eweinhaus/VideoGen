@@ -27,7 +27,8 @@ async def enqueue_job(
     user_prompt: str,
     stop_at_stage: str = None,
     video_model: str = "kling_v21",
-    aspect_ratio: str = "16:9"
+    aspect_ratio: str = "16:9",
+    template: str = "standard"
 ) -> None:
     """
     Enqueue a job to the processing queue.
@@ -40,6 +41,7 @@ async def enqueue_job(
         stop_at_stage: Optional stage to stop at (for testing)
         video_model: Video generation model to use
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
+        template: Template to use (default: "standard", options: "standard", "lipsync")
     """
     job_data = {
         "job_id": job_id,
@@ -49,6 +51,7 @@ async def enqueue_job(
         "stop_at_stage": stop_at_stage,
         "video_model": video_model,
         "aspect_ratio": aspect_ratio,
+        "template": template,
         "created_at": datetime.utcnow().isoformat()
     }
     

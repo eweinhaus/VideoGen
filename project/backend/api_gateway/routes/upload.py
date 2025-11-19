@@ -35,6 +35,7 @@ async def upload_audio(
     stop_at_stage: str = Form(None),
     video_model: str = Form("kling_v21"),
     aspect_ratio: str = Form("16:9"),
+    template: str = Form("standard"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -45,6 +46,8 @@ async def upload_audio(
         user_prompt: Creative prompt (50-500 characters)
         stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
+        aspect_ratio: Aspect ratio for video generation (default: "16:9")
+        template: Template to use (default: "standard", options: "standard", "lipsync")
         current_user: Current authenticated user
         
     Returns:
@@ -182,6 +185,11 @@ async def upload_audio(
         if video_model not in valid_models:
             raise ValidationError(f"Invalid video_model: {video_model}. Must be one of: {', '.join(valid_models)}")
         
+        # Validate template
+        valid_templates = ["standard", "lipsync"]
+        if template not in valid_templates:
+            raise ValidationError(f"Invalid template: {template}. Must be one of: {', '.join(valid_templates)}")
+        
         # Create job record in database
         # Note: Using 'id' as job_id (primary key) since schema uses 'id' as PK
         # Note: Schema has 'total_cost' not 'estimated_cost', so we don't store estimated_cost
@@ -194,6 +202,7 @@ async def upload_audio(
             "progress": 0,
             "current_stage": "audio_parser",  # Set initial stage so frontend knows what's next
             "stop_at_stage": stop_at_stage,  # Store stop_at_stage for orchestrator
+            "template": template,  # Store template for orchestrator
             "created_at": datetime.utcnow().isoformat()
         }
         
@@ -206,8 +215,8 @@ async def upload_audio(
             "status": "pending"
         })
         
-        # Enqueue job to queue (pass stop_at_stage and video_model to orchestrator)
-        await enqueue_job(job_id, user_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio)
+        # Enqueue job to queue (pass stop_at_stage, video_model, aspect_ratio, and template to orchestrator)
+        await enqueue_job(job_id, user_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template)
         
         logger.info(
             "Job created and enqueued",

@@ -24,6 +24,7 @@ const STAGE_DISPLAY_NAMES: Record<string, string> = {
   reference_generation: "Reference Generation", // Alias for compatibility
   prompt_generation: "Prompt Generation",
   video_generation: "Video Generation",
+  lipsync_processor: "Lip Sync",
   composition: "Composition",
 }
 
@@ -45,6 +46,7 @@ export function StageIndicator({ stages, currentStage, showOnly }: StageIndicato
     if (n === "reference_generation") return "reference_generator"
     if (n === "prompt_generator") return "prompt_generation"
     if (n === "video_generator") return "video_generation"
+    if (n === "lipsync_processor") return "lipsync_processor"
     return n
   }
 
@@ -80,7 +82,7 @@ export function StageIndicator({ stages, currentStage, showOnly }: StageIndicato
   return (
     <Card>
       <CardContent className="p-6">
-        <div className="flex flex-row flex-wrap gap-6">
+        <div className="flex flex-row justify-between">
           {orderedStages.map((stage, index) => (
             <div
               key={stage.name}

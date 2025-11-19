@@ -345,6 +345,8 @@ async def generate_video_clip(
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     video_model: str = None,
     aspect_ratio: str = "16:9",
+    temperature: Optional[float] = None,  # LLM-determined temperature for video generation
+    seed: Optional[int] = None,  # Seed for reproducible generation (reused for precise changes)
 ) -> Clip:
     """
     Generate single video clip via Replicate.
@@ -358,6 +360,11 @@ async def generate_video_clip(
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
                     If None, falls back to VIDEO_MODEL environment variable
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
+        temperature: Optional temperature (0.0-1.0) for video generation randomness.
+                    Lower = more deterministic, Higher = more creative variation.
+                    Only used for models that support it (e.g., Veo 3.1).
+        seed: Optional seed for reproducible generation. If provided, same seed + same inputs
+              produces identical output. Only used for models that support it (e.g., Veo 3.1).
         
     Returns:
         Clip model with video URL, duration, cost, etc.
@@ -693,6 +700,53 @@ async def generate_video_clip(
             for param in audio_params:
                 del input_data[param]
         
+        # Add temperature and seed for Veo 3.1 (only models that support these parameters)
+        if selected_model_key == "veo_31":
+            if temperature is not None:
+                # Validate temperature range
+                temperature = max(0.0, min(1.0, float(temperature)))
+                input_data["temperature"] = temperature
+                logger.info(
+                    f"Using LLM-determined temperature: {temperature}",
+                    extra={
+                        "job_id": str(job_id),
+                        "model": selected_model_key,
+                        "temperature": temperature,
+                        "clip_index": clip_prompt.clip_index
+                    }
+                )
+            
+            if seed is not None:
+                # Validate seed is integer
+                try:
+                    seed = int(seed)
+                    input_data["seed"] = seed
+                    logger.info(
+                        f"Using seed for reproducible generation: {seed}",
+                        extra={
+                            "job_id": str(job_id),
+                            "model": selected_model_key,
+                            "seed": seed,
+                            "clip_index": clip_prompt.clip_index
+                        }
+                    )
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid seed value: {seed}, skipping seed parameter",
+                        extra={"job_id": str(job_id), "model": selected_model_key, "seed": seed}
+                    )
+        elif temperature is not None or seed is not None:
+            # Log that temperature/seed are not supported for this model
+            logger.debug(
+                f"Temperature/seed parameters not supported for {selected_model_key}, skipping",
+                extra={
+                    "job_id": str(job_id),
+                    "model": selected_model_key,
+                    "temperature": temperature,
+                    "seed": seed
+                }
+            )
+        
         # Start prediction
         logger.info(
             f"Starting video generation for clip {clip_prompt.clip_index} (video-only, no audio)",
@@ -704,7 +758,9 @@ async def generate_video_clip(
                 "aspect_ratio": aspect_ratio,
                 "has_image": image_url is not None,
                 "input_params": list(input_data.keys()),
-                "audio_generation": False  # Explicitly log that we're not generating audio
+                "audio_generation": False,  # Explicitly log that we're not generating audio
+                "temperature": input_data.get("temperature"),
+                "seed": input_data.get("seed")
             }
         )
         
@@ -1027,6 +1083,11 @@ async def generate_video_clip(
                 }
             )
             
+            # Build metadata dict with seed if available
+            clip_metadata = {}
+            if seed is not None:
+                clip_metadata["generation_seed"] = seed
+            
             return Clip(
                 clip_index=clip_prompt.clip_index,
                 video_url=final_url,
@@ -1037,7 +1098,8 @@ async def generate_video_clip(
                 status="success",
                 cost=cost,
                 retry_count=0,
-                generation_time=generation_time
+                generation_time=generation_time,
+                metadata=clip_metadata
             )
         else:
             # Check if we should try fallback model

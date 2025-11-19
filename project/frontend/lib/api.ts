@@ -243,7 +243,8 @@ export async function uploadAudio(
   userPrompt: string,
   stopAtStage: string | null = null,
   videoModel: string = "kling_v21",
-  aspectRatio: string = "16:9"
+  aspectRatio: string = "16:9",
+  template: string = "standard"
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -253,6 +254,7 @@ export async function uploadAudio(
   }
   formData.append("video_model", videoModel)
   formData.append("aspect_ratio", aspectRatio)
+  formData.append("template", template)
 
   // Use longer timeout for upload (180 seconds = 3 minutes)
   // Backend has 150s timeout for storage upload, plus buffer for validation, DB ops, etc.
@@ -287,7 +289,8 @@ export async function regenerateClip(
   clipIndex: number,
   regenerationRequest: RegenerationRequest
 ): Promise<RegenerationResponse> {
-  // Use 30 second timeout for regeneration requests (initial response)
+  // Use 15 second timeout for regeneration requests (initial response)
+  // Only critical validations happen in initial request, rest moved to background task
   // Actual regeneration happens async with SSE events
   return request<RegenerationResponse>(
     `/api/v1/jobs/${jobId}/clips/${clipIndex}/regenerate`,
@@ -295,7 +298,7 @@ export async function regenerateClip(
       method: "POST",
       body: JSON.stringify(regenerationRequest),
     },
-    30000 // 30 second timeout
+    15000 // 15 second timeout (reduced since we moved validations to background)
   )
 }
 

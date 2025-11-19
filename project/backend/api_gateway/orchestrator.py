@@ -292,7 +292,7 @@ async def handle_pipeline_error(job_id: str, error: Exception) -> None:
         logger.error("Failed to handle pipeline error", exc_info=e, extra={"job_id": job_id})
 
 
-async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21", aspect_ratio: str = "16:9") -> None:
+async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21", aspect_ratio: str = "16:9", template: str = "standard") -> None:
     """
     Execute the video generation pipeline (modules 3-8).
     
@@ -303,6 +303,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
+        template: Template to use (default: "standard", options: "standard", "lipsync")
     """
     # Ensure handle_pipeline_error is available (defensive programming for reload issues)
     error_handler = handle_pipeline_error
@@ -314,7 +315,9 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "audio_url": audio_url,
             "user_prompt_length": len(user_prompt) if user_prompt else 0,
             "stop_at_stage": stop_at_stage,
-            "video_model": video_model
+            "video_model": video_model,
+            "aspect_ratio": aspect_ratio,
+            "template": template
         }
     )
     try:
@@ -1681,7 +1684,131 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         # Enforce budget after video generator (costs were tracked)
         await enforce_budget(job_id)
         
-        # Stage 6: Composer (85-100% progress)
+        # Stage 5.5: Lipsync Processor (85-90% progress) - Optional, only if template="lipsync"
+        if template == "lipsync":
+            logger.info(
+                "Applying lipsync template to clips",
+                extra={"job_id": job_id, "num_clips": len(clips.clips)}
+            )
+            
+            await publish_event(job_id, "stage_update", {
+                "stage": "lipsync_processor",
+                "status": "started"
+            })
+            
+            # Track stage start time
+            try:
+                existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", "lipsync_processor").execute()
+                if existing.data and len(existing.data) > 0:
+                    await db_client.table("job_stages").update({
+                        "status": "processing",
+                        "started_at": datetime.now().isoformat()
+                    }).eq("job_id", job_id).eq("stage_name", "lipsync_processor").execute()
+                else:
+                    await db_client.table("job_stages").insert({
+                        "job_id": job_id,
+                        "stage_name": "lipsync_processor",
+                        "status": "processing",
+                        "started_at": datetime.now().isoformat()
+                    }).execute()
+            except Exception as e:
+                logger.warning("Failed to track lipsync processor start time", exc_info=e, extra={"job_id": job_id})
+            
+            if await check_cancellation(job_id):
+                await error_handler(job_id, PipelineError("Job cancelled by user"))
+                return
+            
+            # Set initial progress for lipsync stage (85% - start of stage)
+            await update_progress(job_id, 85, "lipsync_processor", num_clips=len(clips.clips))
+            
+            try:
+                from modules.lipsync_processor.process import process_lipsync_clips
+                
+                # Create event publisher callback for lipsync progress
+                async def lipsync_event_publisher(event_type: str, event_data: dict) -> None:
+                    """Publish lipsync events to SSE."""
+                    try:
+                        await publish_event(job_id, event_type, event_data)
+                    except Exception as e:
+                        logger.warning(f"Failed to publish lipsync event: {e}")
+                
+                # Apply lipsync to clips
+                clips = await process_lipsync_clips(
+                    clips=clips,
+                    audio_url=audio_url,
+                    job_id=UUID(job_id),
+                    environment=settings.environment,
+                    event_publisher=lipsync_event_publisher
+                )
+                
+                # Update progress to 90% (end of lipsync stage)
+                await update_progress(job_id, 90, "lipsync_processor", num_clips=len(clips.clips))
+                
+                await publish_event(job_id, "stage_update", {
+                    "stage": "lipsync_processor",
+                    "status": "completed"
+                })
+                
+                # Save lipsynced clips to database
+                try:
+                    from api_gateway.services.db_helpers import update_job_stage
+                    clips_dict = {
+                        "job_id": str(clips.job_id),
+                        "clips": [
+                            {
+                                "clip_index": clip.clip_index,
+                                "video_url": clip.video_url,
+                                "actual_duration": clip.actual_duration,
+                                "target_duration": clip.target_duration,
+                                "duration_diff": clip.duration_diff,
+                                "status": clip.status,
+                                "cost": str(clip.cost),
+                                "retry_count": clip.retry_count,
+                                "generation_time": clip.generation_time
+                            }
+                            for clip in clips.clips
+                        ],
+                        "total_clips": clips.total_clips,
+                        "successful_clips": clips.successful_clips,
+                        "failed_clips": clips.failed_clips,
+                        "total_cost": str(clips.total_cost),
+                        "total_generation_time": clips.total_generation_time
+                    }
+                    await update_job_stage(
+                        job_id=job_id,
+                        stage_name="lipsync_processor",
+                        status="completed",
+                        metadata={"clips": clips_dict}
+                    )
+                except Exception as e:
+                    logger.warning("Failed to save lipsynced clips to database", exc_info=e, extra={"job_id": job_id})
+                
+                logger.info(
+                    "Lipsync processing complete",
+                    extra={
+                        "job_id": job_id,
+                        "successful_clips": clips.successful_clips,
+                        "failed_clips": clips.failed_clips
+                    }
+                )
+                
+            except ImportError:
+                logger.warning("Lipsync processor module not found, skipping lipsync", extra={"job_id": job_id})
+                # Continue with original clips
+            except Exception as e:
+                logger.error(
+                    "Lipsync processing failed, using original clips",
+                    exc_info=e,
+                    extra={"job_id": job_id}
+                )
+                # Continue with original clips (graceful fallback)
+                await publish_event(job_id, "stage_update", {
+                    "stage": "lipsync_processor",
+                    "status": "failed",
+                    "error": str(e)
+                })
+        
+        # Stage 6: Composer (90-100% progress if lipsync, 85-100% if standard)
         await publish_event(job_id, "stage_update", {
             "stage": "composer",
             "status": "started"
@@ -1709,9 +1836,10 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             await error_handler(job_id, PipelineError("Job cancelled by user"))
             return
         
-        # Set initial progress for composer stage (85% - start of stage)
-        # Note: Composer will also set this, but we set it here for consistency
-        await update_progress(job_id, 85, "composer", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
+        # Set initial progress for composer stage
+        # If lipsync was applied, start at 90%, otherwise 85%
+        composer_start_progress = 90 if template == "lipsync" else 85
+        await update_progress(job_id, composer_start_progress, "composer", audio_duration=audio_data.duration if hasattr(audio_data, 'duration') else None)
         
         # Extract transitions and beats
         transitions = plan.transitions if hasattr(plan, "transitions") else []
