@@ -46,14 +46,20 @@ def extract_unique_image_urls(clip_prompts: List[ClipPrompt]) -> Dict[str, str]:
     for cp in clip_prompts:
         # Character references take priority
         if cp.character_reference_urls and len(cp.character_reference_urls) > 0:
-            char_url = cp.character_reference_urls[0]
-            if char_url not in unique_urls:
-                unique_urls[char_url] = "character"
+            for char_url in cp.character_reference_urls:
+                if char_url not in unique_urls:
+                    unique_urls[char_url] = "character"
         
-        # Scene reference (only if no character ref for this clip)
+        # Scene reference
         if cp.scene_reference_url:
             if cp.scene_reference_url not in unique_urls:
                 unique_urls[cp.scene_reference_url] = "scene"
+        
+        # Object references
+        if cp.object_reference_urls and len(cp.object_reference_urls) > 0:
+            for obj_url in cp.object_reference_urls:
+                if obj_url not in unique_urls:
+                    unique_urls[obj_url] = "object"
     
     return unique_urls
 
@@ -271,12 +277,13 @@ async def process(
                     await event_publisher("video_generation_start", start_event["data"])
                 except Exception as e:
                     logger.warning(f"Failed to publish start event: {e}", extra={"job_id": str(job_id)})
-            # Download and upload image if available (optional via env)
-            # Priority: Character reference images > Scene reference images
+            # Download and upload images if available (optional via env)
+            # Veo 3.1 supports multiple reference images (up to 3): character + scene references
             # PHASE 1: Enforce text-only mode when USE_REFERENCE_IMAGES=false
             # This defensive check ensures the flag is respected even if upstream
             # reference mapping had issues or ClipPrompt contains reference URLs
-            image_url = None
+            image_url = None  # Single image (backward compatibility)
+            reference_image_urls = []  # Multiple images for Veo 3.1
 
             if not use_references:
                 # Force text-only mode - guarantee no reference images are used
@@ -285,53 +292,150 @@ async def process(
                     extra={"job_id": str(job_id)}
                 )
                 image_url = None
-            elif clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
-                # Character reference available (use_references must be True to reach here)
-                character_ref_url = clip_prompt.character_reference_urls[0]
-                image_url = image_cache_param.get(character_ref_url)
-
-                if image_url:
-                    logger.debug(
-                        f"Using cached character reference for clip {clip_prompt.clip_index}",
-                        extra={"job_id": str(job_id)}
-                    )
-                else:
-                    # Fallback: try to download now (in case pre-download failed)
-                    logger.warning(
-                        f"Character reference not in cache for clip {clip_prompt.clip_index}, downloading now",
-                        extra={"job_id": str(job_id)}
-                    )
-                    image_url = await download_and_upload_image(character_ref_url, job_id)
-
-                    if not image_url and clip_prompt.scene_reference_url:
-                        # Try scene reference as fallback
-                        image_url = image_cache_param.get(clip_prompt.scene_reference_url)
-                        if not image_url:
-                            image_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
-
-            elif clip_prompt.scene_reference_url:
-                image_url = image_cache_param.get(clip_prompt.scene_reference_url)
-                
-                if image_url:
-                    logger.debug(
-                        f"Using cached scene reference for clip {clip_prompt.clip_index}",
-                        extra={"job_id": str(job_id)}
-                    )
-                else:
-                    # Fallback: try to download now
-                    logger.warning(
-                        f"Scene reference not in cache for clip {clip_prompt.clip_index}, downloading now",
-                        extra={"job_id": str(job_id)}
-                    )
-                    image_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
-            
+                reference_image_urls = []
             else:
-                # No references available - text-only generation
-                logger.debug(
-                    f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
-                    extra={"job_id": str(job_id)}
-                )
-                image_url = None
+                # Detect if clip is face-heavy (close-up, mid-shot, portrait, face-focused)
+                # Face-heavy clips need ALL character references prioritized for better face clarity
+                prompt_lower = clip_prompt.prompt.lower()
+                camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+                
+                is_face_heavy = any(keyword in prompt_lower for keyword in [
+                    # Close-up shots
+                    "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                    "facial", "head", "head and shoulders", "bust shot", "face fills",
+                    # Mid-shots (also need clear facial features)
+                    "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                    "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                    "from waist", "from chest", "from shoulders"
+                ]) or is_medium_shot
+                
+                # Collect all available reference images (character + scene + object)
+                # For face-heavy clips: Prioritize ALL character references before scene/objects
+                # For other clips: Character references (limited), then scene, then objects
+                # Veo 3.1 supports up to 3 reference images total
+                collected_urls = []
+                max_reference_images = 3  # Veo 3.1 limit, other models will limit further in generator
+                
+                # Add character reference URLs
+                # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
+                # OTHER CLIPS: Limit to 2 to leave room for scene/objects
+                character_refs_added = 0
+                if clip_prompt.character_reference_urls:
+                    if is_face_heavy:
+                        # Face-heavy clips: Prioritize ALL character references
+                        max_char_refs = len(clip_prompt.character_reference_urls)  # No limit for face-heavy
+                        logger.info(
+                            f"Face-heavy clip detected - prioritizing ALL {len(clip_prompt.character_reference_urls)} character reference(s) for clip {clip_prompt.clip_index}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "num_character_refs": len(clip_prompt.character_reference_urls),
+                                "shot_type": "mid-shot" if is_medium_shot else "close-up",
+                                "camera_angle": camera_angle if camera_angle else None
+                            }
+                        )
+                    else:
+                        # Other clips: Limit to 2 to leave room for scene/objects
+                        max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+                    
+                    for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                        if len(collected_urls) >= max_reference_images:
+                            break
+                        cached_url = image_cache_param.get(char_ref_url)
+                        if cached_url:
+                            collected_urls.append(cached_url)
+                            character_refs_added += 1
+                            logger.debug(
+                                f"Using cached character reference for clip {clip_prompt.clip_index}",
+                                extra={"job_id": str(job_id), "url": char_ref_url[:50]}
+                            )
+                        else:
+                            # Download if not cached
+                            downloaded_url = await download_and_upload_image(char_ref_url, job_id)
+                            if downloaded_url:
+                                collected_urls.append(downloaded_url)
+                                character_refs_added += 1
+                                logger.debug(
+                                    f"Downloaded character reference for clip {clip_prompt.clip_index}",
+                                    extra={"job_id": str(job_id)}
+                                )
+                
+                # Add scene reference URL if available and we have room (max 3 total)
+                # For face-heavy clips: Only add scene if there's room after ALL characters
+                if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
+                    cached_url = image_cache_param.get(clip_prompt.scene_reference_url)
+                    if cached_url:
+                        collected_urls.append(cached_url)
+                        logger.debug(
+                            f"Using cached scene reference for clip {clip_prompt.clip_index}",
+                            extra={"job_id": str(job_id)}
+                        )
+                    else:
+                        # Download if not cached
+                        downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+                        if downloaded_url:
+                            collected_urls.append(downloaded_url)
+                            logger.debug(
+                                f"Downloaded scene reference for clip {clip_prompt.clip_index}",
+                                extra={"job_id": str(job_id)}
+                            )
+                
+                # Add object reference URLs if available and we have room (max 3 total)
+                # For face-heavy clips: Only add objects if there's room after ALL characters and scene
+                if clip_prompt.object_reference_urls and len(collected_urls) < max_reference_images:
+                    remaining_slots = 3 - len(collected_urls)
+                    max_obj_refs = min(len(clip_prompt.object_reference_urls), remaining_slots)
+                    for obj_ref_url in clip_prompt.object_reference_urls[:max_obj_refs]:
+                        if len(collected_urls) >= 3:
+                            break
+                        cached_url = image_cache_param.get(obj_ref_url)
+                        if cached_url:
+                            collected_urls.append(cached_url)
+                            logger.debug(
+                                f"Using cached object reference for clip {clip_prompt.clip_index}",
+                                extra={"job_id": str(job_id), "url": obj_ref_url[:50]}
+                            )
+                        else:
+                            # Download if not cached
+                            downloaded_url = await download_and_upload_image(obj_ref_url, job_id)
+                            if downloaded_url:
+                                collected_urls.append(downloaded_url)
+                                logger.debug(
+                                    f"Downloaded object reference for clip {clip_prompt.clip_index}",
+                                    extra={"job_id": str(job_id)}
+                                )
+                
+                # Set both single image (backward compatibility) and multiple images
+                if collected_urls:
+                    reference_image_urls = collected_urls
+                    image_url = collected_urls[0]  # First image for backward compatibility
+                    logger.info(
+                        f"Collected {len(reference_image_urls)} reference image(s) for clip {clip_prompt.clip_index} "
+                        f"(face_heavy={is_face_heavy}, {character_refs_added}/{len(clip_prompt.character_reference_urls)} character refs used, "
+                        f"shot_type={'mid-shot' if is_medium_shot else 'close-up' if is_face_heavy else 'wide'})",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "num_images": len(reference_image_urls),
+                            "num_character_refs": character_refs_added,
+                            "total_character_refs_available": len(clip_prompt.character_reference_urls),
+                            "has_character_refs": bool(clip_prompt.character_reference_urls),
+                            "has_scene_ref": bool(clip_prompt.scene_reference_url),
+                            "has_object_refs": bool(clip_prompt.object_reference_urls),
+                            "face_heavy": is_face_heavy,
+                            "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide"),
+                            "camera_angle": camera_angle if camera_angle else None
+                        }
+                    )
+                else:
+                    # No references available - text-only generation
+                    logger.debug(
+                        f"No reference images for clip {clip_prompt.clip_index}, using prompt-only generation",
+                        extra={"job_id": str(job_id)}
+                    )
+                    image_url = None
+                    reference_image_urls = []
             
             # Progress callback to emit events during polling (defined outside retry loop)
             async def progress_callback(progress_event):
@@ -356,6 +460,7 @@ async def process(
                     clip = await generate_video_clip(
                         clip_prompt=clip_prompt,
                         image_url=image_url,
+                        reference_image_urls=reference_image_urls,  # Pass multiple images for Veo 3.1
                         settings=settings_dict,
                         job_id=job_id,
                         environment=environment,
@@ -391,10 +496,88 @@ async def process(
                     
                 except RetryableError as e:
                     if attempt < 2:
+                        error_msg = str(e)
+                        
+                        # Check if this is a content moderation error that requires fallback to Kling Turbo
+                        # This happens when Veo 3.1 content moderation fails and prompt can't be sanitized
+                        is_fallback_to_kling = (
+                            "fallback to kling turbo" in error_msg.lower() or
+                            "fallback to kling" in error_msg.lower()
+                        )
+                        
+                        if is_fallback_to_kling and selected_model_key == "veo_31":
+                            # Immediately switch to Kling Turbo (text-only) for this clip
+                            logger.info(
+                                f"Content moderation error detected for clip {clip_prompt.clip_index}, "
+                                f"switching to Kling Turbo (text-only) immediately",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "original_model": selected_model_key,
+                                    "fallback_model": "kling_v25_turbo",
+                                    "reference_images": False
+                                }
+                            )
+                            # Retry with Kling Turbo (text-only, no reference images)
+                            clip = await generate_video_clip(
+                                clip_prompt=clip_prompt,
+                                image_url=None,  # No reference images for fallback
+                                reference_image_urls=[],  # Empty for fallback
+                                settings=settings_dict,
+                                job_id=job_id,
+                                environment=environment,
+                                extra_context=None,
+                                progress_callback=progress_callback,
+                                video_model="kling_v25_turbo",  # Use fallback model
+                                aspect_ratio=aspect_ratio,
+                            )
+                            logger.info(
+                                f"Clip {clip_prompt.clip_index} generated successfully with Kling Turbo fallback",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                            )
+                            # Emit completion event
+                            complete_event = {
+                                "event_type": "video_generation_complete",
+                                "data": {
+                                    "clip_index": clip_prompt.clip_index,
+                                    "video_url": clip.video_url,
+                                    "duration": clip.actual_duration,
+                                    "cost": float(clip.cost),
+                                }
+                            }
+                            events.append(complete_event)
+                            if event_publisher:
+                                try:
+                                    await event_publisher("video_generation_complete", complete_event["data"])
+                                except Exception as e:
+                                    logger.warning(f"Failed to publish complete event: {e}", extra={"job_id": str(job_id)})
+                            return clip
+                        
+                        # Check if this is a content moderation error that was sanitized
+                        # If so, sanitize the prompt before retrying
+                        if "content moderation" in error_msg.lower() or "prompt sanitized" in error_msg.lower():
+                            from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
+                            
+                            original_prompt = clip_prompt.prompt
+                            sanitized_prompt = sanitize_prompt_for_content_moderation(original_prompt, job_id=str(job_id))
+                            
+                            if sanitized_prompt != original_prompt:
+                                # Update the prompt for retry
+                                clip_prompt.prompt = sanitized_prompt
+                                logger.info(
+                                    f"Sanitized prompt for clip {clip_prompt.clip_index} before retry",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "attempt": attempt + 1,
+                                        "original_preview": original_prompt[:100],
+                                        "sanitized_preview": sanitized_prompt[:100]
+                                    }
+                                )
+                        
                         # Parse Retry-After from error message if present
                         # Format: "Rate limit error (retry after 30s): ..."
                         retry_after = None
-                        error_msg = str(e)
                         retry_after_match = re.search(r'retry after ([\d.]+)s', error_msg, re.IGNORECASE)
                         if retry_after_match:
                             try:
@@ -623,26 +806,110 @@ async def process(
         async def retry_failed_clip(clip_prompt: ClipPrompt, error_info: dict) -> Optional[Clip]:
             async with retry_semaphore:
                 try:
-                    # Re-download image if needed
-                    image_url = None
-                    if use_references and clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
-                        character_ref_url = clip_prompt.character_reference_urls[0]
-                        image_url = image_cache.get(character_ref_url)
-                        if not image_url and clip_prompt.scene_reference_url:
-                            image_url = image_cache.get(clip_prompt.scene_reference_url)
-                    elif use_references and clip_prompt.scene_reference_url:
-                        image_url = image_cache.get(clip_prompt.scene_reference_url)
+                    # Check if this is a content moderation error that should fallback to Kling Turbo
+                    error_str = error_info.get("error", "").lower()
+                    is_content_moderation = (
+                        "content moderation" in error_str or 
+                        "flagged as sensitive" in error_str or
+                        "e005" in error_str
+                    )
                     
-                    # Generate with single retry attempt (we already tried 3 times)
+                    # Determine which model to use for retry
+                    retry_model = selected_model_key
+                    use_reference_images_retry = use_references
+                    
+                    if is_content_moderation and selected_model_key == "veo_31":
+                        # Fallback to Kling Turbo for content moderation errors
+                        # Kling Turbo doesn't support reference images, so use text-only
+                        retry_model = "kling_v25_turbo"
+                        use_reference_images_retry = False
+                        logger.info(
+                            f"Retrying clip {clip_prompt.clip_index} with Kling Turbo (text-only) "
+                            f"due to content moderation error",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "original_model": selected_model_key,
+                                "fallback_model": retry_model,
+                                "reference_images": False
+                            }
+                        )
+                    
+                    # Re-download images if needed (only if not using fallback model)
+                    image_url = None  # Single image (backward compatibility)
+                    reference_image_urls = []  # Multiple images for Veo 3.1
+                    
+                    if use_reference_images_retry:
+                        # Detect if clip is face-heavy (same logic as main generation)
+                        prompt_lower = clip_prompt.prompt.lower()
+                        camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                        is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+                        
+                        is_face_heavy = any(keyword in prompt_lower for keyword in [
+                            "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                            "facial", "head", "head and shoulders", "bust shot", "face fills",
+                            "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                            "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                            "from waist", "from chest", "from shoulders"
+                        ]) or is_medium_shot
+                        
+                        collected_urls = []
+                        max_reference_images = 3  # Veo 3.1 limit
+                        
+                        # Add character reference URLs
+                        # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
+                        # OTHER CLIPS: Limit to 2 to leave room for scene/objects
+                        if clip_prompt.character_reference_urls:
+                            if is_face_heavy:
+                                # Face-heavy clips: Prioritize ALL character references
+                                max_char_refs = len(clip_prompt.character_reference_urls)  # No limit for face-heavy
+                            else:
+                                # Other clips: Limit to 2 to leave room for scene/objects
+                                max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+                            
+                            for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                                if len(collected_urls) >= max_reference_images:
+                                    break
+                                cached_url = image_cache.get(char_ref_url)
+                                if cached_url:
+                                    collected_urls.append(cached_url)
+                                else:
+                                    downloaded_url = await download_and_upload_image(char_ref_url, job_id)
+                                    if downloaded_url:
+                                        collected_urls.append(downloaded_url)
+                        
+                        # Add scene reference URL if available and we have room (max 3 total)
+                        # For face-heavy clips: Only add scene if there's room after ALL characters
+                        if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
+                            cached_url = image_cache.get(clip_prompt.scene_reference_url)
+                            if cached_url:
+                                collected_urls.append(cached_url)
+                            else:
+                                downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+                                if downloaded_url:
+                                    collected_urls.append(downloaded_url)
+                        
+                        if collected_urls:
+                            reference_image_urls = collected_urls
+                            image_url = collected_urls[0]  # First image for backward compatibility
+                    else:
+                        # Text-only mode for fallback (no reference images)
+                        logger.debug(
+                            f"Using text-only mode for clip {clip_prompt.clip_index} (fallback model)",
+                            extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                        )
+                    
+                    # Generate with fallback model (text-only if content moderation error)
                     clip = await generate_video_clip(
                         clip_prompt=clip_prompt,
                         image_url=image_url,
+                        reference_image_urls=reference_image_urls,  # Empty for fallback
                         settings=settings_dict,
                         job_id=job_id,
                         environment=environment,
                         extra_context=None,
                         progress_callback=None,  # Skip progress updates for retries
-                        video_model=selected_model_key,
+                        video_model=retry_model,  # Use fallback model if content moderation error
                         aspect_ratio=aspect_ratio,
                     )
                     

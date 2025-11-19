@@ -52,22 +52,22 @@ def validate_prompt(prompt: str, max_length: int = 500) -> str:
     return prompt
 
 
-def get_variation_suffix(variation_index: int) -> str:
+def get_scene_variation_suffix(variation_index: int) -> str:
     """
-    Get variation suffix to append to character prompts for diversity.
+    Get variation suffix to append to scene prompts for different camera angles.
 
     Args:
-        variation_index: Index of the variation (0, 1, 2, 3, etc.)
+        variation_index: Index of the variation (0, 1, 2, etc.)
 
     Returns:
-        Suffix string to add variation to the prompt
+        Suffix string describing camera angle for this variation
     """
     variations = [
-        "frontal view, neutral expression, centered composition",
-        "profile view, slight smile, side angle",
-        "three-quarter view, action pose, dynamic composition",
-        "full body shot, dynamic pose, wide angle",
-        "close-up portrait, expressive face, dramatic lighting",
+        "wide establishing shot, showing full environment, environmental view",
+        "medium shot from different angle, alternative perspective",
+        "close-up detail shot, focus on key elements, detailed view",
+        "overhead view, bird's eye perspective, top-down angle",
+        "low angle view, dramatic upward perspective, ground level shot",
     ]
 
     if variation_index < len(variations):
@@ -75,6 +75,51 @@ def get_variation_suffix(variation_index: int) -> str:
     else:
         # Cycle through variations if we have more than 5
         return variations[variation_index % len(variations)]
+
+
+def get_character_variation_suffix(variation_index: int) -> str:
+    """
+    Get variation suffix for character prompts with identity preservation.
+
+    CRITICAL: All variations must show the SAME PERSON from different angles/poses.
+    Each variation includes "SAME PERSON" emphasis to prevent identity drift.
+
+    Args:
+        variation_index: Index of the variation (0, 1, 2, 3, etc.)
+
+    Returns:
+        Suffix string describing camera angle/pose for this variation
+    """
+    if variation_index == 0:
+        # Base variation: frontal portrait
+        return "frontal portrait view, neutral expression, direct gaze, centered composition"
+    elif variation_index == 1:
+        # Variation 1: profile view
+        return "SAME PERSON, profile view from left side, slight smile, side angle, EXACT SAME FEATURES"
+    elif variation_index == 2:
+        # Variation 2: three-quarter view
+        return "SAME PERSON, three-quarter view, confident pose, slight angle, EXACT SAME FEATURES"
+    elif variation_index == 3:
+        # Variation 3: full body
+        return "SAME PERSON, full body shot, natural standing pose, full figure visible, EXACT SAME FEATURES"
+    elif variation_index == 4:
+        # Variation 4: action pose
+        return "SAME PERSON, dynamic action shot, in motion, natural movement, EXACT SAME FEATURES"
+    elif variation_index == 5:
+        # Variation 5: close-up face portrait (for maximum face detail and clarity)
+        return "SAME PERSON, extreme close-up portrait, face fills frame, sharp facial features, detailed eyes nose mouth, professional headshot quality, EXACT SAME FEATURES, high resolution face detail"
+    else:
+        # Cycle through variations if we have more than 6
+        cycle_idx = (variation_index % 6)
+        return get_character_variation_suffix(cycle_idx)
+
+
+def get_variation_suffix(variation_index: int) -> str:
+    """
+    DEPRECATED: Use get_character_variation_suffix() instead for identity preservation.
+    Kept for backward compatibility.
+    """
+    return get_character_variation_suffix(variation_index)
 
 
 def build_character_features_block(character: Optional[Character]) -> str:
@@ -104,7 +149,9 @@ def build_character_features_block(character: Optional[Character]) -> str:
         else:
             char_label = char_name
         
-        # Format features for reference image (more concise than video prompts)
+        # Format features for reference image
+        # IMPORTANT: Use the EXACT feature descriptions from scene planner - don't truncate or simplify
+        # This ensures reference images match the character descriptions exactly
         # Emphasize realism and photography for lifelike results
         # Note: Realism keywords are added at prompt start, not here to avoid redundancy
         features_block = (
@@ -194,29 +241,50 @@ def synthesize_prompt(
     # For character images: START with strong realism keywords (order matters in SDXL)
     if image_type == "character":
         # Put realism FIRST to override any style tendencies
-        fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human")
+        # Emphasize face detail and clarity for better video generation preservation
+        fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human, sharp facial features, detailed face, clear eyes nose mouth, professional portrait quality")
     
     # For character images, use enhanced character features if available
+    # CRITICAL: Always prefer structured features from scene planner over raw description
     if image_type == "character" and character:
         features_block = build_character_features_block(character)
         if features_block:
             # Use detailed features instead of simple description
+            # This ensures reference images match the exact character descriptions from scene planner
+            logger.debug(
+                f"Using structured character features for {character.id or 'unknown'}",
+                extra={
+                    "character_id": character.id,
+                    "has_features": character.features is not None,
+                    "has_description": character.description is not None
+                }
+            )
             fragments.append(features_block)
         else:
-            # Fallback to description
+            # Fallback to description (should rarely happen if scene planner is working correctly)
+            logger.warning(
+                f"Character {character.id or 'unknown'} has no structured features, falling back to description",
+                extra={"character_id": character.id, "description_preview": description[:100]}
+            )
             fragments.append(description)
     else:
         # Scene images or characters without structured features
         fragments.append(description)
-    
-    # Add variation suffix for character variations
-    if image_type == "character" and variation_index > 0:
-        variation_suffix = get_variation_suffix(variation_index)
+
+    # Add variation suffix for scene variations (different camera angles)
+    if image_type == "scene" and variation_index >= 0:
+        scene_variation_suffix = get_scene_variation_suffix(variation_index)
+        fragments.append(scene_variation_suffix)
+
+    # Add variation suffix for character variations (identity-preserving)
+    if image_type == "character":
+        variation_suffix = get_character_variation_suffix(variation_index)
         fragments.append(variation_suffix)
     
     # Add style information (for characters, this reinforces realism)
     if image_type == "character":
         # For characters: emphasize photography and realism
+        # Enhanced with face-specific keywords for better preservation in video generation
         style_fragments = [
             "professional portrait photography",
             "natural lighting, studio quality",
@@ -224,7 +292,9 @@ def synthesize_prompt(
             f"{color_palette_str} color tones",
             "DSLR camera, 85mm lens, f/2.8 aperture, shallow depth of field",
             "natural skin texture, realistic skin pores, natural colors",
-            "highly detailed, professional quality, 4K, sharp focus, crisp details"
+            "highly detailed, professional quality, 4K, sharp focus, crisp details",
+            "sharp facial features, clear face definition, no face blur, no face distortion",
+            "preserve exact facial structure, consistent face, no face warping"
         ]
     else:
         # For scenes: use scene plan style
@@ -242,14 +312,128 @@ def synthesize_prompt(
     # Join all fragments
     prompt = ", ".join(fragments)
     
-    # Validate and truncate if too long (increased max_length for detailed prompts)
+    # Validate and truncate if too long
+    # Flux 1.1 Pro Ultra supports very long prompts (2000+ characters), but we set a reasonable limit
+    # Character images need detailed feature descriptions, so allow longer prompts
     try:
-        prompt = validate_prompt(prompt, max_length=800)  # Increased from 500 to accommodate detailed features
+        # For character images: Allow up to 2000 characters (Flux supports this)
+        # For scene/object images: Use 1500 characters (still generous)
+        max_length = 2000 if image_type == "character" else 1500
+        prompt = validate_prompt(prompt, max_length=max_length)
     except ValidationError as e:
         logger.error(
             f"Prompt validation failed for {image_type}: {str(e)}",
             extra={"image_type": image_type, "error": str(e)}
         )
         raise
-    
+
+    return prompt
+
+
+def get_object_variation_suffix(variation_index: int) -> str:
+    """
+    Get variation suffix for object prompts with different angles.
+
+    Args:
+        variation_index: Index of the variation (0, 1, 2, etc.)
+
+    Returns:
+        Suffix string describing camera angle/view for this variation
+    """
+    variations = [
+        "primary view, front angle, centered composition",
+        "alternate angle, side view, different perspective",
+        "close-up detail shot, macro photography, focus on distinctive features",
+        "overhead view, top-down angle, bird's eye perspective",
+        "low angle view, dramatic upward perspective, ground level shot",
+    ]
+
+    if variation_index < len(variations):
+        return variations[variation_index]
+    else:
+        # Cycle through variations if we have more than 5
+        return variations[variation_index % len(variations)]
+
+
+def synthesize_object_prompt(
+    obj: 'Object',
+    style: Style,
+    variation_index: int = 0
+) -> str:
+    """
+    Synthesize prompt for object reference images from ObjectFeatures.
+
+    Args:
+        obj: Object with structured ObjectFeatures
+        style: Style object from ScenePlan
+        variation_index: Index of variation (0 = base, 1+ = variations)
+
+    Returns:
+        Synthesized prompt string for product photography
+
+    Raises:
+        ValidationError: If object or style is invalid
+    """
+    if not obj or not obj.features:
+        raise ValidationError("Object must have features")
+
+    if not style:
+        raise ValidationError("Style object is required")
+
+    features = obj.features
+
+    # Build prompt fragments for product photography
+    fragments = []
+
+    # Start with product photography keywords
+    fragments.append("professional product photography")
+
+    # Add object description with all features
+    object_desc = (
+        f"{obj.name}, "
+        f"{features.object_type}, "
+        f"color: {features.color}, "
+        f"material: {features.material}, "
+        f"distinctive features: {features.distinctive_features}, "
+        f"size: {features.size}, "
+        f"condition: {features.condition}"
+    )
+    fragments.append(object_desc)
+
+    # Add variation suffix for different angles
+    variation_suffix = get_object_variation_suffix(variation_index)
+    fragments.append(variation_suffix)
+
+    # Add style information (simplified for product photography)
+    # Use color palette from style but adapt for product shots
+    if style.color_palette and len(style.color_palette) > 0:
+        color_palette_str = " ".join(
+            color if color.startswith("#") else f"#{color}"
+            for color in style.color_palette
+        )
+    else:
+        color_palette_str = "#FFFFFF"
+
+    style_fragments = [
+        "neutral background, studio lighting",
+        f"color tones: {color_palette_str}",
+        "sharp focus on object, clean composition",
+        "highly detailed, professional quality, 4K, crisp details"
+    ]
+    fragments.extend(style_fragments)
+
+    # Join all fragments
+    prompt = ", ".join(fragments)
+
+    # Validate and truncate if too long
+    # SDXL supports longer prompts, but we set a reasonable limit for product photography
+    try:
+        prompt = validate_prompt(prompt, max_length=1500)  # Increased from 800 for detailed object descriptions
+    except ValidationError as e:
+        logger.error(
+            f"Object prompt validation failed for {obj.id}: {str(e)}",
+            extra={"object_id": obj.id, "error": str(e)}
+        )
+        raise
+
     return prompt

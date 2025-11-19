@@ -1471,18 +1471,18 @@ export function ProgressTracker({
                     </span>
                   </div>
                   {entry.imageUrl ? (
-                    <div className="relative h-40 w-full overflow-hidden rounded-md border bg-muted/30">
+                    <div className="relative h-80 w-full overflow-hidden rounded-md border bg-muted/30">
                       <Image
                         src={entry.imageUrl}
                         alt={`${entry.imageType} ${entry.imageId}`}
                         fill
-                        className="object-cover"
+                        className="object-contain"
                         loading="lazy"
                         unoptimized
                       />
                     </div>
                   ) : (
-                    <div className="flex h-40 items-center justify-center rounded-md border border-dashed bg-muted/30 text-xs text-muted-foreground">
+                    <div className="flex h-80 items-center justify-center rounded-md border border-dashed bg-muted/30 text-xs text-muted-foreground">
                       {entry.status === "failed" ? "Image unavailable" : "Waiting for image"}
                     </div>
                   )}

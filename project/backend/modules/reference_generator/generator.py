@@ -21,41 +21,126 @@ from shared.logging import get_logger
 logger = get_logger("reference_generator.generator")
 
 # Model version constants
-# Using base model name (will use latest version)
-# Format: owner/model or owner/model:version_hash
-# To pin a specific version, use: stability-ai/sdxl:VERSION_HASH
-# To use latest: stability-ai/sdxl (default)
-# Cost: ~$0.005 per image
-# Speed: ~8-10s per image
-# Note: If you need to pin a specific version, set REFERENCE_MODEL_VERSION env var
-# Example: REFERENCE_MODEL_VERSION=39ed52f2-78e6-43c4-bc99-403f850fe245
-# Verified model name from Replicate API
-# Model: stability-ai/sdxl
-# Latest version (verified working): 7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc
-# Note: Must use version hash format - base name without version returns 404
+# 
+# RECOMMENDED MODELS FOR PHOTOREALISTIC CHARACTERS (from https://replicate.com/collections/flux):
+# 
+# 1. FLUX1.1 Pro Ultra (BEST FOR REALISTIC PEOPLE) ⭐ RECOMMENDED
+#    - black-forest-labs/flux-1.1-pro-ultra
+#    - Most powerful model, best for realistic images with "raw" mode
+#    - Large images up to 4 megapixels
+#    - Excellent prompt following and photorealistic output
+#    - Use "raw" mode for maximum realism
+#    - Set REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro-ultra
+#
+# 2. FLUX1.1 Pro (GOOD BALANCE)
+#    - black-forest-labs/flux-1.1-pro
+#    - Fast, high-quality generation
+#    - Good for professional work and commercial projects
+#    - Better balance of speed and quality
+#    - Set REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro
+#
+# 3. FLUX.1 Dev (OPEN SOURCE)
+#    - black-forest-labs/flux-dev
+#    - Open source version
+#    - Good for learning and prototypes
+#    - May be less photorealistic than Pro versions
+#
+# 4. SDXL Base (FALLBACK)
+#    - stability-ai/sdxl
+#    - Known working, good for scenes
+#    - Less photorealistic for people than Flux
+#
+# Format: owner/model (Replicate will use latest version automatically)
+# Note: Flux models use different parameters than SDXL (see generate_image function)
+
+# Default models
 REFERENCE_MODEL_BASE = "stability-ai/sdxl"
 REFERENCE_MODEL_LATEST_VERSION = "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
-# Must use version hash format - base name without version returns 404
 REFERENCE_MODEL_PROD = "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
-REFERENCE_MODEL_DEV = "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"  # Same for consistency
+REFERENCE_MODEL_DEV = "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc"
+
+# Photorealistic models (using Flux 1.1 Pro Ultra for best realism)
+# Based on https://replicate.com/collections/flux
+# FLUX1.1 Pro Ultra is the most powerful and best for realistic images with "raw" mode
+REFERENCE_MODEL_CHARACTERS_DEFAULT = "black-forest-labs/flux-1.1-pro-ultra"  # ⭐ BEST FOR REALISTIC PEOPLE
+REFERENCE_MODEL_SCENES_DEFAULT = "black-forest-labs/flux-1.1-pro-ultra"  # ⭐ ALSO BEST FOR REALISTIC SCENES
+
+# Alternative models:
+# - black-forest-labs/flux-1.1-pro (faster, good balance)
+# - black-forest-labs/flux-dev (open source, less photorealistic)
+# - stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc (fallback)
 
 
-def get_model_version() -> str:
+def get_model_version(image_type: Literal["scene", "character", "object"] = "scene") -> str:
     """
-    Get model version based on environment.
-    
-    Supports:
-    - REFERENCE_MODEL_VERSION env var: Pin to specific version hash
-      Example: REFERENCE_MODEL_VERSION=39ed52f2-78e6-43c4-bc99-403f850fe245
-    - REFERENCE_MODEL_DEV env var: Override for development (full model string)
-      Example: REFERENCE_MODEL_DEV=stability-ai/sdxl:VERSION_HASH
-    
+    Get model version based on environment and image type.
+
+    For CHARACTER images: Uses FLUX1.1 Pro Ultra (best for realistic people)
+    For SCENE images: Uses FLUX1.1 Pro Ultra (best for realistic scenes)
+    For OBJECT images: Uses SDXL (best for product photography)
+
+    Environment Variables:
+    - REFERENCE_MODEL_CHARACTERS: Model for character images (default: FLUX1.1 Pro Ultra)
+      Example: REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro-ultra
+      Alternative: REFERENCE_MODEL_CHARACTERS=black-forest-labs/flux-1.1-pro (faster)
+    - REFERENCE_MODEL_SCENES: Model for scene images (default: FLUX1.1 Pro Ultra)
+      Example: REFERENCE_MODEL_SCENES=black-forest-labs/flux-1.1-pro-ultra
+      Alternative: REFERENCE_MODEL_SCENES=black-forest-labs/flux-1.1-pro (faster)
+    - REFERENCE_MODEL_OBJECTS: Model for object images (default: SDXL for product photography)
+      Example: REFERENCE_MODEL_OBJECTS=stability-ai/sdxl
+    - REFERENCE_MODEL_VERSION: Legacy - applies to all images (deprecated, use specific vars)
+    - REFERENCE_MODEL_DEV: Override for development (full model string)
+
     Returns:
         Model version string in format: owner/model or owner/model:version_hash
     """
     import os
+
+    # Check for image-type-specific model overrides (RECOMMENDED)
+    if image_type == "character":
+        character_model = os.getenv("REFERENCE_MODEL_CHARACTERS", REFERENCE_MODEL_CHARACTERS_DEFAULT)
+        if character_model:
+            logger.info(
+                f"Using character model: {character_model}",
+                extra={"model": character_model, "image_type": image_type}
+            )
+            return character_model
+    elif image_type == "object":
+        # Objects use SDXL for product photography (better for clean backgrounds and precise details)
+        # IMPORTANT: Always use versioned model string to avoid 404 errors
+        object_model = os.getenv("REFERENCE_MODEL_OBJECTS", REFERENCE_MODEL_PROD)
+        if object_model:
+            # Validate that model string includes version hash (prevents 404 errors)
+            # Format should be "owner/model:version_hash" or "owner/model:latest"
+            if ":" not in object_model and object_model == "stability-ai/sdxl":
+                # User provided unversioned model - use production version
+                logger.warning(
+                    f"Unversioned model '{object_model}' provided for objects. Using production version to avoid 404 errors.",
+                    extra={"provided_model": object_model, "using_model": REFERENCE_MODEL_PROD}
+                )
+                object_model = REFERENCE_MODEL_PROD
+            elif ":" not in object_model:
+                # Other unversioned models - warn but allow (Flux models work without version)
+                logger.warning(
+                    f"Unversioned model '{object_model}' provided. This may cause 404 errors if model is not available.",
+                    extra={"model": object_model, "image_type": image_type}
+                )
+            
+            logger.info(
+                f"Using object model: {object_model}",
+                extra={"model": object_model, "image_type": image_type}
+            )
+            return object_model
+    else:
+        scene_model = os.getenv("REFERENCE_MODEL_SCENES", REFERENCE_MODEL_SCENES_DEFAULT)
+        if scene_model:
+            logger.info(
+                f"Using scene model: {scene_model}",
+                extra={"model": scene_model, "image_type": image_type}
+            )
+            return scene_model
     
-    # Check for version hash override (appends to base model)
+    # Legacy: Check for version hash override (appends to base model)
     version_hash = os.getenv("REFERENCE_MODEL_VERSION")
     if version_hash:
         return f"{REFERENCE_MODEL_BASE}:{version_hash}"
@@ -65,8 +150,10 @@ def get_model_version() -> str:
     if dev_override and settings.environment == "development":
         return dev_override
     
-    # Default: Use base model (latest version)
-    return REFERENCE_MODEL_PROD
+    # Default: Use appropriate model for image type
+    if image_type == "character":
+        return REFERENCE_MODEL_CHARACTERS_DEFAULT
+    return REFERENCE_MODEL_SCENES_DEFAULT
 
 
 # Initialize Replicate client
@@ -79,7 +166,7 @@ except Exception as e:
 
 async def generate_image(
     prompt: str,
-    image_type: Literal["scene", "character"],
+    image_type: Literal["scene", "character", "object"],
     image_id: str,
     job_id: UUID,
     settings_dict: Optional[Dict[str, Any]] = None,
@@ -87,23 +174,23 @@ async def generate_image(
 ) -> Tuple[bytes, float, Decimal, int]:
     """
     Generate a single reference image with adaptive retry logic.
-    
+
     Args:
         prompt: Synthesized prompt
-        image_type: "scene" or "character"
-        image_id: Scene or character ID
+        image_type: "scene", "character", or "object"
+        image_id: Scene, character, or object ID
         job_id: Job ID for tracking
         settings_dict: Optional generation settings (uses defaults if not provided)
         retry_count: Current retry attempt (0 = first attempt, 1 = retry)
-        
+
     Returns:
         Tuple of (image_bytes, generation_time_seconds, cost, final_retry_count)
-        
+
     Raises:
         RetryableError: If retryable error occurs (will be retried by caller)
         GenerationError: If generation fails permanently
     """
-    model_version = get_model_version()
+    model_version = get_model_version(image_type)
     logger.info(
         f"Using Replicate model: {model_version} for {image_type} image {image_id}",
         extra={"job_id": str(job_id), "model_version": model_version, "image_type": image_type, "image_id": image_id}
@@ -111,8 +198,11 @@ async def generate_image(
     
     # Default generation settings
     # Enhanced negative prompt for character images to prevent cartoonish results
+    # AND prevent identity changes across variations (Layer 6 Safeguard)
+    # AND prevent face warping/distortion (Face Clarity Enhancement)
     if image_type == "character":
         negative_prompt = (
+            # Prevent cartoonish/stylized results
             "cartoon, illustration, painting, drawing, anime, manga, 3d render, cgi, "
             "digital art, stylized, artistic, abstract, fantasy art, concept art, "
             "comic book, graphic novel, animated, animation, cartoonish, "
@@ -120,7 +210,18 @@ async def generate_image(
             "oversaturated, fake, artificial, plastic, doll-like, toy-like, "
             "unrealistic proportions, exaggerated features, "
             "watercolor, oil painting, sketch, line art, vector art, "
-            "stylized features, exaggerated eyes, anime eyes, manga style"
+            "stylized features, exaggerated eyes, anime eyes, manga style, "
+            # Prevent identity changes (Layer 6 - Identity Preservation)
+            "different person, different face, different identity, "
+            "different hair color, different eye color, different skin tone, "
+            "different age, different gender, different ethnicity, "
+            "multiple people, two people, different character, "
+            "face swap, face change, identity swap, inconsistent features, "
+            # NEW: Prevent face warping/distortion (Face Clarity Enhancement)
+            "warped face, distorted face, blurred face, fuzzy facial features, "
+            "face morphing, inconsistent face, face changing, deformed facial features, "
+            "asymmetric face, face distortion, face blur, low detail face, "
+            "unclear face, hazy face, soft focus face, out of focus face"
         )
     else:
         negative_prompt = (
@@ -128,18 +229,44 @@ async def generate_image(
             "cartoon, illustration, painting, drawing"
         )
     
-    default_settings = {
-        "prompt": prompt,
-        "negative_prompt": negative_prompt,
-        "width": 1024,
-        "height": 1024,
-        "num_outputs": 1,
-        "guidance_scale": 9.0 if image_type == "character" else 7.5,  # Even higher guidance for more realistic characters
-        "num_inference_steps": 50 if image_type == "character" else 30,  # More steps for better quality
-        "scheduler": "K_EULER"
-        # Note: seed is omitted - Replicate will randomize if not provided
-        # If you need deterministic results, set seed to an integer
-    }
+    # Check if using Flux model (different parameters than SDXL)
+    # Note: Flux models may require different parameters, but Realistic Vision SDXL uses SDXL parameters
+    is_flux = "flux" in model_version.lower() and "realistic" not in model_version.lower()
+    
+    if is_flux:
+        # Flux settings (optimized for photorealistic portraits)
+        # FLUX1.1 Pro Ultra API: https://replicate.com/black-forest-labs/flux-1.1-pro-ultra/api
+        # Uses aspect_ratio instead of width/height
+        # Use "raw" mode for maximum realism (especially for characters)
+        default_settings = {
+            "prompt": prompt,
+            "aspect_ratio": "1:1",  # Square format (1024x1024 equivalent)
+        }
+        
+        # Add raw mode for characters to maximize realism
+        # According to Replicate docs: "Use raw mode for realism"
+        if image_type == "character":
+            default_settings["raw"] = True
+        
+        # Note: FLUX1.1 Pro Ultra doesn't support negative_prompt, guidance_scale, 
+        # num_inference_steps, or scheduler parameters - these are SDXL-specific
+        # The negative prompt content is already incorporated into the main prompt
+    else:
+        # SDXL settings (works for both base SDXL and Realistic Vision SDXL)
+        # Enhanced quality settings for character images to improve face clarity
+        default_settings = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "width": 1024,
+            "height": 1024,
+            "num_outputs": 1,
+            "guidance_scale": 10.0 if image_type == "character" else 7.5,  # Increased from 9.0 for better face detail
+            "num_inference_steps": 60 if image_type == "character" else 30,  # Increased from 50 for sharper faces
+            "scheduler": "K_EULER"
+        }
+    
+    # Note: seed is omitted - Replicate will randomize if not provided
+    # If you need deterministic results, set seed to an integer
     
     generation_settings = settings_dict or default_settings
     generation_settings["prompt"] = prompt  # Ensure prompt is set
@@ -276,8 +403,27 @@ async def generate_image(
         raise RetryableError(f"Network error generating image {image_id}: {str(e)}")
         
     except Exception as e:
-        # Check if it's a validation error (non-retryable)
+        # Check if it's a 404 error (model not found) - non-retryable
         error_str = str(e).lower()
+        if "404" in error_str or "not found" in error_str or "could not be found" in error_str:
+            logger.error(
+                f"Model not found (404) for {image_id}: {model_version}. "
+                f"This usually means the model name is incorrect or the model is not available on Replicate.",
+                extra={
+                    "job_id": str(job_id),
+                    "image_type": image_type,
+                    "image_id": image_id,
+                    "model_version": model_version,
+                    "error": str(e)
+                }
+            )
+            raise GenerationError(
+                f"Model not found: {model_version}. "
+                f"The model may not be available on Replicate or the name is incorrect. "
+                f"Error: {str(e)}"
+            )
+        
+        # Check if it's a validation error (non-retryable)
         if any(keyword in error_str for keyword in ["invalid", "validation", "bad request", "400"]):
             raise GenerationError(f"Invalid prompt or settings for {image_id}: {str(e)}")
         
@@ -290,12 +436,13 @@ async def generate_all_references(
     plan: ScenePlan,
     scenes: List[Scene],
     characters: List[Character],
+    objects: List['Object'],
     duration_seconds: Optional[float] = None,
     events_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 ) -> List[Dict[str, Any]]:
     """
     Generate all reference images in parallel with retry logic.
-    Generates multiple variations per character based on config.
+    Generates multiple variations per scene, character, and object based on config.
 
     Args:
         job_id: Job ID
@@ -326,7 +473,7 @@ async def generate_all_references(
     async def generate_one(
         sem: asyncio.Semaphore,
         scene_or_char: Any,
-        img_type: Literal["scene", "character"],
+        img_type: Literal["scene", "character", "object"],
         variation_index: int = 0
     ) -> Dict[str, Any]:
         """Generate a single reference image with retry logic."""
@@ -335,25 +482,15 @@ async def generate_all_references(
         async with sem:
             # For variations, append variation index to image_id
             base_image_id = scene_or_char.id
-            # For character images, only generate base (variation_index=0) for consistency
-            # Multiple variations cause inconsistency - we want the SAME person in all clips
-            if img_type == "character" and variation_index > 0:
-                # Skip variations - only generate base character reference
-                logger.debug(
-                    f"Skipping character variation {variation_index} for {base_image_id} - using single consistent reference",
-                    extra={"job_id": str(job_id), "image_id": base_image_id, "variation_index": variation_index}
-                )
-                return {
-                    "success": False,
-                    "image_type": img_type,
-                    "image_id": f"{base_image_id}_var{variation_index}",
-                    "character_id": base_image_id,
-                    "error": "Skipped - using single consistent character reference",
-                    "retry_count": 0,
-                    "skipped": True
-                }
-            
-            image_id = base_image_id  # Always use base ID for characters (no variations)
+
+            # Build image_id with variation suffix (e.g., "scene_1_var0", "character_1_var1")
+            # For variations > 0, always add suffix for both scenes and characters
+            if variation_index > 0:
+                image_id = f"{base_image_id}_var{variation_index}"
+            else:
+                # Variation 0: use base_image_id (for backward compatibility)
+                image_id = base_image_id
+
             # Get description - for characters, use description field or fallback to ID
             description = getattr(scene_or_char, 'description', None) or base_image_id
             
@@ -385,15 +522,25 @@ async def generate_all_references(
             
             try:
                 # Synthesize prompt with variation support
-                # For character images, pass the Character object for enhanced prompts
-                character_obj = scene_or_char if img_type == "character" else None
-                prompt = synthesize_prompt(
-                    description, 
-                    plan.style, 
-                    img_type, 
-                    variation_index,
-                    character=character_obj
-                )
+                if img_type == "object":
+                    # Objects use specialized product photography prompts
+                    from .prompts import synthesize_object_prompt
+                    prompt = synthesize_object_prompt(
+                        obj=scene_or_char,
+                        style=plan.style,
+                        variation_index=variation_index
+                    )
+                else:
+                    # Scenes and characters use standard prompt synthesis
+                    # For character images, pass the Character object for enhanced prompts
+                    character_obj = scene_or_char if img_type == "character" else None
+                    prompt = synthesize_prompt(
+                        description,
+                        plan.style,
+                        img_type,
+                        variation_index,
+                        character=character_obj
+                    )
                 
                 # Generate image (first attempt)
                 retry_count = 0
@@ -445,10 +592,13 @@ async def generate_all_references(
                     "success": True,
                     "image_type": img_type,
                     "image_id": image_id,
-                    "scene_id": image_id if img_type == "scene" else None,
-                    "character_id": image_id if img_type == "character" else None,
+                    "scene_id": base_image_id if img_type == "scene" else None,
+                    "character_id": base_image_id if img_type == "character" else None,
+                    "object_id": base_image_id if img_type == "object" else None,
                     "base_character_id": base_image_id if img_type == "character" else None,
-                    "variation_index": variation_index if img_type == "character" else 0,
+                    "base_scene_id": base_image_id if img_type == "scene" else None,
+                    "base_object_id": base_image_id if img_type == "object" else None,
+                    "variation_index": variation_index,
                     "image_bytes": image_bytes,
                     "generation_time": gen_time,
                     "cost": cost,
@@ -469,8 +619,10 @@ async def generate_all_references(
                     "success": False,
                     "image_type": img_type,
                     "image_id": image_id,
-                    "scene_id": image_id if img_type == "scene" else None,
-                    "character_id": image_id if img_type == "character" else None,
+                    "scene_id": base_image_id if img_type == "scene" else None,
+                    "character_id": base_image_id if img_type == "character" else None,
+                    "object_id": base_image_id if img_type == "object" else None,
+                    "variation_index": variation_index,
                     "error": str(e),
                     "retry_count": retry_count
                 }
@@ -484,8 +636,10 @@ async def generate_all_references(
                     "success": False,
                     "image_type": img_type,
                     "image_id": image_id,
-                    "scene_id": image_id if img_type == "scene" else None,
-                    "character_id": image_id if img_type == "character" else None,
+                    "scene_id": base_image_id if img_type == "scene" else None,
+                    "character_id": base_image_id if img_type == "character" else None,
+                    "object_id": base_image_id if img_type == "object" else None,
+                    "variation_index": variation_index,
                     "error": str(e),
                     "retry_count": retry_count
                 }
@@ -499,34 +653,55 @@ async def generate_all_references(
         concurrency = 2
         semaphore = asyncio.Semaphore(concurrency)
     
+    # Get variation counts from settings
+    variations_per_scene = settings.reference_variations_per_scene
+    variations_per_character = settings.reference_variations_per_character  # Re-enabled with safeguards
+    variations_per_object = settings.reference_variations_per_object
+
     # Create tasks for all images
-    # Scenes: 1 per scene
-    # Characters: 1 per character (no variations for consistency - same person in all clips)
-    total_character_tasks = len(characters)  # Always 1 per character
-    total_tasks = len(scenes) + total_character_tasks
+    # Scenes: N variations per scene (configurable, default: 2)
+    # Characters: N variations per character (configurable, default: 2)
+    # Objects: N variations per object (configurable, default: 2)
+    # IMPORTANT: Character variations use identity-preserving prompts (same person, different angles)
+    total_scene_tasks = len(scenes) * variations_per_scene
+    total_character_tasks = len(characters) * variations_per_character
+    total_object_tasks = len(objects) * variations_per_object
+    total_tasks = total_scene_tasks + total_character_tasks + total_object_tasks
 
     logger.info(
         f"Creating generation tasks for job {job_id}",
         extra={
             "job_id": str(job_id),
             "scenes_count": len(scenes),
+            "variations_per_scene": variations_per_scene,
+            "total_scene_tasks": total_scene_tasks,
             "characters_count": len(characters),
-            "variations_per_character": 1,  # Always 1 for consistency
+            "variations_per_character": variations_per_character,
             "total_character_tasks": total_character_tasks,
+            "objects_count": len(objects),
+            "variations_per_object": variations_per_object,
+            "total_object_tasks": total_object_tasks,
             "total_tasks": total_tasks
         }
     )
 
     tasks = []
-    # Generate scene references (1 per scene)
+    # Generate scene references (N variations per scene)
     for scene in scenes:
-        tasks.append(generate_one(semaphore, scene, "scene", variation_index=0))
+        for var_idx in range(variations_per_scene):
+            tasks.append(generate_one(semaphore, scene, "scene", variation_index=var_idx))
 
-    # Generate character references (1 per character for consistency)
-    # Multiple variations cause inconsistency - we want the SAME person in all clips
+    # Generate character references (N variations per character with identity preservation)
+    # Uses identity-preserving prompts to ensure SAME person across all variations
     for char in characters:
-        # Only generate base (variation_index=0) for character consistency
-        tasks.append(generate_one(semaphore, char, "character", variation_index=0))
+        for var_idx in range(variations_per_character):
+            tasks.append(generate_one(semaphore, char, "character", variation_index=var_idx))
+
+    # Generate object references (N variations per object for consistency)
+    # Uses detailed object features to ensure SAME object across all variations
+    for obj in objects:
+        for var_idx in range(variations_per_object):
+            tasks.append(generate_one(semaphore, obj, "object", variation_index=var_idx))
     
     if len(tasks) == 0:
         logger.warning(

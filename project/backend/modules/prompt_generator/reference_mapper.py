@@ -17,6 +17,7 @@ logger = get_logger("prompt_generator.reference_mapper")
 class ReferenceIndex:
     scene_urls: Dict[str, str]
     character_urls: Dict[str, str]
+    object_urls: Dict[str, str]
     status: str = "unknown"
 
 
@@ -24,14 +25,16 @@ class ReferenceIndex:
 class ClipReferenceMapping:
     scene_id: Optional[str]
     character_ids: List[str]
+    object_ids: List[str]
     scene_reference_url: Optional[str]
     character_reference_urls: List[str]
+    object_reference_urls: List[str]
     reference_mode: str
 
 
 def build_reference_index(references: Optional[ReferenceImages]) -> ReferenceIndex:
     if references is None or references.status in {"failed"}:
-        return ReferenceIndex(scene_urls={}, character_urls={}, status="missing")
+        return ReferenceIndex(scene_urls={}, character_urls={}, object_urls={}, status="missing")
 
     scene_urls = {}
     for scene_ref in references.scene_references:
@@ -44,12 +47,29 @@ def build_reference_index(references: Optional[ReferenceImages]) -> ReferenceInd
     character_urls = {}
     for char_ref in references.character_references:
         if char_ref.character_id:
-            # Store all variations (character_id may contain _var0, _var1, etc.)
-            character_urls[char_ref.character_id] = char_ref.image_url
+            # Reconstruct variation key: base_id for variation 0, base_id_var{N} for variations > 0
+            if char_ref.variation_index == 0:
+                variation_key = char_ref.character_id
+            else:
+                variation_key = f"{char_ref.character_id}_var{char_ref.variation_index}"
+            character_urls[variation_key] = char_ref.image_url
+
+    # Build object_urls to support multiple variations per object
+    # Similar to character_urls, stores all variations with variation suffix keys
+    object_urls = {}
+    for obj_ref in references.object_references:
+        if obj_ref.object_id:
+            # Reconstruct variation key: base_id for variation 0, base_id_var{N} for variations > 0
+            if obj_ref.variation_index == 0:
+                variation_key = obj_ref.object_id
+            else:
+                variation_key = f"{obj_ref.object_id}_var{obj_ref.variation_index}"
+            object_urls[variation_key] = obj_ref.image_url
 
     return ReferenceIndex(
         scene_urls=scene_urls,
         character_urls=character_urls,
+        object_urls=object_urls,
         status=references.status,
     )
 
@@ -122,18 +142,72 @@ def map_clip_references(
             }
         )
 
+    # Map object references with rotation through variations
+    # Find all variations for each object and rotate based on clip_index
+    object_reference_urls = []
+    missing_object_ids = []
+    
+    # Get object IDs from clip (if objects field exists)
+    clip_object_ids = getattr(clip, 'objects', [])
+    
+    for obj_id in clip_object_ids:
+        # Find all variations for this object (obj_id, obj_id_var1, obj_id_var2, etc.)
+        obj_variations = []
+        for stored_obj_id, url in index.object_urls.items():
+            # Match base object ID or variations
+            if stored_obj_id == obj_id or stored_obj_id.startswith(f"{obj_id}_var"):
+                obj_variations.append((stored_obj_id, url))
+
+        if obj_variations:
+            # Sort variations to ensure consistent ordering (var0, var1, var2, etc.)
+            obj_variations.sort(key=lambda x: x[0])
+
+            # Rotate through variations based on clip_index
+            variation_index = clip_index % len(obj_variations)
+            selected_variation_id, selected_url = obj_variations[variation_index]
+
+            object_reference_urls.append(selected_url)
+
+            logger.debug(
+                f"Clip {clip_index}: Using variation {variation_index} for object '{obj_id}'",
+                extra={
+                    "clip_index": clip_index,
+                    "object_id": obj_id,
+                    "variation_index": variation_index,
+                    "total_variations": len(obj_variations),
+                    "selected_variation_id": selected_variation_id
+                }
+            )
+        else:
+            missing_object_ids.append(obj_id)
+    
+    if missing_object_ids and index.status != "missing":
+        # Log when object IDs don't have references (but references exist)
+        logger.debug(
+            f"Clip {clip.clip_index}: Object IDs {missing_object_ids} not found in reference images",
+            extra={
+                "clip_index": clip.clip_index,
+                "missing_object_ids": missing_object_ids,
+                "available_object_ids": list(index.object_urls.keys())
+            }
+        )
+
     if scene_reference_url:
         reference_mode = "scene"
     elif character_reference_urls:
         reference_mode = "character"
+    elif object_reference_urls:
+        reference_mode = "object"
     else:
         reference_mode = "text_only"
 
     return ClipReferenceMapping(
         scene_id=primary_scene_id,
         character_ids=list(clip.characters),
+        object_ids=list(clip_object_ids),
         scene_reference_url=scene_reference_url,
         character_reference_urls=character_reference_urls,
+        object_reference_urls=object_reference_urls,
         reference_mode=reference_mode,
     )
 
@@ -145,17 +219,20 @@ def map_references(
     index = build_reference_index(references)
     mapping: Dict[int, ClipReferenceMapping] = {}
 
-    # Build sets of valid scene and character IDs from ScenePlan for validation
+    # Build sets of valid scene, character, and object IDs from ScenePlan for validation
     valid_scene_ids = {scene.id for scene in plan.scenes}
     valid_character_ids = {char.id for char in plan.characters}
+    valid_object_ids = {obj.id for obj in plan.objects} if plan.objects else set()
 
     # Validate that reference IDs match ScenePlan IDs
     if references and references.status not in {"failed"}:
         reference_scene_ids = {ref.scene_id for ref in references.scene_references if ref.scene_id}
         reference_character_ids = {ref.character_id for ref in references.character_references if ref.character_id}
+        reference_object_ids = {ref.object_id for ref in references.object_references if ref.object_id}
         
         invalid_scene_refs = reference_scene_ids - valid_scene_ids
         invalid_char_refs = reference_character_ids - valid_character_ids
+        invalid_obj_refs = reference_object_ids - valid_object_ids
         
         if invalid_scene_refs:
             logger.warning(
@@ -174,11 +251,22 @@ def map_references(
                     "valid_character_ids": list(valid_character_ids)
                 }
             )
+        
+        if invalid_obj_refs:
+            logger.warning(
+                f"Reference images contain object IDs not in ScenePlan: {invalid_obj_refs}",
+                extra={
+                    "invalid_object_ids": list(invalid_obj_refs),
+                    "valid_object_ids": list(valid_object_ids)
+                }
+            )
 
     for clip in plan.clip_scripts:
         # Validate clip references against ScenePlan
         invalid_clip_scenes = [sid for sid in clip.scenes if sid not in valid_scene_ids]
         invalid_clip_chars = [cid for cid in clip.characters if cid not in valid_character_ids]
+        clip_object_ids = getattr(clip, 'objects', [])
+        invalid_clip_objects = [oid for oid in clip_object_ids if oid not in valid_object_ids]
 
         if invalid_clip_scenes:
             logger.warning(
@@ -197,6 +285,16 @@ def map_references(
                     "clip_index": clip.clip_index,
                     "invalid_character_ids": invalid_clip_chars,
                     "valid_character_ids": list(valid_character_ids)
+                }
+            )
+
+        if invalid_clip_objects:
+            logger.warning(
+                f"Clip {clip.clip_index} references invalid object IDs: {invalid_clip_objects}",
+                extra={
+                    "clip_index": clip.clip_index,
+                    "invalid_object_ids": invalid_clip_objects,
+                    "valid_object_ids": list(valid_object_ids)
                 }
             )
 

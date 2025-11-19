@@ -25,6 +25,11 @@ from .character_analyzer import (
     analyze_clips_for_implicit_characters,
     update_clip_scripts_with_characters
 )
+from .object_analyzer import (
+    extract_objects_from_user_input,
+    analyze_clips_for_objects,
+    update_clip_scripts_with_objects as update_clips_with_object_ids
+)
 
 logger = get_logger("scene_planner")
 
@@ -72,12 +77,25 @@ async def plan_scenes(
         director_knowledge = get_director_knowledge()
         logger.debug("Loaded director knowledge base")
         
+        # Step 1a: Extract objects from user input before LLM generation
+        # This allows us to pass explicit object hints to the LLM
+        user_input_objects = extract_objects_from_user_input(user_prompt)
+        if user_input_objects:
+            logger.info(
+                f"Extracted {len(user_input_objects)} objects from user input",
+                extra={
+                    "job_id": str(job_id),
+                    "object_ids": [obj.id for obj in user_input_objects]
+                }
+            )
+        
         # Step 2: Generate scene plan using LLM
         llm_output = await generate_scene_plan(
             job_id=job_id,
             user_prompt=user_prompt,
             audio_data=audio_data,
-            director_knowledge=director_knowledge
+            director_knowledge=director_knowledge,
+            user_input_objects=user_input_objects  # Pass extracted objects as hints
         )
         logger.debug("Generated scene plan from LLM")
         
@@ -192,7 +210,112 @@ async def plan_scenes(
                 all_characters=characters
             )
             logger.debug("Updated clip scripts with implicit character IDs")
+
+        # PHASE 3: Extract objects from LLM output and analyze clips for additional objects
+        # Start with objects extracted from user input (they're already marked as primary)
+        from shared.models.scene import Object, ObjectFeatures
+        from .object_analyzer import _normalize_object_type
         
+        objects = list(user_input_objects)  # Start with user input objects
+        
+        # Build object_type to Object mapping for consolidation
+        # This prevents duplicate objects of the same type (e.g., "truck", "truck_1", "pickup truck")
+        object_type_map = {}
+        for obj in objects:
+            normalized_type = _normalize_object_type(obj.features.object_type)
+            if normalized_type not in object_type_map:
+                object_type_map[normalized_type] = obj
+            # Prefer primary importance
+            elif obj.importance == "primary" and object_type_map[normalized_type].importance != "primary":
+                object_type_map[normalized_type] = obj
+        
+        # Get objects from LLM (if provided)
+        if "objects" in llm_output and llm_output["objects"]:
+            existing_object_ids = {obj.id for obj in objects}
+            for obj_data in llm_output["objects"]:
+                # Parse object with nested features
+                if "features" in obj_data:
+                    obj_features = ObjectFeatures(**obj_data["features"])
+                    obj = Object(
+                        id=obj_data["id"],
+                        name=obj_data["name"],
+                        features=obj_features,
+                        importance=obj_data.get("importance", "secondary")
+                    )
+                    
+                    # Check for duplicate ID
+                    if obj.id in existing_object_ids:
+                        logger.debug(
+                            f"Skipping duplicate object ID '{obj.id}' from LLM",
+                            extra={"object_id": obj.id, "object_type": obj.features.object_type}
+                        )
+                        continue
+                    
+                    # Check for duplicate object_type (consolidation)
+                    normalized_type = _normalize_object_type(obj.features.object_type)
+                    if normalized_type in object_type_map:
+                        existing_obj = object_type_map[normalized_type]
+                        logger.info(
+                            f"Consolidating duplicate object type '{obj.features.object_type}' (normalized: '{normalized_type}') - "
+                            f"keeping existing '{existing_obj.id}' (importance: {existing_obj.importance}), "
+                            f"skipping LLM object '{obj.id}' (importance: {obj.importance})",
+                            extra={
+                                "job_id": str(job_id),
+                                "normalized_type": normalized_type,
+                                "existing_object_id": existing_obj.id,
+                                "skipped_object_id": obj.id,
+                                "existing_importance": existing_obj.importance,
+                                "skipped_importance": obj.importance
+                            }
+                        )
+                        # If the new object is primary and existing is not, upgrade existing
+                        if obj.importance == "primary" and existing_obj.importance != "primary":
+                            existing_obj.importance = "primary"
+                            logger.info(
+                                f"Upgraded existing object '{existing_obj.id}' to primary importance",
+                                extra={"object_id": existing_obj.id}
+                            )
+                        continue
+                    
+                    # Add new object
+                    objects.append(obj)
+                    existing_object_ids.add(obj.id)
+                    object_type_map[normalized_type] = obj
+
+            logger.info(
+                f"LLM generated {len([o for o in objects if o not in user_input_objects])} additional object profiles",
+                extra={
+                    "job_id": str(job_id),
+                    "object_ids": [obj.id for obj in objects],
+                    "user_input_objects": len(user_input_objects)
+                }
+            )
+
+        # Analyze clip scripts for additional objects not caught by LLM or user input
+        detected_objects, clip_scripts = analyze_clips_for_objects(
+            clip_scripts=clip_scripts,
+            existing_objects=objects
+        )
+
+        if detected_objects:
+            logger.info(
+                f"Detected {len(detected_objects)} additional objects in clip scripts",
+                extra={
+                    "job_id": str(job_id),
+                    "detected_object_ids": [obj.id for obj in detected_objects]
+                }
+            )
+            # Add detected objects to the object list
+            objects.extend(detected_objects)
+
+        # If LLM provided objects but didn't assign them to clips, update clip scripts
+        if objects and "objects" in llm_output and llm_output["objects"]:
+            clip_scripts = update_clips_with_object_ids(
+                clip_scripts=clip_scripts,
+                objects=objects
+            )
+            logger.debug("Updated clip scripts with object IDs")
+
         if "scenes" in llm_output:
             from shared.models.scene import Scene
             scenes = [
@@ -229,6 +352,7 @@ async def plan_scenes(
             video_summary=video_summary or "Music video scene plan",
             characters=characters,
             scenes=scenes,
+            objects=objects,
             style=style or _create_default_style(audio_data),
             clip_scripts=clip_scripts,
             transitions=transitions

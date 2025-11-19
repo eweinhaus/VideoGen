@@ -266,10 +266,11 @@ export async function uploadAudio(
   )
 }
 
-export async function getJob(jobId: string): Promise<JobResponse> {
-  // Use longer timeout for job status requests (5 minutes) to handle long uploads
+export async function getJob(jobId: string, timeoutMs: number = 300000): Promise<JobResponse> {
+  // Default to longer timeout for job status requests (5 minutes) to handle long uploads
   // The composer stage can take several minutes for large video uploads
-  return request<JobResponse>(`/api/v1/jobs/${jobId}`, {}, 300000) // 5 minutes
+  // But allow caller to override with shorter timeout for initial fetches
+  return request<JobResponse>(`/api/v1/jobs/${jobId}`, {}, timeoutMs)
 }
 
 export async function getJobClips(jobId: string): Promise<import("@/types/api").ClipListResponse> {

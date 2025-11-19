@@ -133,8 +133,11 @@ export default function JobProgressPage() {
     )
   }
   
-  // If job is loading, show cross-page modal if isSubmitting, otherwise show spinner
-  if (jobLoading) {
+  // If job is loading AND we don't have any cached job data, show loading
+  // But if we have cached data (even if stale), render the page with it
+  const hasCachedJob = job?.id === jobId
+  
+  if (jobLoading && !hasCachedJob) {
     if (isSubmitting) {
       // Show cross-page loading modal (matches upload page modal)
       return (
@@ -160,6 +163,10 @@ export default function JobProgressPage() {
       </div>
     )
   }
+  
+  // If we're loading but have cached data, show a subtle loading indicator
+  // but still render the page with cached data
+  const showBackgroundLoading = jobLoading && hasCachedJob
 
   if (error) {
     return (
@@ -186,18 +193,47 @@ export default function JobProgressPage() {
     )
   }
 
+  // If we don't have job data at all (not even cached), show error/loading
+  // But give it a bit more time if we're still loading
   if (!job) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center space-y-4">
-          <LoadingSpinner size="lg" text="Loading job..." />
-          <div className="text-sm text-muted-foreground">
-            Job ID: {jobId}
-          </div>
-          <div className="text-sm text-muted-foreground">
-            If this persists, the job may not exist or you may not have access to it.
+    // If we're still loading, wait a bit more (maybe API is just slow)
+    if (jobLoading) {
+      return (
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="text-center space-y-4">
+            <LoadingSpinner size="lg" text="Loading job..." />
+            <div className="text-sm text-muted-foreground">
+              Job ID: {jobId}
+            </div>
+            <div className="text-sm text-muted-foreground">
+              If this persists, the job may not exist or you may not have access to it.
+            </div>
           </div>
         </div>
+      )
+    }
+    
+    // If we're not loading anymore and still no job, show error
+    return (
+      <div className="container mx-auto max-w-3xl px-4 py-8">
+        <Alert variant="destructive">
+          <AlertDescription>
+            <div className="space-y-2">
+              <div>Job not found or you don&apos;t have access to it</div>
+              <div className="text-sm text-muted-foreground">
+                Job ID: {jobId}
+              </div>
+            </div>
+          </AlertDescription>
+        </Alert>
+        <Button
+          className="mt-4"
+          variant="outline"
+          onClick={() => router.push("/upload")}
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Upload
+        </Button>
       </div>
     )
   }
@@ -226,6 +262,17 @@ export default function JobProgressPage() {
           </div>
         </div>
       )}
+      
+      {/* Subtle background loading indicator when using cached data */}
+      {showBackgroundLoading && (
+        <div className="fixed top-4 right-4 z-40 rounded-lg bg-background/90 backdrop-blur-sm border px-3 py-2 shadow-lg">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <span>Updating job status...</span>
+          </div>
+        </div>
+      )}
+      
       <div className="container mx-auto max-w-7xl px-4 py-8">
       <div className="mb-6">
         <Button
