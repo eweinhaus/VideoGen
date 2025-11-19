@@ -5,6 +5,7 @@ Modifies video generation prompts based on user instructions while preserving
 style consistency. Uses GPT-4o or Claude 3.5 Sonnet with retry logic.
 """
 
+import json
 import re
 from typing import Dict, Any, List, Optional
 from uuid import UUID
@@ -44,13 +45,26 @@ def get_system_prompt() -> str:
     return """You are a video editing assistant. Modify video generation prompts based on user instructions while preserving style consistency.
 
 Your task:
-1. Understand the user's instruction
+1. Understand the user's instruction and determine the level of change requested
 2. Modify the original prompt to incorporate the instruction
-3. Preserve visual style, character consistency, and scene coherence
-4. Keep prompt under 200 words
-5. Maintain reference image compatibility
+3. Determine appropriate temperature (0.0-1.0) based on the instruction:
+   - Low temperature (0.3-0.5): For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...", "only change...")
+   - Medium temperature (0.6-0.7): For moderate changes (e.g., "change lighting and add motion", "make it brighter", "adjust the mood")
+   - High temperature (0.8-1.0): For complete regeneration (e.g., "completely regenerate", "start over", "completely change", "redo this scene")
+4. Preserve visual style, character consistency, and scene coherence
+5. Keep prompt under 200 words
+6. Maintain reference image compatibility
 
-Output only the modified prompt, no explanations."""
+Output JSON format:
+{
+  "prompt": "modified prompt text",
+  "temperature": 0.4,
+  "reasoning": "brief explanation of temperature choice"
+}
+
+The temperature controls randomness in video generation:
+- Lower temperature = more deterministic, preserves original scene better
+- Higher temperature = more creative variation, allows larger changes"""
 
 
 def build_user_prompt(
@@ -260,12 +274,13 @@ async def modify_prompt_with_llm(
     context: Dict[str, Any],
     conversation_history: List[Dict[str, str]],
     job_id: Optional[UUID] = None
-) -> str:
+) -> Dict[str, Any]:
     """
     Modify prompt using LLM.
     
     Uses GPT-4o to modify the original prompt based on user instruction
-    while preserving style consistency.
+    while preserving style consistency. Also determines appropriate temperature
+    for video generation based on the level of change requested.
     
     Args:
         original_prompt: Original video generation prompt
@@ -275,7 +290,10 @@ async def modify_prompt_with_llm(
         job_id: Optional job ID for cost tracking
         
     Returns:
-        Modified prompt string
+        Dictionary with keys:
+        - "prompt": Modified prompt string
+        - "temperature": Float between 0.0 and 1.0
+        - "reasoning": Brief explanation of temperature choice
         
     Raises:
         GenerationError: If LLM call fails after retries
@@ -328,7 +346,8 @@ async def modify_prompt_with_llm(
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.7,
-            max_tokens=300,  # Output only (prompt should be under 200 words)
+            max_tokens=400,  # Increased for JSON response with reasoning
+            response_format={"type": "json_object"},  # Force JSON output
             timeout=30.0
         )
         
@@ -337,8 +356,55 @@ async def modify_prompt_with_llm(
         if not content:
             raise GenerationError("Empty response from LLM", job_id=job_id)
         
-        # Parse and clean response
-        modified_prompt = parse_llm_prompt_response(content)
+        # Parse JSON response
+        try:
+            result = json.loads(content)
+            modified_prompt = result.get("prompt", "").strip()
+            temperature = result.get("temperature", 0.7)  # Default to 0.7 if missing
+            reasoning = result.get("reasoning", "")
+            
+            # Validate and clamp temperature to valid range
+            try:
+                temperature = float(temperature)
+                temperature = max(0.0, min(1.0, temperature))  # Clamp to 0.0-1.0
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Invalid temperature value '{temperature}', using default 0.7",
+                    extra={"job_id": str(job_id) if job_id else None}
+                )
+                temperature = 0.7
+            
+            # If prompt is empty, try to extract from text fallback
+            if not modified_prompt:
+                logger.warning(
+                    f"Empty prompt in JSON response, attempting text parsing fallback",
+                    extra={"job_id": str(job_id) if job_id else None}
+                )
+                modified_prompt = parse_llm_prompt_response(content)
+            
+            logger.info(
+                f"Successfully parsed JSON response from LLM",
+                extra={
+                    "job_id": str(job_id) if job_id else None,
+                    "temperature": temperature,
+                    "reasoning": reasoning[:100] if reasoning else "",  # Truncate for logging
+                    "instruction_type": (
+                        "precise" if temperature < 0.5 
+                        else "moderate" if temperature < 0.8 
+                        else "complete_regeneration"
+                    )
+                }
+            )
+            
+        except json.JSONDecodeError as e:
+            # Fallback: Try to extract prompt from text response
+            logger.warning(
+                f"Failed to parse JSON response, falling back to text parsing: {e}",
+                extra={"job_id": str(job_id) if job_id else None, "response_preview": content[:200]}
+            )
+            modified_prompt = parse_llm_prompt_response(content)
+            temperature = 0.7  # Default fallback temperature
+            reasoning = "JSON parsing failed, using default temperature"
         
         # Track cost
         if job_id:
@@ -350,12 +416,7 @@ async def modify_prompt_with_llm(
                 job_id=job_id,
                 stage_name="clip_regeneration",
                 api_name=model,
-                cost=cost,
-                metadata={
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "operation": "prompt_modification"
-                }
+                cost=cost
             )
         
         logger.info(
@@ -363,11 +424,17 @@ async def modify_prompt_with_llm(
             extra={
                 "job_id": str(job_id) if job_id else None,
                 "original_length": len(original_prompt),
-                "modified_length": len(modified_prompt)
+                "modified_length": len(modified_prompt),
+                "temperature": temperature,
+                "has_reasoning": bool(reasoning)
             }
         )
         
-        return modified_prompt
+        return {
+            "prompt": modified_prompt,
+            "temperature": temperature,
+            "reasoning": reasoning
+        }
         
     except RateLimitError as e:
         logger.warning(f"Rate limit error in LLM call: {e}", extra={"job_id": str(job_id) if job_id else None})

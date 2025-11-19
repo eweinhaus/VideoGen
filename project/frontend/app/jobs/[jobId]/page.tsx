@@ -11,12 +11,11 @@ import { VideoPlayer } from "@/components/VideoPlayer"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { ClipSelector } from "@/components/ClipSelector"
 import { ClipChatbot } from "@/components/ClipChatbot"
-import { AnalyticsDashboard } from "@/components/AnalyticsDashboard"
 import { ClipComparison } from "@/components/ClipComparison"
 import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
 import { useSSE } from "@/hooks/useSSE"
-import { ArrowLeft, BarChart3, GitCompare } from "lucide-react"
+import { ArrowLeft, GitCompare } from "lucide-react"
 import { getClipComparison } from "@/lib/api"
 import { jobStore } from "@/stores/jobStore"
 import type { StageUpdateEvent } from "@/types/sse"
@@ -31,7 +30,6 @@ export default function JobProgressPage() {
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | undefined>(undefined)
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<any>(null)
-  const [showAnalytics, setShowAnalytics] = useState(false)
   const [loadingComparison, setLoadingComparison] = useState(false)
   
   const handleCompare = async () => {
@@ -466,27 +464,6 @@ export default function JobProgressPage() {
                         )}
                       </>
                     )}
-                    
-                    {/* Analytics Dashboard */}
-                    <Card>
-                      <CardHeader>
-                        <div className="flex items-center justify-between">
-                          <CardTitle>Analytics</CardTitle>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setShowAnalytics(!showAnalytics)}
-                          >
-                            {showAnalytics ? "Hide" : "Show"} Analytics
-                          </Button>
-                        </div>
-                      </CardHeader>
-                      {showAnalytics && (
-                        <CardContent>
-                          <AnalyticsDashboard jobId={jobId} />
-                        </CardContent>
-                      )}
-                    </Card>
                   </div>
                 )}
                 <ProgressTracker

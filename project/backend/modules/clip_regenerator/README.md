@@ -1,17 +1,24 @@
 # Module: Clip Regenerator
 
-**Tech Stack:** Python (Data Loading, Future: LLM Integration)
+**Tech Stack:** Python (Data Loading, LLM Integration, Video Generation)
 
 ## Purpose
 
-This module provides data loading functionality for the clip chatbot feature. It loads clip data, prompts, scene plans, and reference images from the `job_stages.metadata` table, enabling clip regeneration and editing.
+This module provides clip regeneration functionality for the clip chatbot feature. It loads clip data, prompts, scene plans, and reference images from the `job_stages.metadata` table, enables LLM-powered prompt modification with intelligent temperature determination, and regenerates video clips with appropriate randomness control.
 
 ## Key Features
 
 - **Data Loading**: Load clips, prompts, scene plans, and reference images from `job_stages.metadata`
+- **Template Matching**: Fast template-based transformations for common modifications (brighter, darker, nighttime, etc.)
+- **LLM Prompt Modification**: GPT-4o-powered prompt modification with intelligent temperature determination
+- **Temperature Control**: LLM determines appropriate temperature (0.0-1.0) based on user instruction:
+  - Low (0.3-0.5): Precise, minimal changes (e.g., "keep scene same, change hair color")
+  - Medium (0.6-0.7): Moderate changes (e.g., "change lighting and add motion")
+  - High (0.8-1.0): Complete regeneration (e.g., "completely regenerate this scene")
+- **Seed Reuse**: For precise changes (low temperature), reuses original clip's seed for consistency
 - **Nested JSON Handling**: Correctly parses nested JSON structure (`metadata['clips']['clips']`)
 - **Pydantic Validation**: Reconstructs Pydantic models from JSON data with validation
-- **Error Handling**: Graceful error handling (returns None on failure, doesn't raise exceptions)
+- **Error Handling**: Graceful error handling with fallbacks for JSON parsing failures
 
 ## Module Structure
 
@@ -104,9 +111,55 @@ cd project/backend
 PYTHONPATH=. pytest modules/clip_regenerator/tests/test_data_loader.py -v
 ```
 
+## Regeneration Process
+
+### Temperature Determination
+
+The LLM analyzes user instructions and determines appropriate temperature for video generation:
+
+- **Precise Changes (0.3-0.5)**: User requests minimal changes (e.g., "keep scene same, change hair color")
+- **Moderate Changes (0.6-0.7)**: User requests moderate modifications (e.g., "change lighting")
+- **Complete Regeneration (0.8-1.0)**: User requests complete regeneration (e.g., "completely regenerate")
+
+### Seed Reuse Strategy
+
+- **Precise Changes (temp < 0.5)**: Reuses original clip's seed for consistency
+- **Moderate/Complete (temp ≥ 0.5)**: Uses random seed for variation
+
+### LLM Response Format
+
+The LLM returns JSON with:
+```json
+{
+  "prompt": "modified prompt text",
+  "temperature": 0.4,
+  "reasoning": "Precise change requested - only hair color modification"
+}
+```
+
+If JSON parsing fails, the system falls back to text parsing with default temperature 0.7.
+
+## Temperature and Seed Parameters
+
+### Temperature (Veo 3.1 only)
+
+- **Range**: 0.0 - 1.0
+- **Lower values**: More deterministic, preserves original scene better
+- **Higher values**: More creative variation, allows larger changes
+- **Default**: 0.7 (if not determined by LLM)
+
+### Seed (Veo 3.1 only)
+
+- **Type**: Integer or None
+- **Purpose**: Ensures reproducible generation
+- **Strategy**: 
+  - Reused for precise changes (maintains consistency)
+  - Random for complete regenerations (ensures variation)
+- **Storage**: Stored in clip metadata as `generation_seed` for future reuse
+
 ## Future Enhancements
 
-This module will be extended in Part 2 and Part 3 of the clip chatbot feature:
-- **Part 2**: Template system, LLM prompt modification, regeneration API
-- **Part 3**: Composer integration, error handling, E2E testing
+- Enhanced seed storage in original clip generation
+- Temperature tuning based on user feedback
+- Support for temperature/seed in other video models
 

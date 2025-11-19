@@ -33,6 +33,7 @@ from modules.clip_regenerator.cost_tracker import track_regeneration_cost
 from modules.video_generator.generator import generate_video_clip
 from modules.video_generator.config import get_generation_settings
 from modules.video_generator.cost_estimator import estimate_clip_cost
+from modules.video_generator.image_handler import download_and_upload_image
 from modules.composer.process import process as composer_process
 from modules.analytics.tracking import track_regeneration_async
 
@@ -48,6 +49,8 @@ class RegenerationResult:
     template_used: Optional[str]
     cost: Decimal
     video_output: Optional[VideoOutput] = None  # Added for recomposition result
+    temperature: Optional[float] = None  # LLM-determined temperature for video generation
+    temperature_reasoning: Optional[str] = None  # Brief explanation of temperature choice
 
 
 async def _get_job_config(job_id: UUID) -> Dict[str, str]:
@@ -97,6 +100,141 @@ async def _get_job_config(job_id: UUID) -> Dict[str, str]:
         "video_model": settings.video_model if hasattr(settings, 'video_model') else "kling_v21",
         "aspect_ratio": "16:9"
     }
+
+
+async def _collect_reference_images(
+    clip_prompt: ClipPrompt,
+    job_id: UUID,
+    max_images: int = 3
+) -> List[str]:
+    """
+    Collect all reference images (character + scene + object) for video generation.
+    
+    Similar to the batch process logic, but for single clip regeneration.
+    Prioritizes character references, then scene, then objects.
+    Veo 3.1 supports up to 3 reference images total.
+    
+    Args:
+        clip_prompt: ClipPrompt with reference URLs
+        job_id: Job ID for logging
+        max_images: Maximum number of reference images (default: 3 for Veo 3.1)
+        
+    Returns:
+        List of Replicate-ready image URLs (downloaded/uploaded)
+    """
+    collected_urls = []
+    
+    # Detect if clip is face-heavy (close-up, mid-shot, portrait, face-focused)
+    prompt_lower = clip_prompt.prompt.lower()
+    camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+    is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+    
+    is_face_heavy = any(keyword in prompt_lower for keyword in [
+        "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+        "facial", "head", "head and shoulders", "bust shot", "face fills",
+        "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+        "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+        "from waist", "from chest", "from shoulders"
+    ]) or is_medium_shot
+    
+    # Add character reference URLs
+    # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
+    # OTHER CLIPS: Limit to 2 to leave room for scene/objects
+    character_refs_added = 0
+    if clip_prompt.character_reference_urls:
+        if is_face_heavy:
+            # Face-heavy clips: Prioritize ALL character references
+            max_char_refs = len(clip_prompt.character_reference_urls)
+            logger.info(
+                f"Face-heavy clip detected - prioritizing ALL {len(clip_prompt.character_reference_urls)} character reference(s) for regeneration",
+                extra={
+                    "job_id": str(job_id),
+                    "num_character_refs": len(clip_prompt.character_reference_urls),
+                    "shot_type": "mid-shot" if is_medium_shot else "close-up",
+                    "camera_angle": camera_angle if camera_angle else None
+                }
+            )
+        else:
+            # Other clips: Limit to 2 to leave room for scene/objects
+            max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+        
+        for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+            if len(collected_urls) >= max_images:
+                break
+            try:
+                downloaded_url = await download_and_upload_image(char_ref_url, job_id)
+                if downloaded_url:
+                    collected_urls.append(downloaded_url)
+                    character_refs_added += 1
+                    logger.debug(
+                        f"Downloaded character reference for regeneration",
+                        extra={"job_id": str(job_id), "url": char_ref_url[:50]}
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to download character reference: {e}",
+                    extra={"job_id": str(job_id), "url": char_ref_url[:50]}
+                )
+    
+    # Add scene reference URL if available and we have room (max 3 total)
+    # For face-heavy clips: Only add scene if there's room after ALL characters
+    if clip_prompt.scene_reference_url and len(collected_urls) < max_images:
+        try:
+            downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+            if downloaded_url:
+                collected_urls.append(downloaded_url)
+                logger.debug(
+                    f"Downloaded scene reference for regeneration",
+                    extra={"job_id": str(job_id)}
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to download scene reference: {e}",
+                extra={"job_id": str(job_id), "url": clip_prompt.scene_reference_url[:50]}
+            )
+    
+    # Add object reference URLs if available and we have room (max 3 total)
+    # For face-heavy clips: Only add objects if there's room after ALL characters and scene
+    if clip_prompt.object_reference_urls and len(collected_urls) < max_images:
+        remaining_slots = max_images - len(collected_urls)
+        max_obj_refs = min(len(clip_prompt.object_reference_urls), remaining_slots)
+        for obj_ref_url in clip_prompt.object_reference_urls[:max_obj_refs]:
+            if len(collected_urls) >= max_images:
+                break
+            try:
+                downloaded_url = await download_and_upload_image(obj_ref_url, job_id)
+                if downloaded_url:
+                    collected_urls.append(downloaded_url)
+                    logger.debug(
+                        f"Downloaded object reference for regeneration",
+                        extra={"job_id": str(job_id), "url": obj_ref_url[:50]}
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to download object reference: {e}",
+                    extra={"job_id": str(job_id), "url": obj_ref_url[:50]}
+                )
+    
+    logger.info(
+        f"Collected {len(collected_urls)} reference image(s) for regeneration "
+        f"(face_heavy={is_face_heavy}, {character_refs_added}/{len(clip_prompt.character_reference_urls) if clip_prompt.character_reference_urls else 0} character refs, "
+        f"{len(clip_prompt.object_reference_urls) if clip_prompt.object_reference_urls else 0} object refs available)",
+        extra={
+            "job_id": str(job_id),
+            "num_images": len(collected_urls),
+            "num_character_refs": character_refs_added,
+            "total_character_refs_available": len(clip_prompt.character_reference_urls) if clip_prompt.character_reference_urls else 0,
+            "has_character_refs": bool(clip_prompt.character_reference_urls),
+            "has_scene_ref": bool(clip_prompt.scene_reference_url),
+            "has_object_refs": bool(clip_prompt.object_reference_urls),
+            "object_refs_count": len(clip_prompt.object_reference_urls) if clip_prompt.object_reference_urls else 0,
+            "face_heavy": is_face_heavy,
+            "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide"),
+            "camera_angle": camera_angle if camera_angle else None
+        }
+    )
+    
+    return collected_urls
 
 
 async def regenerate_clip(
@@ -349,17 +487,25 @@ async def regenerate_clip(
     )
     template_match = match_template(user_instruction)
     
+    # Initialize temperature and reasoning variables
+    temperature = 0.7  # Default temperature
+    temperature_reasoning = "Template match - using default temperature"
+    
     if template_match:
         # Step 3: Apply template transformation
         modified_prompt = apply_template(original_prompt.prompt, template_match)
         cost_estimate = estimate_clip_cost(original_clip.target_duration, environment)
+        # Use default temperature for template matches
+        temperature = 0.7
+        temperature_reasoning = f"Template match ({template_match.template_id}) - using default temperature"
         
         logger.info(
             f"Template matched: {template_match.template_id}",
             extra={
                 "job_id": str(job_id),
                 "clip_index": clip_index,
-                "template_id": template_match.template_id
+                "template_id": template_match.template_id,
+                "temperature": temperature
             }
         )
         
@@ -391,13 +537,29 @@ async def regenerate_clip(
                 conversation_history
             )
         
-        modified_prompt = await modify_prompt_with_llm(
+        llm_result = await modify_prompt_with_llm(
             original_prompt.prompt,
             user_instruction,
             context,
             conversation_history,
             job_id=job_id
         )
+        
+        # Extract prompt, temperature, and reasoning from LLM result
+        if isinstance(llm_result, dict):
+            modified_prompt = llm_result.get("prompt", "")
+            temperature = llm_result.get("temperature", 0.7)
+            temperature_reasoning = llm_result.get("reasoning", "")
+        else:
+            # Backward compatibility: if LLM returns string (shouldn't happen with new code)
+            logger.warning(
+                f"LLM returned string instead of dict, using fallback",
+                extra={"job_id": str(job_id), "clip_index": clip_index}
+            )
+            modified_prompt = llm_result if isinstance(llm_result, str) else ""
+            temperature = 0.7
+            temperature_reasoning = "Fallback - LLM returned unexpected format"
+        
         cost_estimate = estimate_llm_cost() + estimate_clip_cost(original_clip.target_duration, environment)
         
         logger.info(
@@ -406,7 +568,14 @@ async def regenerate_clip(
                 "job_id": str(job_id),
                 "clip_index": clip_index,
                 "original_length": len(original_prompt.prompt),
-                "modified_length": len(modified_prompt)
+                "modified_length": len(modified_prompt),
+                "temperature": temperature,
+                "temperature_reasoning": temperature_reasoning[:100] if temperature_reasoning else "",
+                "instruction_type": (
+                    "precise" if temperature < 0.5 
+                    else "moderate" if temperature < 0.8 
+                    else "complete_regeneration"
+                )
             }
         )
     
@@ -415,11 +584,14 @@ async def regenerate_clip(
         await event_publisher("prompt_modified", {
             "sequence": 3,
             "modified_prompt": modified_prompt,
-            "template_used": template_match.template_id if template_match else None
+            "template_used": template_match.template_id if template_match else None,
+            "temperature": temperature,
+            "temperature_reasoning": temperature_reasoning
         })
     
     # Step 5: Generate new clip
     # Create new ClipPrompt with modified prompt
+    # IMPORTANT: Preserve ALL reference images (character + scene + object) for consistency
     new_clip_prompt = ClipPrompt(
         clip_index=clip_index,
         prompt=modified_prompt,
@@ -427,6 +599,7 @@ async def regenerate_clip(
         duration=original_prompt.duration,
         scene_reference_url=original_prompt.scene_reference_url,
         character_reference_urls=original_prompt.character_reference_urls,
+        object_reference_urls=original_prompt.object_reference_urls,  # ✅ FIX: Preserve object references
         metadata=original_prompt.metadata
     )
     
@@ -441,6 +614,69 @@ async def regenerate_clip(
             "clip_index": clip_index
         })
     
+    # Collect all reference images (character + scene + object) for Veo 3.1
+    # This ensures object references (like the truck) are preserved during regeneration
+    logger.debug(
+        f"Collecting reference images for regeneration",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "has_scene_reference": bool(new_clip_prompt.scene_reference_url),
+            "has_character_references": bool(new_clip_prompt.character_reference_urls),
+            "has_object_references": bool(new_clip_prompt.object_reference_urls),
+            "object_refs_count": len(new_clip_prompt.object_reference_urls) if new_clip_prompt.object_reference_urls else 0
+        }
+    )
+    reference_image_urls = await _collect_reference_images(
+        new_clip_prompt,
+        job_id,
+        max_images=3  # Veo 3.1 supports up to 3 reference images
+    )
+    
+    # Use first image for backward compatibility (single image parameter)
+    image_url = reference_image_urls[0] if reference_image_urls else new_clip_prompt.scene_reference_url
+    
+    # Extract seed from original clip metadata for precise changes
+    # For precise changes (low temperature), reuse original seed to maintain consistency
+    # For complete regenerations (high temperature), use random seed for variation
+    original_seed = None
+    if original_clip.metadata:
+        original_seed = original_clip.metadata.get("generation_seed")
+        if original_seed is not None:
+            try:
+                original_seed = int(original_seed)
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Invalid seed value in metadata: {original_seed}",
+                    extra={"job_id": str(job_id), "clip_index": clip_index}
+                )
+                original_seed = None
+    
+    # Determine seed strategy based on temperature
+    seed = None
+    if temperature < 0.5 and original_seed is not None:
+        # Use original seed for precise changes to maintain consistency
+        seed = original_seed
+        logger.info(
+            f"Using original seed {seed} for precise change (temperature={temperature})",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "temperature": temperature,
+                "seed": seed
+            }
+        )
+    else:
+        # Use random seed (None) for moderate/complete regenerations
+        logger.info(
+            f"Using random seed for variation (temperature={temperature})",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "temperature": temperature
+            }
+        )
+    
     # Generate single clip
     logger.info(
         f"Starting video clip generation",
@@ -452,19 +688,27 @@ async def regenerate_clip(
             "target_duration": new_clip_prompt.duration,
             "has_scene_reference": bool(new_clip_prompt.scene_reference_url),
             "has_character_references": bool(new_clip_prompt.character_reference_urls),
+            "has_object_references": bool(new_clip_prompt.object_reference_urls),
+            "object_refs_count": len(new_clip_prompt.object_reference_urls) if new_clip_prompt.object_reference_urls else 0,
+            "num_reference_images": len(reference_image_urls),
             "modified_prompt_length": len(modified_prompt),
-            "template_used": template_match.template_id if template_match else None
+            "template_used": template_match.template_id if template_match else None,
+            "temperature": temperature,
+            "seed": seed
         }
     )
     try:
         new_clip = await generate_video_clip(
             clip_prompt=new_clip_prompt,
-            image_url=new_clip_prompt.scene_reference_url,
+            image_url=image_url,
+            reference_image_urls=reference_image_urls if reference_image_urls else None,  # ✅ FIX: Pass all reference images for Veo 3.1
             settings=settings_dict,
             job_id=job_id,
             environment=environment,
             video_model=video_model,
-            aspect_ratio=aspect_ratio
+            aspect_ratio=aspect_ratio,
+            temperature=temperature if video_model == "veo_31" else None,  # Only pass temperature for Veo 3.1
+            seed=seed if video_model == "veo_31" else None  # Only pass seed for Veo 3.1
         )
         
         logger.info(
@@ -496,7 +740,9 @@ async def regenerate_clip(
             clip=new_clip,
             modified_prompt=modified_prompt,
             template_used=template_match.template_id if template_match else None,
-            cost=cost_estimate
+            cost=cost_estimate,
+            temperature=temperature,
+            temperature_reasoning=temperature_reasoning
         )
         
     except Exception as e:
