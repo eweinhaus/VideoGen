@@ -196,15 +196,33 @@ async def get_job_clips(
                         metadata = json.loads(metadata)
                     
                     # Extract lyrics and clip_boundaries
-                    if "lyrics" in metadata:
+                    # Check both nested (audio_analysis) and flat structures for backward compatibility
+                    lyrics_data = None
+                    if "audio_analysis" in metadata and isinstance(metadata["audio_analysis"], dict):
+                        # New structure: metadata["audio_analysis"]["lyrics"]
+                        audio_analysis = metadata["audio_analysis"]
+                        if "lyrics" in audio_analysis:
+                            lyrics_data = audio_analysis["lyrics"]
+                    elif "lyrics" in metadata:
+                        # Old structure: metadata["lyrics"] (backward compatibility)
                         lyrics_data = metadata["lyrics"]
-                        if isinstance(lyrics_data, list):
-                            lyrics = [Lyric(**lyric) for lyric in lyrics_data]
                     
-                    if "clip_boundaries" in metadata:
+                    if lyrics_data and isinstance(lyrics_data, list):
+                        lyrics = [Lyric(**lyric) for lyric in lyrics_data]
+                    
+                    # Extract clip_boundaries (same pattern)
+                    boundaries_data = None
+                    if "audio_analysis" in metadata and isinstance(metadata["audio_analysis"], dict):
+                        # New structure: metadata["audio_analysis"]["clip_boundaries"]
+                        audio_analysis = metadata["audio_analysis"]
+                        if "clip_boundaries" in audio_analysis:
+                            boundaries_data = audio_analysis["clip_boundaries"]
+                    elif "clip_boundaries" in metadata:
+                        # Old structure: metadata["clip_boundaries"] (backward compatibility)
                         boundaries_data = metadata["clip_boundaries"]
-                        if isinstance(boundaries_data, list):
-                            clip_boundaries = [ClipBoundary(**boundary) for boundary in boundaries_data]
+                    
+                    if boundaries_data and isinstance(boundaries_data, list):
+                        clip_boundaries = [ClipBoundary(**boundary) for boundary in boundaries_data]
         except Exception as e:
             logger.warning(
                 f"Failed to load lyrics from audio_parser stage: {e}",
@@ -340,8 +358,27 @@ async def regenerate_clip_endpoint(
         HTTPException: 404 if job/clip not found, 403 if access denied, 400 if invalid, 409 if concurrent regeneration
     """
     try:
+        logger.info(
+            f"Regeneration request received",
+            extra={
+                "job_id": job_id,
+                "clip_index": clip_index,
+                "instruction_length": len(request.instruction) if request.instruction else 0,
+                "conversation_history_length": len(request.conversation_history) if request.conversation_history else 0,
+                "user_id": current_user.get("user_id")
+            }
+        )
+        
         # 1. Verify job ownership (returns job data)
         job = await verify_job_ownership(job_id, current_user)
+        logger.debug(
+            f"Job ownership verified",
+            extra={
+                "job_id": job_id,
+                "job_status": job.get("status"),
+                "job_user_id": job.get("user_id")
+            }
+        )
         
         # 2. Check job status (must be completed)
         if job.get("status") != "completed":
@@ -359,40 +396,125 @@ async def regenerate_clip_endpoint(
                     detail="A regeneration is already in progress for this job. Please wait for it to complete."
                 )
         except ValidationError as e:
-            # Job not found or invalid status
+            # Job not found or invalid status - include full error message
+            error_msg = str(e)
+            logger.warning(
+                f"Validation error during lock acquisition: {error_msg}",
+                extra={
+                    "job_id": job_id,
+                    "clip_index": clip_index,
+                    "error_message": error_msg,
+                    "error_type": type(e).__name__
+                }
+            )
+            # Ensure the full error message is passed through
+            # The error message should already contain detailed diagnostics from status_manager
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e)
+                detail=error_msg  # Pass through the detailed error message (includes diagnostics)
             )
         except HTTPException:
             raise
         except Exception as e:
+            # Log full error details
+            error_str = str(e)
+            error_type = type(e).__name__
+            
             logger.error(
-                f"Failed to acquire lock for regeneration: {e}",
-                extra={"job_id": job_id, "clip_index": clip_index},
+                f"EXCEPTION_DURING_LOCK_ACQUISITION: Failed to acquire lock for regeneration",
+                extra={
+                    "job_id": job_id,
+                    "clip_index": clip_index,
+                    "error_type": error_type,
+                    "error_message": error_str,
+                    "error_args": e.args if hasattr(e, 'args') else None,
+                    "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None,
+                    "is_attribute_error": isinstance(e, AttributeError)
+                },
                 exc_info=True
             )
+            
+            # Build comprehensive error message
+            if isinstance(e, AttributeError):
+                # Extract object and method from error message
+                error_parts = error_str.split("'")
+                obj_name = error_parts[1] if len(error_parts) > 1 else "unknown"
+                method_name = error_parts[3] if len(error_parts) > 3 else "unknown"
+                
+                error_detail = (
+                    f"❌ DATABASE CONFIGURATION ERROR ❌\n\n"
+                    f"Error: {error_str}\n"
+                    f"Object: {obj_name}\n"
+                    f"Missing Method: {method_name}\n"
+                    f"Error Type: {error_type}\n\n"
+                    f"🔧 TROUBLESHOOTING:\n"
+                    f"1. Restart the server to load updated code\n"
+                    f"2. Check database client version compatibility\n"
+                    f"3. Verify shared/database.py is up to date\n"
+                    f"4. Check server logs for full error details (search for 'ACQUIRE_LOCK')\n\n"
+                    f"If this persists, contact support with this full error message."
+                )
+            else:
+                error_detail = (
+                    f"❌ FAILED TO START REGENERATION ❌\n\n"
+                    f"Error: {error_str}\n"
+                    f"Error Type: {error_type}\n\n"
+                    f"Please try again or contact support if this persists.\n"
+                    f"Check server logs for details (search for 'EXCEPTION_DURING_LOCK_ACQUISITION')."
+                )
+            
+            # Log the detailed error message separately
+            logger.error(f"ERROR_DETAIL_FOR_USER: {error_detail}")
+            
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to start regeneration"
+                detail=error_detail
             )
         
         # 4. Validate clip_index bounds
+        logger.debug(
+            f"Loading clips from job_stages",
+            extra={"job_id": job_id, "clip_index": clip_index}
+        )
         clips = await load_clips_from_job_stages(UUID(job_id))
         if not clips:
+            logger.error(
+                f"Clips not found for job",
+                extra={
+                    "job_id": job_id,
+                    "clip_index": clip_index,
+                    "job_status": job.get("status")
+                }
+            )
             # Restore job status on error
             await update_job_status(UUID(job_id), "completed")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Clips not found for this job"
+                detail="Clips not found for this job. The job may not have completed video generation yet, or the clips data is incomplete."
             )
         
-        if clip_index < 0 or clip_index >= clips.total_clips:
+        logger.debug(
+            f"Clips loaded successfully",
+            extra={
+                "job_id": job_id,
+                "total_clips": clips.total_clips,
+                "successful_clips": clips.successful_clips,
+                "failed_clips": clips.failed_clips,
+                "requested_clip_index": clip_index,
+                "available_clip_indices": [c.clip_index for c in clips.clips]
+            }
+        )
+        
+        # Check if the specific clip_index exists in the loaded clips
+        # (Note: clip indices may not be sequential if some clips were filtered out)
+        clip_exists = any(c.clip_index == clip_index for c in clips.clips)
+        if not clip_exists:
+            available_indices = [c.clip_index for c in clips.clips]
             # Restore job status on error
             await update_job_status(UUID(job_id), "completed")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid clip_index: {clip_index}. Valid range: 0-{clips.total_clips - 1}"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Clip with index {clip_index} not found. Available clip indices: {available_indices if available_indices else 'none'}. The requested clip may be incomplete or not yet generated."
             )
         
         # 5. Validate instruction
@@ -444,8 +566,25 @@ async def regenerate_clip_endpoint(
         
         # 8. Call regeneration process with recomposition (async)
         # Get original prompt for cost tracking (in case of failure)
+        logger.debug(
+            f"Loading clip prompts for cost tracking",
+            extra={"job_id": job_id, "clip_index": clip_index}
+        )
         clip_prompts = await load_clip_prompts_from_job_stages(UUID(job_id))
         original_prompt = clip_prompts.clip_prompts[clip_index].prompt if clip_prompts and clip_index < len(clip_prompts.clip_prompts) else ""
+        
+        logger.info(
+            f"Starting regeneration process",
+            extra={
+                "job_id": job_id,
+                "clip_index": clip_index,
+                "instruction": request.instruction.strip(),
+                "has_original_prompt": bool(original_prompt),
+                "original_prompt_length": len(original_prompt) if original_prompt else 0,
+                "total_clips": clips.total_clips,
+                "total_prompts": len(clip_prompts.clip_prompts) if clip_prompts else 0
+            }
+        )
         
         try:
             result = await regenerate_clip_with_recomposition(
@@ -605,9 +744,24 @@ async def regenerate_clip_endpoint(
             
     except HTTPException:
         raise
-    except Exception as e:
+    except ValidationError as e:
         logger.error(
-            f"Failed to regenerate clip: {e}",
+            f"Validation error during regeneration: {e}",
+            extra={"job_id": job_id, "clip_index": clip_index},
+            exc_info=True
+        )
+        # Try to restore job status if it was changed
+        try:
+            await update_job_status(UUID(job_id), "completed")
+        except:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Validation error: {str(e)}"
+        )
+    except GenerationError as e:
+        logger.error(
+            f"Generation error during regeneration: {e}",
             extra={"job_id": job_id, "clip_index": clip_index},
             exc_info=True
         )
@@ -618,6 +772,21 @@ async def regenerate_clip_endpoint(
             pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to regenerate clip"
+            detail=f"Video generation failed: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(
+            f"Unexpected error during regeneration: {e}",
+            extra={"job_id": job_id, "clip_index": clip_index, "error_type": type(e).__name__},
+            exc_info=True
+        )
+        # Try to restore job status if it was changed
+        try:
+            await update_job_status(UUID(job_id), "completed")
+        except:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Regeneration failed: {str(e)}. Error type: {type(e).__name__}"
         )
 

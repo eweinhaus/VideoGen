@@ -64,11 +64,9 @@ async def get_queue_status():
 async def get_recent_jobs(limit=10):
     """Get recent jobs from database."""
     try:
-        result = await db_client.table("jobs").select("*").limit(limit * 2).execute()
+        result = await db_client.table("jobs").select("*").order("created_at", desc=True).limit(limit).execute()
         jobs = result.data if result.data else []
-        # Sort by created_at descending (most recent first)
-        jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        return jobs[:limit]
+        return jobs
     except Exception as e:
         logger.error("Failed to get recent jobs", exc_info=e)
         return []

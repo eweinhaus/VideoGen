@@ -331,7 +331,6 @@ export function ProgressTracker({
             metadata: currentJob.audioData.metadata,
           }
           setAudioResults(restoredAudioResults)
-          console.log("✅ Restored audio results from job.audioData")
           return
         } catch (error) {
           console.error("Failed to restore audio from job.audioData:", error)
@@ -357,7 +356,6 @@ export function ProgressTracker({
               metadata: audioMetadata.metadata || {},
             }
             setAudioResults(restoredAudioResults)
-            console.log("✅ Restored audio results from stage metadata")
           } catch (error) {
             console.error("Failed to restore audio from stage metadata:", error)
           }
@@ -392,7 +390,6 @@ export function ProgressTracker({
           for (let i = 0; i < promptResults.total_clips; i++) {
             initialStatuses[i] = "pending"
           }
-          console.log("📝 Initialized clip statuses from promptResults, total:", promptResults.total_clips, "(database restoration will override if available)")
           return initialStatuses
         }
         return prev
@@ -404,16 +401,12 @@ export function ProgressTracker({
   // This ensures section content persists on page reload
   useEffect(() => {
     if (!currentJob?.stages) {
-      console.log("⚠️ No stages found in currentJob:", currentJob)
       return
     }
-    
-    console.log("🔍 Checking stages for restoration:", Object.keys(currentJob.stages))
     
     // Restore scene plan from scene_planner stage metadata
     if (!scenePlanResults) {
       const scenePlannerStage = currentJob.stages.scene_planner || currentJob.stages.scene_planning
-      console.log("🔍 Scene planner stage:", scenePlannerStage ? "found" : "not found", scenePlannerStage?.metadata ? "has metadata" : "no metadata")
       const scenePlanMetadata = scenePlannerStage?.metadata?.scene_plan
       if (scenePlanMetadata) {
         try {
@@ -433,23 +426,16 @@ export function ProgressTracker({
             transitions: scenePlanMetadata.transitions || [],
           }
           setScenePlanResults(restoredScenePlan)
-          console.log("✅ Restored scene plan from metadata")
         } catch (error) {
           console.error("❌ Failed to restore scene plan from metadata:", error)
         }
-      } else {
-        console.log("⚠️ Scene plan metadata not found in stage")
       }
-    } else {
-      console.log("✅ Scene plan already restored")
     }
     
     // Restore prompt data from prompt_generator stage metadata
     // Note: metadata structure is {clip_prompts: {clip_prompts: [...], total_clips: N, ...}}
     if (!promptResults) {
       const promptGeneratorStage = currentJob.stages.prompt_generator || currentJob.stages.prompt_generation
-      console.log("🔍 Prompt generator stage:", promptGeneratorStage ? "found" : "not found", promptGeneratorStage?.metadata ? "has metadata" : "no metadata")
-      console.log("🔍 Full metadata:", JSON.stringify(promptGeneratorStage?.metadata, null, 2))
       
       // The metadata structure is: {clip_prompts: {clip_prompts: [...], total_clips: N, ...}}
       const promptData = promptGeneratorStage?.metadata?.clip_prompts
@@ -473,15 +459,10 @@ export function ProgressTracker({
             })),
           }
           setPromptResults(restoredPrompts)
-          console.log("✅ Restored prompt data from metadata, total clips:", restoredPrompts.total_clips)
         } catch (error) {
           console.error("❌ Failed to restore prompt data from metadata:", error)
         }
-      } else {
-        console.log("⚠️ Prompt metadata not found or empty. promptData:", promptData, "clipPromptsArray:", clipPromptsArray)
       }
-    } else {
-      console.log("✅ Prompt data already restored")
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentJob?.stages, scenePlanResults, promptResults, jobId])
@@ -490,25 +471,18 @@ export function ProgressTracker({
   // This ensures reference images section doesn't disappear when page is refreshed
   useEffect(() => {
     if (!currentJob) {
-      console.log("⚠️ No currentJob for reference restoration")
       return
     }
     
     if (Object.keys(referenceState.images).length > 0) {
-      console.log("✅ Reference images already in state, skipping restoration")
       return
     }
     
-    console.log("🔍 Checking for reference images restoration. currentJob.stages:", currentJob.stages)
     const referenceStage = currentJob.stages?.reference_generator || currentJob.stages?.reference_generation
-    console.log("🔍 Reference stage:", referenceStage)
     const referenceMetadata = referenceStage?.metadata?.reference_images
-    console.log("🔍 Reference metadata:", referenceMetadata)
     
     if (referenceMetadata) {
       try {
-        console.log("🔍 Restoring reference images from metadata:", referenceMetadata)
-        
         // Build images map from scene_references and character_references
         const images: Record<string, ReferenceImageEntry> = {}
         
@@ -552,15 +526,10 @@ export function ProgressTracker({
             completedImages: referenceMetadata.total_references || Object.keys(images).length,
             images
           })
-          console.log("✅ Restored reference images from metadata, total:", Object.keys(images).length)
-        } else {
-          console.log("⚠️ Reference metadata found but no images in it")
         }
       } catch (error) {
         console.error("❌ Failed to restore reference images from metadata:", error)
       }
-    } else {
-      console.log("⚠️ No reference images metadata found in stage")
     }
   }, [currentJob, referenceState.images])
   
@@ -571,7 +540,6 @@ export function ProgressTracker({
   // Database metadata is authoritative - it always overrides initialization guesses
   useEffect(() => {
     if (!currentJob) {
-      console.log("⚠️ No currentJob for video clips restoration")
       return
     }
     
@@ -582,16 +550,11 @@ export function ProgressTracker({
     
     // Always check database metadata and merge with existing statuses
     // This ensures database state (authoritative) overrides any initialization guesses
-    console.log("🔍 Checking for video clips restoration. currentJob.stages:", currentJob.stages)
     const videoStage = currentJob.stages?.video_generator || currentJob.stages?.video_generation
-    console.log("🔍 Video stage:", videoStage)
     const clipsMetadata = videoStage?.metadata?.clips
-    console.log("🔍 Clips metadata:", clipsMetadata)
     
     if (clipsMetadata && clipsMetadata.clips && Array.isArray(clipsMetadata.clips) && clipsMetadata.clips.length > 0) {
       try {
-        console.log("🔍 Restoring video clips from metadata:", clipsMetadata)
-        
         // Merge database metadata with existing statuses (database is authoritative)
         // This ensures completed clips from database override "pending" initialization guesses
         const statuses: Record<number, "pending" | "processing" | "completed" | "failed" | "retrying"> = { ...clipStatuses }
@@ -827,9 +790,6 @@ export function ProgressTracker({
 
   const { isConnected, error: sseError } = useSSE(jobId, {
     onStageUpdate: (data: StageUpdateEvent) => {
-      // Debug logging for all stage updates
-      console.log("📡 Stage update received:", { stage: data.stage, status: data.status, data })
-      
       // Normalize stage names so spinners/checkmarks display correctly
       const normalize = (name: string) => {
         const n = name.toLowerCase()
@@ -842,7 +802,6 @@ export function ProgressTracker({
         return n
       }
       const stage = normalize(data.stage)
-      console.log("📡 Normalized stage:", { original: data.stage, normalized: stage, status: data.status })
       if (!hasStarted) setHasStarted(true)
       setCurrentStage(stage)
       
@@ -854,17 +813,6 @@ export function ProgressTracker({
         pending: "pending",
       }
       const status = statusMap[(data.status || "").toLowerCase()] || "processing"
-      
-      // Debug logging for stage completions
-      if (stage === "audio_parser" && status === "completed") {
-        console.log("✅ Audio parser completed:", { stage, status, data })
-      }
-      if (stage === "prompt_generation" && status === "completed") {
-        console.log("✅ Prompt generator completed:", { stage, status, data })
-      }
-      if (stage === "composition" && status === "completed") {
-        console.log("✅ Composer completed:", { stage, status, data })
-      }
       
       setStages((prev) => {
         // Normalize all existing stage names for consistent comparison
@@ -955,7 +903,6 @@ export function ProgressTracker({
       })
     },
     onProgress: (data: ProgressEvent) => {
-      console.log("📊 Progress event handler called:", data)
       setProgress(data.progress)
       updateJob(jobId, { progress: data.progress })
       if (data.estimated_remaining !== undefined && data.estimated_remaining !== null) {
@@ -973,7 +920,6 @@ export function ProgressTracker({
       // If progress event includes stage and status, also update stage status
       // This handles cases where stage updates come through progress events
       if (data.stage && data.status) {
-        console.log("📊 Progress event includes stage status, triggering stage update:", { stage: data.stage, status: data.status })
         // Trigger stage update handler with the stage info from progress event
         const stageUpdateData = {
           stage: data.stage,
@@ -1078,7 +1024,6 @@ export function ProgressTracker({
       }
     },
     onCostUpdate: (data: CostUpdateEvent) => {
-      console.log("💰 Cost update received in ProgressTracker:", data)
       setCost(data.total)
       updateJob(jobId, { totalCost: data.total })
     },
@@ -1160,7 +1105,6 @@ export function ProgressTracker({
             for (let i = 0; i < data.total_clips; i++) {
               initialStatuses[i] = "pending"
             }
-            console.log("📝 Initialized clip statuses from video_generation_start event, total:", data.total_clips, "(database restoration will override if available)")
             return initialStatuses
           }
           return prev

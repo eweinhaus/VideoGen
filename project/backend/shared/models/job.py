@@ -16,7 +16,7 @@ class Job(BaseModel):
     
     id: UUID
     user_id: UUID
-    status: Literal["queued", "processing", "completed", "failed"]
+    status: Literal["queued", "processing", "completed", "failed", "regenerating"]
     audio_url: str
     user_prompt: str
     current_stage: Optional[str] = None

@@ -57,22 +57,7 @@ export const jobStore = create<JobState>((set, get) => ({
   fetchJob: async (jobId: string) => {
     set({ isLoading: true, error: null })
     try {
-      console.log("🔍 Fetching job:", jobId)
       const response = await getJob(jobId)
-      console.log("✅ Job response received:", response)
-      console.log("🔍 Job stages in response:", response.stages)
-      if (response.stages) {
-        Object.keys(response.stages).forEach(stageName => {
-          const stage = response.stages?.[stageName]
-          if (stage) {
-            console.log(`🔍 Stage ${stageName}:`, {
-              status: stage.status,
-              hasMetadata: !!stage.metadata,
-              metadata: stage.metadata
-            })
-          }
-        })
-      }
       
       // Validate response has required fields
       if (!response || !response.id) {
@@ -80,8 +65,6 @@ export const jobStore = create<JobState>((set, get) => ({
       }
       
       const job = jobResponseToJob(response)
-      console.log("✅ Job converted:", job)
-      console.log("🔍 Job stages after conversion:", job.stages)
       set({ currentJob: job, isLoading: false })
     } catch (error: any) {
       console.error("❌ Failed to fetch job:", error)

@@ -74,12 +74,22 @@ async def track_regeneration_cost(
         
         # Update job.total_cost atomically
         # Get current total_cost
-        job_result = await db_client.table("jobs").select("total_cost").eq("id", str(job_id)).single().execute()
+        # Use fallback pattern for .single() method
+        eq_builder = db_client.table("jobs").select("total_cost").eq("id", str(job_id))
+        if hasattr(eq_builder, 'single'):
+            try:
+                job_result = await eq_builder.single().execute()
+            except AttributeError:
+                job_result = await eq_builder.limit(1).execute()
+        else:
+            job_result = await eq_builder.limit(1).execute()
         
         if not job_result.data:
             raise ValidationError(f"Job {job_id} not found")
         
-        current_total = Decimal(str(job_result.data.get("total_cost", 0)))
+        # Handle both dict (from .single()) and list (from .limit(1)) results
+        job_data = job_result.data if isinstance(job_result.data, dict) else (job_result.data[0] if job_result.data else {})
+        current_total = Decimal(str(job_data.get("total_cost", 0)))
         new_total = current_total + cost
         
         # Update job total_cost

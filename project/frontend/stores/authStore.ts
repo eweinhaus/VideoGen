@@ -31,7 +31,6 @@ export const authStore = create<AuthState>((set) => ({
       if (error) throw error
 
       const accessToken = data.session?.access_token || null
-      console.log("Login successful, token:", accessToken ? `${accessToken.substring(0, 20)}...` : "null")
       set({
         user: data.user,
         token: accessToken,
@@ -60,7 +59,6 @@ export const authStore = create<AuthState>((set) => ({
       // Auto-login after registration
       if (data.user && data.session) {
         const accessToken = data.session.access_token
-        console.log("Registration successful, token:", accessToken ? `${accessToken.substring(0, 20)}...` : "null")
         set({
           user: data.user,
           token: accessToken,
@@ -113,14 +111,12 @@ export const authStore = create<AuthState>((set) => ({
       const { data: { session } } = await supabase.auth.getSession()
       if (session) {
         const accessToken = session.access_token
-        console.log("Session found, token:", accessToken ? `${accessToken.substring(0, 20)}...` : "null")
         set({
           user: session.user,
           token: accessToken,
           isLoading: false,
         })
       } else {
-        console.log("No session found")
         set({
           user: null,
           token: null,

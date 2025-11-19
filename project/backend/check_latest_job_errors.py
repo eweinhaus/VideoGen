@@ -8,15 +8,14 @@ from shared.database import DatabaseClient
 async def main():
     db_client = DatabaseClient()
     
-    # Get all jobs
-    result = await db_client.table("jobs").select("*").execute()
+    # Get most recent jobs (ordered by created_at descending)
+    result = await db_client.table("jobs").select("*").order("created_at", desc=True).limit(10).execute()
     
     if not result.data:
         print("No jobs found in database")
         return
     
-    # Sort by created_at and take most recent
-    recent_jobs = sorted(result.data, key=lambda x: x['created_at'], reverse=True)
+    recent_jobs = result.data
     
     print(f"\n=== MOST RECENT JOBS (Last 2 hours) ===\n")
     print(f"Found {len(recent_jobs)} recent jobs\n")

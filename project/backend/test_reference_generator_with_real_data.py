@@ -39,23 +39,16 @@ async def get_latest_scene_planner_job() -> Optional[Dict[str, Any]]:
     """Get the latest job that has completed scene_planner stage."""
     try:
         # Query for jobs with completed scene_planner stage, ordered by most recent
-        # Note: Supabase doesn't support order() directly in our wrapper, so we'll fetch and sort
         result = await db_client.table("job_stages").select(
             "job_id, status, metadata, created_at"
         ).eq(
             "stage_name", "scene_planner"
         ).eq(
             "status", "completed"
-        ).limit(10).execute()  # Get last 10, then sort
+        ).order("created_at", desc=True).limit(1).execute()  # Get most recent
         
         if result.data and len(result.data) > 0:
-            # Sort by created_at descending (most recent first)
-            sorted_stages = sorted(
-                result.data,
-                key=lambda x: x.get("created_at", ""),
-                reverse=True
-            )
-            stage_data = sorted_stages[0]
+            stage_data = result.data[0]
             job_id = stage_data["job_id"]
             
             # Get the full job details

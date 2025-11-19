@@ -153,36 +153,198 @@ async def regenerate_clip(
         })
     
     # Step 1: Load original clip data from job_stages.metadata
+    logger.debug(
+        f"Loading clips from job_stages",
+        extra={"job_id": str(job_id), "clip_index": clip_index}
+    )
     clips = await load_clips_from_job_stages(job_id)
     if not clips:
-        raise ValidationError(f"Failed to load clips for job {job_id}")
+        logger.error(
+            f"Failed to load clips from job_stages",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "stage": "data_loading"
+            }
+        )
+        raise ValidationError(
+            f"Failed to load clips for job {job_id}. "
+            "The job may not have completed video generation yet, or the clips data in the database is incomplete or corrupted. "
+            "Please ensure the job has completed successfully before attempting to regenerate clips."
+        )
     
+    logger.debug(
+        f"Clips loaded successfully",
+        extra={
+            "job_id": str(job_id),
+            "total_clips": len(clips.clips),
+            "successful_clips": clips.successful_clips,
+            "failed_clips": clips.failed_clips
+        }
+    )
+    
+    logger.debug(
+        f"Loading clip prompts from job_stages",
+        extra={"job_id": str(job_id), "clip_index": clip_index}
+    )
     clip_prompts = await load_clip_prompts_from_job_stages(job_id)
     if not clip_prompts:
-        raise ValidationError(f"Failed to load clip prompts for job {job_id}")
+        logger.error(
+            f"Failed to load clip prompts from job_stages",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": len(clips.clips),
+                "stage": "data_loading"
+            }
+        )
+        raise ValidationError(
+            f"Failed to load clip prompts for job {job_id}. "
+            "The prompt data may be missing or incomplete in the database. "
+            "This is required to regenerate the clip with your modifications."
+        )
     
+    logger.debug(
+        f"Clip prompts loaded successfully",
+        extra={
+            "job_id": str(job_id),
+            "total_prompts": len(clip_prompts.clip_prompts),
+            "total_clips": clips.total_clips
+        }
+    )
+    
+    logger.debug(
+        f"Loading scene plan from job_stages",
+        extra={"job_id": str(job_id)}
+    )
     scene_plan = await load_scene_plan_from_job_stages(job_id)
     if not scene_plan:
         logger.warning(
             f"No scene plan found for job {job_id}, proceeding without context",
             extra={"job_id": str(job_id)}
         )
-    
-    # Validate clip_index
-    if clip_index < 0 or clip_index >= len(clips.clips):
-        raise ValidationError(
-            f"Invalid clip_index: {clip_index}. Valid range: 0-{len(clips.clips) - 1}"
+    else:
+        logger.debug(
+            f"Scene plan loaded successfully",
+            extra={
+                "job_id": str(job_id),
+                "characters_count": len(scene_plan.characters) if scene_plan.characters else 0,
+                "scenes_count": len(scene_plan.scenes) if scene_plan.scenes else 0
+            }
         )
     
-    original_clip = clips.clips[clip_index]
+    # Validate clip_index and find the clip
+    # Note: We find by clip_index, not position, because incomplete clips may have been filtered out
+    logger.debug(
+        f"Validating clip_index",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "total_clips": len(clips.clips),
+            "available_clip_indices": [c.clip_index for c in clips.clips]
+        }
+    )
+    
+    # Find clip by clip_index (not by position, since incomplete clips may have been filtered)
+    original_clip = None
+    for clip in clips.clips:
+        if clip.clip_index == clip_index:
+            original_clip = clip
+            break
+    
+    if original_clip is None:
+        available_indices = [c.clip_index for c in clips.clips]
+        logger.error(
+            f"Clip not found: clip_index does not exist in loaded clips",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": len(clips.clips),
+                "available_clip_indices": available_indices
+            }
+        )
+        raise ValidationError(
+            f"Clip with index {clip_index} not found. "
+            f"Available clip indices: {available_indices if available_indices else 'none'}. "
+            f"The requested clip may be incomplete or not yet generated. "
+            f"Only complete clips can be regenerated."
+        )
+    logger.debug(
+        f"Original clip retrieved",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "clip_status": original_clip.status,
+            "clip_duration": original_clip.target_duration,
+            "clip_url": original_clip.video_url
+        }
+    )
+    
+    # Validate clip_index against clip_prompts
+    logger.debug(
+        f"Validating clip_index against clip_prompts",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "total_prompts": len(clip_prompts.clip_prompts),
+            "prompts_range": f"0-{len(clip_prompts.clip_prompts) - 1}"
+        }
+    )
+    if clip_index >= len(clip_prompts.clip_prompts):
+        logger.error(
+            f"Clip prompt not found: index out of bounds",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_prompts": len(clip_prompts.clip_prompts),
+                "total_clips": len(clips.clips),
+                "data_mismatch": True
+            }
+        )
+        raise ValidationError(
+            f"Clip prompt not found for index {clip_index}. Total prompts: {len(clip_prompts.clip_prompts)}"
+        )
+    
     original_prompt = clip_prompts.clip_prompts[clip_index]
+    logger.debug(
+        f"Original prompt retrieved",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "prompt_length": len(original_prompt.prompt),
+            "has_negative_prompt": bool(original_prompt.negative_prompt),
+            "has_scene_reference": bool(original_prompt.scene_reference_url),
+            "character_references_count": len(original_prompt.character_reference_urls) if original_prompt.character_reference_urls else 0
+        }
+    )
     
     # Get job configuration (video_model, aspect_ratio)
+    logger.debug(
+        f"Loading job configuration",
+        extra={"job_id": str(job_id)}
+    )
     job_config = await _get_job_config(job_id)
     video_model = job_config["video_model"]
     aspect_ratio = job_config["aspect_ratio"]
+    logger.debug(
+        f"Job configuration loaded",
+        extra={
+            "job_id": str(job_id),
+            "video_model": video_model,
+            "aspect_ratio": aspect_ratio,
+            "environment": environment
+        }
+    )
     
     # Step 2: Check for template match
+    logger.debug(
+        f"Checking for template match",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "instruction": user_instruction[:100]  # First 100 chars for logging
+        }
+    )
     template_match = match_template(user_instruction)
     
     if template_match:
@@ -278,6 +440,20 @@ async def regenerate_clip(
         })
     
     # Generate single clip
+    logger.info(
+        f"Starting video clip generation",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "video_model": video_model,
+            "aspect_ratio": aspect_ratio,
+            "target_duration": new_clip_prompt.duration,
+            "has_scene_reference": bool(new_clip_prompt.scene_reference_url),
+            "has_character_references": bool(new_clip_prompt.character_reference_urls),
+            "modified_prompt_length": len(modified_prompt),
+            "template_used": template_match.template_id if template_match else None
+        }
+    )
     try:
         new_clip = await generate_video_clip(
             clip_prompt=new_clip_prompt,
@@ -295,7 +471,10 @@ async def regenerate_clip(
                 "job_id": str(job_id),
                 "clip_index": clip_index,
                 "new_clip_url": new_clip.video_url,
-                "cost": str(cost_estimate)
+                "new_clip_status": new_clip.status,
+                "new_clip_duration": new_clip.actual_duration,
+                "cost": str(cost_estimate),
+                "template_used": template_match.template_id if template_match else None
             }
         )
         
@@ -309,7 +488,16 @@ async def regenerate_clip(
     except Exception as e:
         logger.error(
             f"Failed to generate new clip: {e}",
-            extra={"job_id": str(job_id), "clip_index": clip_index},
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "video_model": video_model,
+                "aspect_ratio": aspect_ratio,
+                "target_duration": new_clip_prompt.duration,
+                "has_scene_reference": bool(new_clip_prompt.scene_reference_url),
+                "error_type": type(e).__name__,
+                "stage": "video_generation"
+            },
             exc_info=True
         )
         
@@ -364,11 +552,16 @@ async def regenerate_clip_with_recomposition(
         extra={
             "job_id": str(job_id),
             "clip_index": clip_index,
-            "instruction": user_instruction
+            "instruction": user_instruction,
+            "conversation_history_length": len(conversation_history) if conversation_history else 0
         }
     )
     
     # Steps 1-5: Regenerate clip (from existing function)
+    logger.debug(
+        f"Calling regenerate_clip (step 1-5)",
+        extra={"job_id": str(job_id), "clip_index": clip_index}
+    )
     regeneration_result = await regenerate_clip(
         job_id=job_id,
         clip_index=clip_index,
@@ -387,17 +580,51 @@ async def regenerate_clip_with_recomposition(
         })
     
     # Step 6: Replace clip in Clips object
+    logger.debug(
+        f"Reloading clips for recomposition",
+        extra={"job_id": str(job_id), "clip_index": clip_index}
+    )
     clips = await load_clips_from_job_stages(job_id)
     if not clips:
+        logger.error(
+            f"Failed to reload clips for recomposition",
+            extra={"job_id": str(job_id), "clip_index": clip_index, "stage": "recomposition"}
+        )
         raise ValidationError(f"Failed to load clips for job {job_id}")
+    
+    logger.debug(
+        f"Clips reloaded for recomposition",
+        extra={
+            "job_id": str(job_id),
+            "total_clips": len(clips.clips),
+            "clip_index": clip_index
+        }
+    )
     
     # Validate clip_index
     if clip_index < 0 or clip_index >= len(clips.clips):
+        logger.error(
+            f"Invalid clip_index during recomposition",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": len(clips.clips)
+            }
+        )
         raise ValidationError(
             f"Invalid clip_index: {clip_index}. Valid range: 0-{len(clips.clips) - 1}"
         )
     
     # Replace clip at clip_index with regenerated clip
+    logger.debug(
+        f"Replacing clip at index {clip_index}",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "old_clip_url": clips.clips[clip_index].video_url,
+            "new_clip_url": new_clip.video_url
+        }
+    )
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
     updated_clips[clip_index] = new_clip
@@ -425,11 +652,28 @@ async def regenerate_clip_with_recomposition(
     
     # Step 7: Recompose video (full recomposition)
     # Load required data for Composer
+    logger.debug(
+        f"Loading Composer inputs",
+        extra={"job_id": str(job_id), "clip_index": clip_index}
+    )
     try:
         audio_url = await get_audio_url(job_id)
+        logger.debug(f"Audio URL loaded", extra={"job_id": str(job_id), "has_audio_url": bool(audio_url)})
+        
         transitions = await load_transitions_from_job_stages(job_id)
+        logger.debug(f"Transitions loaded", extra={"job_id": str(job_id), "transitions_count": len(transitions)})
+        
         beat_timestamps = await load_beat_timestamps_from_job_stages(job_id)
+        logger.debug(
+            f"Beat timestamps loaded",
+            extra={
+                "job_id": str(job_id),
+                "beat_timestamps_count": len(beat_timestamps) if beat_timestamps else 0
+            }
+        )
+        
         aspect_ratio = await get_aspect_ratio(job_id)
+        logger.debug(f"Aspect ratio loaded", extra={"job_id": str(job_id), "aspect_ratio": aspect_ratio})
         
         logger.info(
             f"Loaded Composer inputs",
@@ -437,13 +681,20 @@ async def regenerate_clip_with_recomposition(
                 "job_id": str(job_id),
                 "transitions_count": len(transitions),
                 "beat_timestamps_count": len(beat_timestamps) if beat_timestamps else 0,
-                "aspect_ratio": aspect_ratio
+                "aspect_ratio": aspect_ratio,
+                "total_clips": updated_clips_obj.total_clips,
+                "has_audio_url": bool(audio_url)
             }
         )
     except Exception as e:
         logger.error(
             f"Failed to load Composer inputs: {e}",
-            extra={"job_id": str(job_id)},
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "error_type": type(e).__name__,
+                "stage": "composer_input_loading"
+            },
             exc_info=True
         )
         raise ValidationError(f"Failed to load Composer inputs: {str(e)}") from e
@@ -486,7 +737,13 @@ async def regenerate_clip_with_recomposition(
     except CompositionError as e:
         logger.error(
             f"Composition failed permanently: {e}",
-            extra={"job_id": str(job_id)},
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": updated_clips_obj.total_clips,
+                "error_type": type(e).__name__,
+                "stage": "composer_process"
+            },
             exc_info=True
         )
         
@@ -502,7 +759,14 @@ async def regenerate_clip_with_recomposition(
     except RetryableError as e:
         logger.error(
             f"Composition failed but is retryable: {e}",
-            extra={"job_id": str(job_id)},
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": updated_clips_obj.total_clips,
+                "error_type": type(e).__name__,
+                "stage": "composer_process",
+                "retryable": True
+            },
             exc_info=True
         )
         
@@ -519,7 +783,13 @@ async def regenerate_clip_with_recomposition(
     except Exception as e:
         logger.error(
             f"Unexpected error during recomposition: {e}",
-            extra={"job_id": str(job_id)},
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": updated_clips_obj.total_clips,
+                "error_type": type(e).__name__,
+                "stage": "composer_process"
+            },
             exc_info=True
         )
         

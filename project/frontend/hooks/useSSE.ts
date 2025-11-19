@@ -50,29 +50,15 @@ export function useSSE(
     const authState = authStore.getState()
     const token = authState.token
     
-    // Always log the auth state for debugging
-    console.log("🔍 SSE Connection Debug:", {
-      jobId,
-      hasToken: !!token,
-      tokenLength: token?.length || 0,
-      userEmail: authState.user?.email,
-      tokenPreview: token ? `${token.substring(0, 20)}...` : "null"
-    })
-    
     if (!token) {
-      console.error("❌ No token found in authStore for SSE connection!")
-      console.error("Full auth state:", authState)
       // Try to get session from Supabase directly (use static import to avoid multiple instances)
       import("@/lib/supabase").then((module) => {
         // Use the same supabase instance from the module
         module.supabase.auth.getSession().then(({ data: { session } }) => {
           if (session?.access_token) {
-            console.log("✅ Found token in Supabase session, updating authStore")
             authStore.setState({ token: session.access_token })
             // Retry connection with new token
             setTimeout(() => connect(), 100)
-          } else {
-            console.error("❌ No session found in Supabase either")
           }
         })
       })
@@ -80,12 +66,10 @@ export function useSSE(
     }
     
     const url = `${API_BASE_URL}/api/v1/jobs/${jobId}/stream?token=${encodeURIComponent(token)}`
-    console.log("✅ SSE connecting with token:", url.substring(0, 120) + "...")
     
     const eventSource = new EventSource(url, { withCredentials: true })
 
     eventSource.onopen = () => {
-      console.log("✅ SSE connection opened for job:", jobId)
       setIsConnected(true)
       setError(null)
       reconnectAttemptsRef.current = 0
@@ -99,8 +83,6 @@ export function useSSE(
       if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
         const delay = Math.pow(2, reconnectAttemptsRef.current) * 1000 // 2s, 4s, 8s, 16s, 32s
         reconnectAttemptsRef.current++
-        console.log(`🔄 Reconnecting SSE in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`)
-
         reconnectTimeoutRef.current = setTimeout(() => {
           connect()
         }, delay)
@@ -110,17 +92,10 @@ export function useSSE(
       }
     }
 
-    // Log all incoming messages for debugging
-    eventSource.onmessage = (e: MessageEvent) => {
-      console.log("📨 SSE raw message received:", { type: e.type, data: e.data, lastEventId: e.lastEventId })
-    }
-
     // Register event listeners - use handlersRef to get latest handlers without re-creating connection
     eventSource.addEventListener("stage_update", (e: MessageEvent) => {
       try {
-        console.log("🔔 SSE stage_update event listener triggered:", { type: e.type, data: e.data })
         const data = JSON.parse(e.data)
-        console.log("🔔 SSE stage_update event parsed:", data)
         handlersRef.current.onStageUpdate?.(data)
       } catch (err) {
         console.error("❌ Failed to parse stage_update event:", err, "Raw data:", e.data)
@@ -129,7 +104,6 @@ export function useSSE(
 
     eventSource.addEventListener("progress", (e: MessageEvent) => {
       try {
-        console.log("📊 SSE progress event received:", e.data)
         const data = JSON.parse(e.data)
         handlersRef.current.onProgress?.(data)
       } catch (err) {
@@ -148,9 +122,7 @@ export function useSSE(
 
     eventSource.addEventListener("cost_update", (e: MessageEvent) => {
       try {
-        console.log("💰 SSE cost_update event received:", e.data)
         const data = JSON.parse(e.data)
-        console.log("💰 SSE cost_update event parsed:", data)
         handlersRef.current.onCostUpdate?.(data)
       } catch (err) {
         console.error("Failed to parse cost_update event:", err)

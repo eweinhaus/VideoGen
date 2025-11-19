@@ -69,6 +69,126 @@ async def load_clips_from_job_stages(job_id: UUID) -> Optional[Clips]:
             )
             return None
         
+        # Ensure clips_data is a dict (might be just a list in some cases)
+        if isinstance(clips_data, list):
+            clips_data = {"clips": clips_data}
+        
+        # Fill in missing required fields
+        clips_list = clips_data.get("clips", [])
+        if not isinstance(clips_list, list):
+            logger.error(
+                f"Invalid clips data structure: clips is not a list",
+                extra={"job_id": str(job_id), "clips_type": type(clips_list).__name__}
+            )
+            return None
+        
+        # Filter and validate individual clip objects
+        # Incomplete clips (missing required fields) will be skipped
+        from decimal import Decimal
+        validated_clips = []
+        incomplete_count = 0
+        
+        for clip_data in clips_list:
+            if not isinstance(clip_data, dict):
+                incomplete_count += 1
+                continue
+            
+            # Check for minimum required fields for a valid Clip
+            required_fields = ["video_url", "actual_duration", "target_duration", 
+                             "duration_diff", "status", "cost", "generation_time"]
+            has_all_required = all(field in clip_data for field in required_fields)
+            
+            if not has_all_required:
+                incomplete_count += 1
+                logger.debug(
+                    f"Skipping incomplete clip at index {clip_data.get('clip_index', 'unknown')}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_data.get("clip_index"),
+                        "missing_fields": [f for f in required_fields if f not in clip_data]
+                    }
+                )
+                continue
+            
+            # Ensure cost is a valid Decimal
+            try:
+                cost_value = clip_data.get("cost", 0)
+                if isinstance(cost_value, str):
+                    clip_data["cost"] = Decimal(cost_value)
+                elif isinstance(cost_value, (int, float)):
+                    clip_data["cost"] = Decimal(str(cost_value))
+                else:
+                    clip_data["cost"] = Decimal(0)
+            except Exception:
+                clip_data["cost"] = Decimal(0)
+            
+            # Ensure numeric fields are the right type
+            for field in ["actual_duration", "target_duration", "duration_diff", "generation_time"]:
+                if field in clip_data:
+                    try:
+                        clip_data[field] = float(clip_data[field])
+                    except (ValueError, TypeError):
+                        clip_data[field] = 0.0
+            
+            validated_clips.append(clip_data)
+        
+        if incomplete_count > 0:
+            logger.warning(
+                f"Skipped {incomplete_count} incomplete clip(s) when loading from job_stages",
+                extra={
+                    "job_id": str(job_id),
+                    "incomplete_count": incomplete_count,
+                    "valid_clips": len(validated_clips)
+                }
+            )
+        
+        if len(validated_clips) == 0:
+            logger.error(
+                f"No valid clips found in job_stages metadata",
+                extra={
+                    "job_id": str(job_id),
+                    "total_clips_in_db": len(clips_list),
+                    "incomplete_count": incomplete_count
+                }
+            )
+            return None
+        
+        # Update clips_data with validated clips
+        clips_data["clips"] = validated_clips
+        
+        # Add job_id if missing
+        if "job_id" not in clips_data:
+            clips_data["job_id"] = str(job_id)
+        
+        # Calculate missing fields from validated clips list
+        if "total_clips" not in clips_data:
+            clips_data["total_clips"] = len(validated_clips)
+        
+        if "successful_clips" not in clips_data:
+            clips_data["successful_clips"] = sum(1 for clip in validated_clips if clip.get("status") == "success")
+        
+        if "failed_clips" not in clips_data:
+            clips_data["failed_clips"] = sum(1 for clip in validated_clips if clip.get("status") == "failed")
+        
+        # Calculate total_cost from validated clips if missing
+        if "total_cost" not in clips_data:
+            total_cost = Decimal(0)
+            for clip in validated_clips:
+                clip_cost = clip.get("cost", Decimal(0))
+                if isinstance(clip_cost, Decimal):
+                    total_cost += clip_cost
+                else:
+                    try:
+                        total_cost += Decimal(str(clip_cost))
+                    except Exception:
+                        pass
+            clips_data["total_cost"] = str(total_cost)
+        
+        # Calculate total_generation_time from validated clips if missing
+        if "total_generation_time" not in clips_data:
+            total_time = sum(clip.get("generation_time", 0) for clip in validated_clips)
+            clips_data["total_generation_time"] = total_time
+        
         # Reconstruct Pydantic model
         try:
             clips = Clips(**clips_data)
@@ -80,7 +200,11 @@ async def load_clips_from_job_stages(job_id: UUID) -> Optional[Clips]:
         except Exception as e:
             logger.error(
                 f"Failed to reconstruct Clips model: {e}",
-                extra={"job_id": str(job_id)},
+                extra={
+                    "job_id": str(job_id),
+                    "clips_data_keys": list(clips_data.keys()) if isinstance(clips_data, dict) else "not_a_dict",
+                    "clips_count": len(clips_list) if isinstance(clips_list, list) else 0
+                },
                 exc_info=True
             )
             return None
@@ -136,6 +260,26 @@ async def load_clip_prompts_from_job_stages(job_id: UUID) -> Optional[ClipPrompt
                 )
                 return None
         
+        # Fill in missing required fields
+        if "job_id" not in metadata:
+            metadata["job_id"] = str(job_id)
+        
+        # Calculate total_clips from clip_prompts list if missing
+        clip_prompts_list = metadata.get("clip_prompts", [])
+        if not isinstance(clip_prompts_list, list):
+            logger.error(
+                f"Invalid clip_prompts data structure: clip_prompts is not a list",
+                extra={"job_id": str(job_id), "clip_prompts_type": type(clip_prompts_list).__name__}
+            )
+            return None
+        
+        if "total_clips" not in metadata:
+            metadata["total_clips"] = len(clip_prompts_list)
+        
+        # Set default generation_time if missing
+        if "generation_time" not in metadata:
+            metadata["generation_time"] = 0.0
+        
         # Reconstruct Pydantic model
         try:
             clip_prompts = ClipPrompts(**metadata)
@@ -147,7 +291,11 @@ async def load_clip_prompts_from_job_stages(job_id: UUID) -> Optional[ClipPrompt
         except Exception as e:
             logger.error(
                 f"Failed to reconstruct ClipPrompts model: {e}",
-                extra={"job_id": str(job_id)},
+                extra={
+                    "job_id": str(job_id),
+                    "metadata_keys": list(metadata.keys()) if isinstance(metadata, dict) else "not_a_dict",
+                    "clip_prompts_count": len(clip_prompts_list) if isinstance(clip_prompts_list, list) else 0
+                },
                 exc_info=True
             )
             return None
@@ -452,12 +600,22 @@ async def get_audio_url(job_id: UUID) -> str:
     
     try:
         db = DatabaseClient()
-        result = await db.table("jobs").select("audio_url").eq("id", str(job_id)).single().execute()
+        # Use fallback pattern for .single() method
+        eq_builder = db.table("jobs").select("audio_url").eq("id", str(job_id))
+        if hasattr(eq_builder, 'single'):
+            try:
+                result = await eq_builder.single().execute()
+            except AttributeError:
+                result = await eq_builder.limit(1).execute()
+        else:
+            result = await eq_builder.limit(1).execute()
         
         if not result.data:
             raise ValidationError(f"Job {job_id} not found")
         
-        audio_url = result.data.get("audio_url")
+        # Handle both dict (from .single()) and list (from .limit(1)) results
+        job_data = result.data if isinstance(result.data, dict) else (result.data[0] if result.data else {})
+        audio_url = job_data.get("audio_url")
         if not audio_url:
             raise ValidationError(f"Audio URL not found for job {job_id}")
         

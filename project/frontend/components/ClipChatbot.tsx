@@ -208,21 +208,49 @@ export function ClipChatbot({
       setProgress(null)
       
       let errorMessage = "Failed to regenerate clip"
+      let isRetryable = false
+      
       if (err instanceof APIError) {
+        // Use the detailed error message from the API
+        errorMessage = err.message || "Failed to regenerate clip"
+        isRetryable = err.retryable
+        
+        // Add context based on status code if message is generic
         if (err.statusCode === 409) {
-          errorMessage = "A regeneration is already in progress. Please wait for it to complete."
+          if (!err.message || err.message === "Failed to regenerate clip") {
+            errorMessage = "A regeneration is already in progress. Please wait for it to complete."
+          }
         } else if (err.statusCode === 400) {
-          errorMessage = err.message || "Invalid request. Please check your instruction."
+          if (!err.message || err.message === "Failed to regenerate clip") {
+            errorMessage = "Invalid request. Please check your instruction."
+          }
         } else if (err.statusCode === 403) {
-          errorMessage = "You don't have permission to regenerate this clip."
+          if (!err.message || err.message === "Failed to regenerate clip") {
+            errorMessage = "You don't have permission to regenerate this clip."
+          }
         } else if (err.statusCode === 404) {
-          errorMessage = "Clip not found. The job may not be completed yet."
-        } else {
-          errorMessage = err.message || "An error occurred during regeneration."
+          if (!err.message || err.message === "Failed to regenerate clip") {
+            errorMessage = "Clip not found. The job may not be completed yet, or the clip data is incomplete."
+          }
+        } else if (err.statusCode === 402) {
+          if (!err.message || err.message === "Failed to regenerate clip") {
+            errorMessage = "Budget limit exceeded. Please check your account limits."
+          }
+        } else if (err.statusCode >= 500) {
+          // For 500 errors, show the detailed error message from the API
+          errorMessage = err.message || "Server error occurred. Please try again later."
+          // If the error mentions database or AttributeError, provide helpful context
+          if (errorMessage.includes("AttributeError") || errorMessage.includes("database")) {
+            errorMessage += " (This may require a server restart. Please contact support if the issue persists.)"
+          }
         }
+      } else if (err instanceof Error) {
+        // For non-API errors, use the error message
+        errorMessage = err.message || "An unexpected error occurred."
       }
       
       setError(errorMessage)
+      setIsRetryable(isRetryable)
       addSystemMessage(errorMessage, "error")
     }
   }

@@ -11,12 +11,9 @@ export function useJob(jobId?: string) {
   useEffect(() => {
     // Wait for auth to be ready before fetching job
     if (jobId && !authLoading) {
-      console.log("✅ useJob: Auth ready, fetching job", { jobId, hasToken: !!token })
       fetchJob(jobId).catch((err) => {
         console.error("❌ useJob: Failed to fetch job", err)
       })
-    } else if (jobId && authLoading) {
-      console.log("⏳ useJob: Waiting for auth to load...", { jobId })
     }
   }, [jobId, fetchJob, token, authLoading])
 

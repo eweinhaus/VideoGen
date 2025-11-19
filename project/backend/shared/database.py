@@ -168,6 +168,43 @@ class AsyncTableQueryBuilder:
         self._query_builder = self._query_builder.limit(*args, **kwargs)
         return self
     
+    def order(self, *args, **kwargs):
+        """Chain order operation."""
+        self._query_builder = self._query_builder.order(*args, **kwargs)
+        return self
+    
+    def range(self, *args, **kwargs):
+        """Chain range operation (for pagination: range(offset, offset + limit - 1))."""
+        self._query_builder = self._query_builder.range(*args, **kwargs)
+        return self
+    
+    def single(self):
+        """
+        Chain single operation (returns single result instead of array).
+        
+        Note: This method may not be available on all query builder types.
+        Use limit(1) as a fallback if this raises AttributeError.
+        """
+        try:
+            # Check if underlying query builder supports single()
+            if not hasattr(self._query_builder, 'single'):
+                available_methods = [m for m in dir(self._query_builder) if not m.startswith('_')]
+                raise AttributeError(
+                    f"Underlying query builder does not support 'single()' method. "
+                    f"Available methods: {', '.join(available_methods[:15])}. "
+                    f"Query builder type: {type(self._query_builder)}. "
+                    f"Use limit(1) instead of single() as a fallback."
+                )
+            self._query_builder = self._query_builder.single()
+            return self
+        except AttributeError as e:
+            # Re-raise with more context
+            raise AttributeError(
+                f"AsyncTableQueryBuilder.single() failed: {str(e)}. "
+                f"Table: {self.table_name}, Builder type: {type(self._query_builder)}. "
+                f"Use limit(1) instead of single() as a fallback."
+            ) from e
+    
     async def execute(self, max_attempts: int = 3) -> Any:
         """
         Execute the query asynchronously.

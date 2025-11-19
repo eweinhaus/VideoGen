@@ -37,27 +37,15 @@ export default function UploadPage() {
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
-      console.log("Not authenticated, redirecting to login")
       router.push("/login")
-    } else if (!authLoading && isAuthenticated) {
-      console.log("✅ Authenticated on upload page, user:", user?.email)
-      console.log("✅ Token available:", !!token)
     }
-  }, [isAuthenticated, authLoading, router, user, token])
+  }, [isAuthenticated, authLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
-    console.log("📤 Submit button clicked")
-    console.log("Auth state:", {
-      isAuthenticated,
-      hasToken: !!token,
-      userEmail: user?.email
-    })
 
     try {
       const jobId = await submit()
-      console.log("✅ Upload successful, jobId:", jobId)
       
       // Keep modal visible during navigation - isSubmitting stays true
       if (jobId) {
@@ -65,7 +53,7 @@ export default function UploadPage() {
         try {
           await jobStore.getState().fetchJob(jobId)
         } catch (err) {
-          console.warn("⚠️ Failed to pre-fetch job, but continuing with navigation:", err)
+          // Continue with navigation even if pre-fetch fails
         }
         // Navigate to job page - modal will stay visible until we're on the page
         // The job page will hide it immediately once loaded
@@ -81,7 +69,6 @@ export default function UploadPage() {
       // The uploadStore should handle this, but we'll add a safety check
       setTimeout(() => {
         if (uploadStore.getState().isSubmitting) {
-          console.warn("⚠️ isSubmitting still true after error, resetting...")
           uploadStore.getState().reset()
         }
       }, 1000)
