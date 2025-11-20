@@ -27,7 +27,11 @@ import type {
   ReferenceGenerationCompleteEvent,
   ReferenceGenerationFailedEvent,
   ReferenceGenerationRetryEvent,
+  RegenerationStartedEvent,
+  PromptModifiedEvent,
+  RegenerationCompleteEvent,
 } from "@/types/sse"
+import { getClipComparison } from "@/lib/api"
 import { formatDuration } from "@/lib/utils"
 
 type ReferenceImageStatus = "pending" | "completed" | "failed" | "retrying"
@@ -175,6 +179,8 @@ export function ProgressTracker({
   const [audioResults, setAudioResults] = useState<AudioParserResultsEvent | null>(null)
   const [scenePlanResults, setScenePlanResults] = useState<ScenePlannerResultsEvent | null>(null)
   const [promptResults, setPromptResults] = useState<PromptGeneratorResultsEvent | null>(null)
+  const [regeneratedPrompts, setRegeneratedPrompts] = useState<Record<number, string>>({}) // clip_index -> regenerated prompt
+  const [currentRegeneratingClip, setCurrentRegeneratingClip] = useState<number | null>(null) // Track which clip is currently being regenerated
   const [referenceState, setReferenceState] = useState<ReferenceGenerationState>(initialReferenceState)
   const [videoTotals, setVideoTotals] = useState<{ total: number; completed: number; failed: number; retries: number }>({ total: 0, completed: 0, failed: 0, retries: 0 })
   const [clipStatuses, setClipStatuses] = useState<Record<number, "pending" | "processing" | "completed" | "failed" | "retrying">>({})
@@ -469,6 +475,37 @@ export function ProgressTracker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentJob?.stages, scenePlanResults, promptResults, jobId])
   
+  // Fetch regenerated prompts from clip_versions API
+  const fetchRegeneratedPrompt = async (clipIndex: number) => {
+    try {
+      const comparison = await getClipComparison(jobId, clipIndex)
+      const regeneratedPrompt = comparison.regenerated?.prompt
+      if (regeneratedPrompt) {
+        setRegeneratedPrompts((prev) => ({
+          ...prev,
+          [clipIndex]: regeneratedPrompt,
+        }))
+      }
+    } catch (error) {
+      // Silently fail - regenerated prompt may not exist yet
+      console.debug("Failed to fetch regenerated prompt for clip", clipIndex, error)
+    }
+  }
+
+  // Fetch all regenerated prompts when job is completed
+  useEffect(() => {
+    if (currentJob?.status === "completed" && promptResults) {
+      // Fetch regenerated prompts for all clips
+      promptResults.clip_prompts.forEach((clip) => {
+        // Only fetch if we don't already have it
+        if (!regeneratedPrompts[clip.clip_index]) {
+          fetchRegeneratedPrompt(clip.clip_index)
+        }
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentJob?.status, promptResults?.total_clips, jobId])
+
   // Restore reference images state when job data is loaded on refresh
   // This ensures reference images section doesn't disappear when page is refreshed
   useEffect(() => {
@@ -1153,20 +1190,33 @@ export function ProgressTracker({
     onReferenceGenerationComplete: handleReferenceComplete,
     onReferenceGenerationFailed: handleReferenceFailed,
     onReferenceGenerationRetry: handleReferenceRetry,
+    onRegenerationStarted: (data: RegenerationStartedEvent) => {
+      // Track which clip is being regenerated
+      setCurrentRegeneratingClip(data.clip_index)
+    },
+    onPromptModified: (data: PromptModifiedEvent) => {
+      // Store the modified prompt for the currently regenerating clip
+      if (currentRegeneratingClip !== null) {
+        setRegeneratedPrompts((prev) => ({
+          ...prev,
+          [currentRegeneratingClip]: data.modified_prompt,
+        }))
+      }
+    },
+    onRegenerationComplete: (data: RegenerationCompleteEvent) => {
+      // Clear the current regenerating clip
+      setCurrentRegeneratingClip(null)
+      // Fetch the regenerated prompt from API to ensure we have the latest
+      fetchRegeneratedPrompt(data.clip_index)
+    },
   })
 
-  return (
-    <div className="w-full space-y-4">
-      {/* Loading overlay to make the transition smoother until SSE is ready */}
-      {!hasStarted && !isConnected && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-          <div className="w-[320px] rounded-lg border bg-card p-5 shadow-lg">
-            <div className="mb-3 text-sm font-medium">Preparing job progress…</div>
-            <Progress value={Math.min(displayProgress || 10, 90)} className="h-2" />
-            <div className="mt-2 text-xs text-muted-foreground">Connecting to server…</div>
-          </div>
-        </div>
-      )}
+  // Check if job is completed and video has loaded
+  const isCompletedWithVideo = currentJob?.status === "completed" && currentJob?.videoUrl && displayProgress === 100
+  
+  // Wrap progress section in CollapsibleCard if completed
+  const ProgressSection = () => (
+    <>
       <div className="space-y-3 p-4 bg-muted/30 rounded-lg border min-h-[120px] flex flex-col justify-center">
         <div className="flex items-center justify-between mb-2">
           <span className="text-base font-semibold">Progress</span>
@@ -1194,6 +1244,30 @@ export function ProgressTracker({
         stages={displayStages} 
         currentStage={displayStage}
       />
+    </>
+  )
+
+  return (
+    <div className="w-full space-y-4">
+      {/* Loading overlay to make the transition smoother until SSE is ready */}
+      {!hasStarted && !isConnected && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
+          <div className="w-[320px] rounded-lg border bg-card p-5 shadow-lg">
+            <div className="mb-3 text-sm font-medium">Preparing job progress…</div>
+            <Progress value={Math.min(displayProgress || 10, 90)} className="h-2" />
+            <div className="mt-2 text-xs text-muted-foreground">Connecting to server…</div>
+          </div>
+        </div>
+      )}
+      
+      {/* Wrap in CollapsibleCard if completed, otherwise show directly */}
+      {isCompletedWithVideo ? (
+        <CollapsibleCard title="Generation Progress" defaultOpen={false}>
+          <ProgressSection />
+        </CollapsibleCard>
+      ) : (
+        <ProgressSection />
+      )}
 
       {sseError && (
         <Alert variant="destructive">
@@ -1529,26 +1603,42 @@ export function ProgressTracker({
                 : "Generated via deterministic template"}
             </p>
             <div className="space-y-3">
-              {promptResults.clip_prompts.map((clip) => (
-                <div key={clip.clip_index} className="border-l-4 border-primary/70 pl-4 py-2 space-y-1">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="font-semibold">Clip {clip.clip_index}</span>
-                    <span className="text-muted-foreground">{clip.duration.toFixed(1)}s</span>
+              {promptResults.clip_prompts.map((clip) => {
+                const regeneratedPrompt = regeneratedPrompts[clip.clip_index]
+                return (
+                  <div key={clip.clip_index} className="space-y-2">
+                    {/* Original Prompt */}
+                    <div className="border-l-4 border-primary/70 pl-4 py-2 space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-semibold">Clip {clip.clip_index + 1}</span>
+                        <span className="text-muted-foreground">{clip.duration.toFixed(1)}s</span>
+                      </div>
+                      <p className="text-sm whitespace-pre-wrap break-words">{clip.prompt}</p>
+                      <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
+                        {clip.metadata?.style_keywords?.length ? (
+                          <span>Style: {clip.metadata.style_keywords.slice(0, 3).join(", ")}</span>
+                        ) : null}
+                        {clip.metadata?.word_count ? (
+                          <span>Words: {clip.metadata.word_count}</span>
+                        ) : null}
+                        {clip.metadata?.reference_mode ? (
+                          <span>References: {clip.metadata.reference_mode}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {/* Regenerated Prompt */}
+                    {regeneratedPrompt && (
+                      <div className="border-l-4 border-red-400/70 pl-4 py-2 space-y-1 bg-red-50/50 rounded-r">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-semibold text-red-700">Regenerated Prompt</span>
+                          <span className="text-xs text-red-600/70">Modified</span>
+                        </div>
+                        <p className="text-sm whitespace-pre-wrap break-words text-red-900/90">{regeneratedPrompt}</p>
+                      </div>
+                    )}
                   </div>
-                  <p className="text-sm whitespace-pre-wrap break-words">{clip.prompt}</p>
-                  <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
-                    {clip.metadata?.style_keywords?.length ? (
-                      <span>Style: {clip.metadata.style_keywords.slice(0, 3).join(", ")}</span>
-                    ) : null}
-                    {clip.metadata?.word_count ? (
-                      <span>Words: {clip.metadata.word_count}</span>
-                    ) : null}
-                    {clip.metadata?.reference_mode ? (
-                      <span>References: {clip.metadata.reference_mode}</span>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
           ) : (

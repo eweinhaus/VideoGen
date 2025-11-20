@@ -432,11 +432,27 @@ def synthesize_object_prompt(
     # Build prompt fragments for product photography
     fragments = []
 
-    # Start with product photography keywords
-    fragments.append("professional product photography")
+    # CRITICAL: Start with strongest single-object emphasis (order matters in SDXL)
+    # This must come FIRST to override any tendency to generate multiple instances
+    obj_name_lower = obj.name.lower() if obj.name else ""
+    
+    # Detect collectible objects that are commonly shown in groups
+    collectible_keywords = ["snowman", "toy", "doll", "ball", "ornament", "decoration", "figure", "statue"]
+    is_collectible = any(keyword in obj_name_lower for keyword in collectible_keywords)
+    
+    if is_collectible:
+        # Extra-strong emphasis for collectible objects
+        fragments.append(f"one single {obj.name}, not multiple {obj.name}s, not a collection of {obj.name}s, not a group of {obj.name}s, not a row of {obj.name}s, not a pattern of {obj.name}s")
+        fragments.append("single object only, one object, one instance, not multiple instances, not repeated, not duplicated")
+    else:
+        # Standard single-object emphasis
+        fragments.append(f"one single {obj.name}, single object only, one object, one instance, not multiple instances")
+    
+    # Reinforce single unified view
+    fragments.append("single unified view, one perspective, one angle, one camera angle, no multiple views, no grid layout, no collage, no montage")
 
-    # CRITICAL: Specify single object to prevent multiple objects in the same image
-    fragments.append("single object, one object only")
+    # Add product photography keywords
+    fragments.append("professional product photography")
 
     # Add object description with all features
     object_desc = (
@@ -450,9 +466,19 @@ def synthesize_object_prompt(
     )
     fragments.append(object_desc)
 
-    # Add variation suffix for different angles
+    # Add variation suffix for different angles (for base variation, ensure single view)
     variation_suffix = get_object_variation_suffix(variation_index)
     fragments.append(variation_suffix)
+    
+    # Reinforce single object emphasis again (repetition helps in SDXL)
+    if is_collectible:
+        fragments.append(f"one single {obj.name} only, not multiple, not a collection, not a group")
+    else:
+        fragments.append("one single object only, not multiple, not repeated")
+    
+    # Reinforce single view for base variation (index 0)
+    if variation_index == 0:
+        fragments.append("single unified composition, centered object, one camera angle, one perspective only")
 
     # Add style information (simplified for product photography)
     # Use color palette from style but adapt for product shots

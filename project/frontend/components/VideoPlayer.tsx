@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
@@ -12,16 +12,19 @@ interface VideoPlayerProps {
   videoUrl: string
   jobId: string
   autoPlay?: boolean
+  seekTo?: number // Timestamp in seconds to seek to
 }
 
 export function VideoPlayer({
   videoUrl,
   jobId,
   autoPlay = false,
+  seekTo,
 }: VideoPlayerProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   // Reset loading state when video URL changes (e.g., after recomposition)
   useEffect(() => {
@@ -30,6 +33,28 @@ export function VideoPlayer({
       setError(null)
     }
   }, [videoUrl])
+
+  // Seek to specific timestamp when seekTo prop changes
+  useEffect(() => {
+    if (seekTo !== undefined && videoRef.current && !isLoading) {
+      const video = videoRef.current
+      // Wait for video to be ready before seeking
+      if (video.readyState >= 2) {
+        // readyState 2 = HAVE_CURRENT_DATA
+        video.currentTime = seekTo
+      } else {
+        // Wait for video to load metadata before seeking
+        const handleLoadedMetadata = () => {
+          video.currentTime = seekTo
+          video.removeEventListener("loadedmetadata", handleLoadedMetadata)
+        }
+        video.addEventListener("loadedmetadata", handleLoadedMetadata)
+        return () => {
+          video.removeEventListener("loadedmetadata", handleLoadedMetadata)
+        }
+      }
+    }
+  }, [seekTo, isLoading])
 
   const handleVideoLoad = () => {
     setIsLoading(false)
@@ -74,6 +99,7 @@ export function VideoPlayer({
           </div>
         )}
         <video
+          ref={videoRef}
           key={videoUrl} // Force re-mount when URL changes
           src={videoUrl}
           controls

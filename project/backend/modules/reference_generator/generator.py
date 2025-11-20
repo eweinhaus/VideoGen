@@ -224,13 +224,26 @@ async def generate_image(
             "unclear face, hazy face, soft focus face, out of focus face"
         )
     elif image_type == "object":
-        # Enhanced negative prompt for objects to prevent multiple objects
+        # Enhanced negative prompt for objects to prevent multiple objects or multiple views
+        # CRITICAL: Strong emphasis on preventing multiple instances, collections, groups, patterns
         negative_prompt = (
             "blurry, static, low quality, distorted, watermark, text overlay, "
             "cartoon, illustration, painting, drawing, "
+            # Prevent multiple instances (most important - comes first)
             "multiple objects, two objects, three objects, many objects, "
             "several items, group of objects, pattern of objects, "
-            "scattered objects, multiple items, array of objects"
+            "scattered objects, multiple items, array of objects, "
+            "collection of objects, row of objects, line of objects, "
+            "duplicate objects, repeated objects, cloned objects, "
+            "same object multiple times, object repeated, object duplicated, "
+            "not a collection, not a group, not multiple instances, "
+            "not repeated, not duplicated, not cloned, "
+            # Prevent multiple views/perspectives
+            "multiple views, multiple angles, different perspectives, "
+            "grid layout, collage, montage, photo grid, "
+            "four views, three views, multiple perspectives in one image, "
+            "split image, divided image, image with multiple sections, "
+            "multiple camera angles, different angles in one image"
         )
     else:
         negative_prompt = (

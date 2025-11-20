@@ -336,54 +336,78 @@ async def compare_clip_versions(
         # Verify job ownership
         job = await verify_job_ownership(job_id, current_user)
         
-        # Load original version (always from clips table, version 1)
-        # Bypass clip_versions table to ensure we get the true original
-        clips = await load_clips_from_job_stages(UUID(job_id))
-        if not clips:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Clips not found for job {job_id}"
-            )
-        
-        original_clip = None
-        for clip in clips.clips:
-            if clip.clip_index == clip_index:
-                original_clip = clip
-                break
-        
-        if not original_clip:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Clip {clip_index} not found for job {job_id}"
-            )
-        
-        # Get thumbnail and prompt for original
+        # Load original version - try clip_versions first (version 1), fall back to job_stages
         db = DatabaseClient()
-        thumbnail_url = None
+        original_data = None
+        
+        # Try to load from clip_versions table first (version 1 = original)
         try:
-            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+            result = await db.table("clip_versions").select("*").eq(
                 "job_id", str(job_id)
-            ).eq("clip_index", clip_index).limit(1).execute()
-            if thumb_result.data and len(thumb_result.data) > 0:
-                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+            ).eq("clip_index", clip_index).eq("version_number", 1).limit(1).execute()
+            
+            if result.data and len(result.data) > 0:
+                version_data = result.data[0]
+                original_data = {
+                    "video_url": version_data.get("video_url"),
+                    "thumbnail_url": version_data.get("thumbnail_url"),
+                    "prompt": version_data.get("prompt", ""),
+                    "version_number": 1,
+                    "duration": None,  # Duration not stored in clip_versions
+                    "user_instruction": None,  # Original has no instruction
+                    "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
+                    "created_at": version_data.get("created_at")
+                }
         except Exception:
-            pass  # Table may not exist
+            pass  # Table may not exist, fall back to job_stages
         
-        clip_prompts = await load_clip_prompts_from_job_stages(UUID(job_id))
-        prompt = ""
-        if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
-            prompt = clip_prompts.clip_prompts[clip_index].prompt
-        
-        original_data = {
-            "video_url": original_clip.video_url,
-            "thumbnail_url": thumbnail_url,
-            "prompt": prompt,
-            "version_number": 1,  # Original is always version 1
-            "duration": original_clip.actual_duration or original_clip.target_duration,
-            "user_instruction": None,  # Original has no instruction
-            "cost": float(original_clip.cost) if original_clip.cost else None,
-            "created_at": None
-        }
+        # Fallback: Load from job_stages if clip_versions doesn't have it
+        if not original_data:
+            clips = await load_clips_from_job_stages(UUID(job_id))
+            if not clips:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Clips not found for job {job_id}"
+                )
+            
+            original_clip = None
+            for clip in clips.clips:
+                if clip.clip_index == clip_index:
+                    original_clip = clip
+                    break
+            
+            if not original_clip:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Clip {clip_index} not found for job {job_id}"
+                )
+            
+            # Get thumbnail and prompt for original
+            thumbnail_url = None
+            try:
+                thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_index).limit(1).execute()
+                if thumb_result.data and len(thumb_result.data) > 0:
+                    thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+            except Exception:
+                pass  # Table may not exist
+            
+            clip_prompts = await load_clip_prompts_from_job_stages(UUID(job_id))
+            prompt = ""
+            if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
+                prompt = clip_prompts.clip_prompts[clip_index].prompt
+            
+            original_data = {
+                "video_url": original_clip.video_url,
+                "thumbnail_url": thumbnail_url,
+                "prompt": prompt,
+                "version_number": 1,  # Original is always version 1
+                "duration": original_clip.actual_duration or original_clip.target_duration,
+                "user_instruction": None,  # Original has no instruction
+                "cost": float(original_clip.cost) if original_clip.cost else None,
+                "created_at": None
+            }
         
         # Load regenerated version (latest from clip_versions table)
         regenerated_data = None
@@ -1032,6 +1056,67 @@ async def regenerate_clip_endpoint(
                         "video_url": result.video_output.video_url if result.video_output else None
                     }
                 )
+                
+                # Save regenerated clip to clip_versions table
+                if result.clip:
+                    try:
+                        db = DatabaseClient()
+                        # Get the next version number (highest existing + 1, or 2 if none exist)
+                        version_result = await db.table("clip_versions").select("version_number").eq(
+                            "job_id", str(job_id)
+                        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+                        
+                        next_version = 2  # Default to version 2 if no versions exist
+                        if version_result.data and len(version_result.data) > 0:
+                            next_version = version_result.data[0].get("version_number", 1) + 1
+                        
+                        # Mark all previous versions as not current
+                        await db.table("clip_versions").update({"is_current": False}).eq(
+                            "job_id", str(job_id)
+                        ).eq("clip_index", clip_index).execute()
+                        
+                        # Get thumbnail if available
+                        thumbnail_url = None
+                        try:
+                            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+                                "job_id", str(job_id)
+                            ).eq("clip_index", clip_index).limit(1).execute()
+                            if thumb_result.data and len(thumb_result.data) > 0:
+                                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+                        except Exception:
+                            pass  # Table may not exist
+                        
+                        # Save regenerated clip as new version
+                        version_data = {
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "version_number": next_version,
+                            "video_url": result.clip.video_url,
+                            "thumbnail_url": thumbnail_url,
+                            "prompt": result.modified_prompt,
+                            "user_instruction": request.instruction.strip(),
+                            "cost": float(result.cost) if result.cost else 0.0,
+                            "is_current": True,  # This is the current version
+                            "created_at": "now()"
+                        }
+                        
+                        await db.table("clip_versions").insert(version_data).execute()
+                        logger.info(
+                            f"Saved regenerated clip to clip_versions as version {next_version}",
+                            extra={
+                                "job_id": job_id,
+                                "clip_index": clip_index,
+                                "version_number": next_version,
+                                "video_url": result.clip.video_url
+                            }
+                        )
+                    except Exception as e:
+                        # Don't fail regeneration if clip_versions save fails, but log the warning
+                        logger.warning(
+                            f"Failed to save regenerated clip to clip_versions: {e}",
+                            extra={"job_id": job_id, "clip_index": clip_index},
+                            exc_info=True
+                        )
                 
                 # Publish completion event (event name matches frontend expectation: "regeneration_complete")
                 await event_pub("regeneration_complete", {

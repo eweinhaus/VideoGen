@@ -1,16 +1,18 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import Image from "next/image"
-import { regenerateClip, getJobClips } from "@/lib/api"
+import { regenerateClip, getJobClips, getClipComparison } from "@/lib/api"
 import { useSSE } from "@/hooks/useSSE"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { FloatingChat } from "@/components/ui/floating-chat"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
+import { ClipComparison } from "@/components/ClipComparison"
 import { APIError } from "@/types/api"
+import { GitCompare } from "lucide-react"
 import type {
   RegenerationStartedEvent,
   TemplateMatchedEvent,
@@ -24,6 +26,14 @@ import type {
 } from "@/types/sse"
 import { cn } from "@/lib/utils"
 
+// Format timestamp in seconds to "M:SS" format
+function formatTimestamp(seconds: number): string {
+  const roundedSeconds = Math.round(seconds)
+  const mins = Math.floor(roundedSeconds / 60)
+  const secs = roundedSeconds % 60
+  return `${mins}:${secs.toString().padStart(2, "0")}`
+}
+
 interface Message {
   role: "user" | "assistant" | "system"
   content: string
@@ -36,6 +46,9 @@ interface Message {
 interface ClipData {
   clip_index: number
   thumbnail_url: string | null
+  timestamp_start: number
+  timestamp_end: number
+  duration: number
 }
 
 interface ClipChatbotProps {
@@ -50,6 +63,7 @@ export function ClipChatbot({
   // Generate unique storage key for this job (unified chat)
   const storageKey = `clip_chat_${jobId}`
   const conversationHistoryKey = `clip_chat_history_${jobId}`
+  const selectedClipKey = `clip_chat_selected_${jobId}`
   
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -65,11 +79,44 @@ export function ClipChatbot({
   const [clips, setClips] = useState<ClipData[]>([])
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | null>(null)
   const [loadingClips, setLoadingClips] = useState(true)
+  const [showComparison, setShowComparison] = useState(false)
+  const [comparisonData, setComparisonData] = useState<{
+    original: any
+    regenerated: any | null
+  } | null>(null)
+  const [loadingComparison, setLoadingComparison] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const conversationHistoryRef = useRef<Array<{ role: string; content: string }>>([])
   const isInitializedRef = useRef(false)
 
-  // Load clips on mount
+  // Save selected clip index to localStorage
+  const saveSelectedClip = useCallback((clipIndex: number | null) => {
+    if (!isInitializedRef.current) return
+    try {
+      if (clipIndex === null) {
+        localStorage.removeItem(selectedClipKey)
+      } else {
+        localStorage.setItem(selectedClipKey, JSON.stringify(clipIndex))
+      }
+    } catch (err) {
+      console.error("Failed to save selected clip:", err)
+    }
+  }, [selectedClipKey])
+
+  // Restore selected clip index from localStorage
+  const getPersistedSelectedClip = useCallback((): number | null => {
+    try {
+      const saved = localStorage.getItem(selectedClipKey)
+      if (saved !== null) {
+        return JSON.parse(saved)
+      }
+    } catch (err) {
+      console.error("Failed to restore selected clip:", err)
+    }
+    return null
+  }, [selectedClipKey])
+
+  // Load clips on mount - always refetch (never cache thumbnails)
   useEffect(() => {
     let mounted = true
 
@@ -80,6 +127,20 @@ export function ClipChatbot({
         if (mounted) {
           setClips(response.clips)
           setLoadingClips(false)
+          
+          // Restore persisted selected clip index if it exists
+          const persistedIndex = getPersistedSelectedClip()
+          if (persistedIndex !== null) {
+            // Validate that the selected clip still exists
+            const clipExists = response.clips.some(c => c.clip_index === persistedIndex)
+            if (clipExists) {
+              setSelectedClipIndex(persistedIndex)
+            } else {
+              // Selected clip no longer exists, clear selection
+              setSelectedClipIndex(null)
+              saveSelectedClip(null)
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to fetch clips:", err)
@@ -94,7 +155,7 @@ export function ClipChatbot({
     return () => {
       mounted = false
     }
-  }, [jobId])
+  }, [jobId, getPersistedSelectedClip, saveSelectedClip])
 
   // Load messages and conversation history from localStorage on mount or when jobId changes
   useEffect(() => {
@@ -134,6 +195,27 @@ export function ClipChatbot({
     
     isInitializedRef.current = true
   }, [jobId, storageKey, conversationHistoryKey])
+
+  // Restore selected clip index on mount (if not already set by clip fetch)
+  // This is handled in the clip fetch useEffect, but this is a fallback
+  useEffect(() => {
+    if (selectedClipIndex === null && clips.length > 0 && isInitializedRef.current) {
+      const persistedIndex = getPersistedSelectedClip()
+      if (persistedIndex !== null) {
+        const clipExists = clips.some(c => c.clip_index === persistedIndex)
+        if (clipExists) {
+          setSelectedClipIndex(persistedIndex)
+        }
+      }
+    }
+  }, [clips, selectedClipIndex, getPersistedSelectedClip])
+
+  // Save selected clip index when it changes
+  useEffect(() => {
+    if (isInitializedRef.current) {
+      saveSelectedClip(selectedClipIndex)
+    }
+  }, [selectedClipIndex, saveSelectedClip])
 
   // Save messages to localStorage whenever they change
   useEffect(() => {
@@ -415,6 +497,29 @@ export function ClipChatbot({
     addSystemMessage("Regeneration cancelled (note: regeneration may continue in background)", "warning")
   }
 
+  const handleCompareClip = async (clipIndex: number) => {
+    if (loadingComparison) return
+    
+    try {
+      setLoadingComparison(true)
+      const data = await getClipComparison(jobId, clipIndex)
+      setComparisonData({
+        original: data.original,
+        regenerated: data.regenerated,
+      })
+      setShowComparison(true)
+    } catch (err) {
+      console.error("Failed to load clip comparison:", err)
+      let errorMessage = "Failed to load clip comparison"
+      if (err instanceof APIError) {
+        errorMessage = err.message || errorMessage
+      }
+      addSystemMessage(errorMessage, "error")
+    } finally {
+      setLoadingComparison(false)
+    }
+  }
+
   const handleRetry = async () => {
     if (!lastInstruction || !lastClipIndex || isProcessing) {
       return
@@ -486,20 +591,31 @@ export function ClipChatbot({
   }
 
   return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle>Modify Clip</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Messages */}
-        <div className="h-64 overflow-y-auto border rounded-md p-4 space-y-3 bg-muted/30">
+    <>
+      {showComparison && comparisonData && selectedClipIndex !== null && (
+        <ClipComparison
+          originalClip={comparisonData.original}
+          regeneratedClip={comparisonData.regenerated}
+          onClose={() => {
+            setShowComparison(false)
+            setComparisonData(null)
+          }}
+          clipIndex={selectedClipIndex}
+        />
+      )}
+      <FloatingChat title="AI Assistant" jobId={jobId} defaultMinimized={true}>
+        <div className="flex flex-col h-full">
+        {/* Scrollable Messages Area */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2" style={{ maxHeight: "calc(80vh - 250px)" }}>
           {messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-8">
-              <p>Start a conversation to modify a clip.</p>
-              <p className="text-sm mt-2">Select a clip above and try: &quot;make it nighttime&quot; or &quot;add more motion&quot;</p>
+              <p className="text-base font-medium">Start a conversation to modify a clip.</p>
+              <p className="text-sm mt-2">Select a clip below and try: &quot;make it nighttime&quot; or &quot;add more motion&quot;</p>
             </div>
           ) : (
-            messages.map((message, index) => (
+            messages.map((message, index) => {
+              const attachedClipIndex = message.attachedClipIndex
+              return (
               <div
                 key={index}
                 className={cn(
@@ -509,9 +625,9 @@ export function ClipChatbot({
               >
                 <div
                   className={cn(
-                    "max-w-[80%] rounded-lg px-4 py-2",
-                    message.attachedClipIndex !== undefined
-                      ? "bg-primary/60 text-primary-foreground text-xs"
+                    "max-w-[85%] rounded-lg px-3 py-2",
+                    attachedClipIndex !== undefined
+                      ? "bg-primary/60 text-primary-foreground text-sm font-medium"
                       : message.role === "user"
                       ? "bg-primary text-primary-foreground"
                       : message.role === "assistant"
@@ -525,182 +641,246 @@ export function ClipChatbot({
                       : "bg-muted/50"
                   )}
                 >
-                  {message.attachedClipIndex !== undefined ? (
+                  {attachedClipIndex !== undefined ? (
                     <div className="flex items-center gap-2">
                       {message.thumbnailUrl && (
-                        <div className="relative w-12 h-8 rounded overflow-hidden flex-shrink-0 bg-muted">
+                        <div className="relative w-10 h-6 rounded overflow-hidden flex-shrink-0 bg-muted">
                           <Image
                             src={message.thumbnailUrl}
-                            alt={`Clip ${message.attachedClipIndex + 1} thumbnail`}
+                            alt={`Clip ${attachedClipIndex + 1} thumbnail`}
                             fill
                             className="object-cover"
-                            sizes="48px"
+                            sizes="40px"
                             onError={(e) => {
-                              console.warn(`Failed to load message thumbnail for clip ${message.attachedClipIndex + 1}`)
-                              // Hide thumbnail on error
+                              console.warn(`Failed to load message thumbnail for clip ${attachedClipIndex + 1}`)
                               e.currentTarget.style.display = 'none'
                             }}
                           />
                         </div>
                       )}
-                      <p className="text-xs">{message.content}</p>
+                      <p className="text-sm font-medium">{message.content}</p>
                     </div>
                   ) : (
                     <>
-                      <p className="text-sm">{message.content}</p>
+                      <p className="text-sm font-medium leading-relaxed">{message.content}</p>
                       <p className="text-xs opacity-70 mt-1">
-                        {message.timestamp.toLocaleTimeString()}
+                        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </>
                   )}
                 </div>
               </div>
-            ))
+              )
+            })
           )}
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Error Alert with Retry */}
+        {/* Error Alert */}
         {error && (
-          <Alert variant="destructive">
-            <AlertDescription className="flex items-center justify-between">
-              <span>{error}</span>
-              {isRetryable && lastInstruction && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRetry}
-                  className="ml-4"
-                >
-                  Retry
-                </Button>
-              )}
-            </AlertDescription>
-          </Alert>
+          <div className="px-3 pb-2">
+            <Alert variant="destructive" className="py-2">
+              <AlertDescription className="flex items-center justify-between text-sm font-medium">
+                <span className="flex-1">{error}</span>
+                {isRetryable && lastInstruction && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRetry}
+                    className="ml-2 h-7 text-sm font-medium"
+                  >
+                    Retry
+                  </Button>
+                )}
+              </AlertDescription>
+            </Alert>
+          </div>
         )}
 
-        {/* Cost Estimate */}
-        {costEstimate != null && typeof costEstimate === "number" && (
-          <div className="text-sm text-muted-foreground">
-            Estimated cost: <span className="font-semibold">${costEstimate.toFixed(2)}</span>
-            {templateMatched && (
-              <span className="ml-2 text-xs">(Template: {templateMatched})</span>
+        {/* Cost Estimate & Progress */}
+        {(costEstimate != null || progress !== null) && (
+          <div className="px-3 pb-2 space-y-1.5">
+            {costEstimate != null && typeof costEstimate === "number" && (
+              <div className="text-sm text-muted-foreground font-medium">
+                Estimated cost: <span className="font-semibold">${costEstimate.toFixed(2)}</span>
+                {templateMatched && (
+                  <span className="ml-1 text-xs">(Template: {templateMatched})</span>
+                )}
+              </div>
+            )}
+            {progress !== null && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-sm font-medium">
+                  <span>
+                    {progress < 60
+                      ? "Regenerating clip..."
+                      : progress < 100
+                      ? "Recomposing video..."
+                      : "Complete!"}
+                  </span>
+                  <span>{Math.round(progress)}%</span>
+                </div>
+                <Progress value={progress} className="h-1.5" />
+              </div>
             )}
           </div>
         )}
 
-        {/* Progress Bar */}
-        {progress !== null && (
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span>
-                {progress < 60
-                  ? "Regenerating clip..."
-                  : progress < 100
-                  ? "Recomposing video..."
-                  : "Complete!"}
-              </span>
-              <span>{Math.round(progress)}%</span>
-            </div>
-            <Progress value={progress} />
+        {/* Clip Thumbnails Row */}
+        {!loadingClips && clips.length > 0 && (
+          <div className="border-t px-3 py-2">
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
+              {clips.map((clip) => {
+                const timestampRange = `${formatTimestamp(clip.timestamp_start)} - ${formatTimestamp(clip.timestamp_end)}`
+                return (
+                  <div
+                    key={clip.clip_index}
+                    className="relative flex-shrink-0"
+                    style={{ width: "72px" }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedClipIndex(clip.clip_index)
+                        saveSelectedClip(clip.clip_index)
+                      }}
+                      disabled={isProcessing}
+                      className={cn(
+                        "relative w-full rounded overflow-hidden border-2 transition-all",
+                        "flex flex-col",
+                        selectedClipIndex === clip.clip_index
+                          ? "border-primary ring-2 ring-primary/20"
+                          : "border-muted hover:border-primary/50",
+                        isProcessing && "opacity-50 cursor-not-allowed"
+                      )}
+                    >
+                      {/* Thumbnail */}
+                      <div className="relative w-full h-10 bg-muted">
+                        {clip.thumbnail_url ? (
+                          <Image
+                            src={clip.thumbnail_url}
+                            alt={`Clip ${clip.clip_index + 1}`}
+                            fill
+                            className="object-cover"
+                            sizes="72px"
+                            onError={(e) => {
+                              console.warn(`Failed to load thumbnail for clip ${clip.clip_index + 1}`)
+                              e.currentTarget.style.display = 'none'
+                            }}
+                          />
+                        ) : (
+                         <div className="flex items-center justify-center h-full bg-muted text-xs font-semibold text-muted-foreground">
+                           {clip.clip_index + 1}
+                         </div>
+                       )}
+                       {selectedClipIndex === clip.clip_index && (
+                         <div className="absolute inset-0 bg-primary/20" />
+                       )}
+                       {/* Clip number badge */}
+                       <div className="absolute top-0.5 left-0.5 bg-black/70 text-white text-xs font-bold px-1.5 py-0.5 rounded">
+                         {clip.clip_index + 1}
+                       </div>
+                     </div>
+                     {/* Timestamp info */}
+                     <div className="bg-muted/50 px-1 py-0.5 text-xs text-muted-foreground leading-tight text-center font-medium">
+                       {timestampRange}
+                     </div>
+                   </button>
+                   {/* Compare button - only show when this clip is selected */}
+                   {selectedClipIndex === clip.clip_index && (
+                     <Button
+                       type="button"
+                       variant="outline"
+                       size="sm"
+                       onClick={(e) => {
+                         e.stopPropagation()
+                         handleCompareClip(clip.clip_index)
+                       }}
+                       disabled={loadingComparison || isProcessing}
+                       className="absolute -bottom-6 left-0 right-0 h-6 text-xs px-1 py-0 bg-background/95 backdrop-blur-sm font-medium"
+                       title="Compare with original"
+                     >
+                       <GitCompare className="h-3 w-3 mr-0.5" />
+                       Compare
+                     </Button>
+                   )}
+                 </div>
+               )
+             })}
+           </div>
+           <p className="text-xs text-muted-foreground mt-1 font-medium">
+              {selectedClipIndex !== null ? (
+                <>
+                  Clip {selectedClipIndex + 1} selected. Click &quot;Compare&quot; to view versions.
+                </>
+              ) : (
+                "Select a clip to modify"
+              )}
+            </p>
           </div>
         )}
 
-        {/* Input Form */}
-        <form onSubmit={handleSubmit} className="space-y-2">
-          {/* Clip Selection */}
-          {!loadingClips && clips.length > 0 && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Select clip to modify:</label>
-              <div className="flex flex-wrap gap-2">
-                {clips.map((clip) => (
-                  <Button
-                    key={clip.clip_index}
-                    type="button"
-                    variant={selectedClipIndex === clip.clip_index ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSelectedClipIndex(clip.clip_index)}
-                    disabled={isProcessing}
-                    className="flex items-center gap-2"
-                  >
-                    {clip.thumbnail_url && (
-                      <div className="relative w-8 h-5 rounded overflow-hidden bg-muted">
-                        <Image
-                          src={clip.thumbnail_url}
-                          alt={`Clip ${clip.clip_index + 1}`}
-                          fill
-                          className="object-cover"
-                          sizes="32px"
-                          onError={(e) => {
-                            console.warn(`Failed to load thumbnail for clip ${clip.clip_index + 1}`)
-                            // Hide thumbnail on error
-                            e.currentTarget.style.display = 'none'
-                          }}
-                        />
-                      </div>
-                    )}
-                    <span>Clip {clip.clip_index + 1}</span>
-                  </Button>
-                ))}
-              </div>
+        {/* Loading Clips */}
+        {loadingClips && (
+          <div className="border-t px-3 py-2">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
+              <LoadingSpinner className="h-4 w-4" />
+              <span>Loading clips...</span>
             </div>
-          )}
-          {loadingClips && (
-            <div className="text-sm text-muted-foreground">Loading clips...</div>
-          )}
-          {!loadingClips && clips.length === 0 && (
-            <Alert>
-              <AlertDescription className="text-xs">
+          </div>
+        )}
+
+        {/* No Clips Available */}
+        {!loadingClips && clips.length === 0 && (
+          <div className="border-t px-3 py-2">
+            <Alert className="py-2">
+              <AlertDescription className="text-sm font-medium">
                 No clips available. The video may not have completed generation yet.
               </AlertDescription>
             </Alert>
-          )}
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Enter your modification instruction..."
-            disabled={isProcessing || selectedClipIndex === null}
-            rows={2}
-            className="resize-none"
-          />
-          <div className="flex gap-2">
+          </div>
+        )}
+
+        {/* Input Area */}
+        <div className="border-t p-2">
+          <form onSubmit={handleSubmit} className="flex gap-2">
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Enter your modification instruction..."
+              disabled={isProcessing || selectedClipIndex === null}
+              rows={1}
+              className="resize-none text-base font-medium min-h-[36px] max-h-[100px]"
+            />
             <Button
               type="submit"
               disabled={!input.trim() || isProcessing || selectedClipIndex === null}
-              className="flex-1"
+              size="sm"
+              className="h-[36px] px-4"
             >
               {isProcessing ? (
-                <>
-                  <LoadingSpinner className="mr-2 h-4 w-4" />
-                  Processing...
-                </>
+                <LoadingSpinner className="h-4 w-4" />
               ) : (
                 "Send"
               )}
             </Button>
-            {isProcessing && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleCancel}
-              >
-                Cancel
-              </Button>
-            )}
-          </div>
-        </form>
+          </form>
+        </div>
 
         {/* SSE Connection Status */}
         {!isConnected && (
-          <Alert>
-            <AlertDescription className="text-xs">
-              Connecting to server...
-            </AlertDescription>
-          </Alert>
+          <div className="border-t px-3 py-1.5">
+            <Alert className="py-1.5">
+              <AlertDescription className="text-sm font-medium">
+                Connecting to server...
+              </AlertDescription>
+            </Alert>
+          </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </FloatingChat>
+    </>
   )
 }
 

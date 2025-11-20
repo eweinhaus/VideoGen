@@ -124,12 +124,20 @@ async def load_clips_from_job_stages(job_id: UUID) -> Optional[Clips]:
                 clip_data["cost"] = Decimal(0)
             
             # Ensure numeric fields are the right type
-            for field in ["actual_duration", "target_duration", "duration_diff", "generation_time"]:
-                if field in clip_data:
+            for field in ["actual_duration", "target_duration", "original_target_duration", "duration_diff", "generation_time"]:
+                if field in clip_data and clip_data[field] is not None:
                     try:
                         clip_data[field] = float(clip_data[field])
                     except (ValueError, TypeError):
-                        clip_data[field] = 0.0
+                        # For original_target_duration, default to target_duration if conversion fails
+                        if field == "original_target_duration":
+                            clip_data[field] = clip_data.get("target_duration", 0.0)
+                        else:
+                            clip_data[field] = 0.0
+            
+            # Ensure metadata is a dict (default to empty dict if missing or invalid)
+            if "metadata" not in clip_data or not isinstance(clip_data.get("metadata"), dict):
+                clip_data["metadata"] = {}
             
             validated_clips.append(clip_data)
         

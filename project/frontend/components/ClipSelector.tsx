@@ -15,7 +15,7 @@ import { MultiClipInstructionInput } from "@/components/MultiClipInstructionInpu
 
 interface ClipSelectorProps {
   jobId: string
-  onClipSelect: (clipIndex: number) => void
+  onClipSelect: (clipIndex: number, timestampStart?: number) => void
   selectedClipIndex?: number
   totalClips?: number
 }
@@ -130,7 +130,7 @@ export function ClipSelector({
     )
   }
 
-  const handleClipClick = (clipIndex: number, e: React.MouseEvent) => {
+  const handleClipClick = (clipIndex: number, timestampStart: number, e: React.MouseEvent) => {
     // Check for Ctrl/Cmd click for style transfer
     if (e.ctrlKey || e.metaKey) {
       if (styleTransferSource === null) {
@@ -140,7 +140,7 @@ export function ClipSelector({
         setShowStyleTransfer(true)
       }
     } else {
-      onClipSelect(clipIndex)
+      onClipSelect(clipIndex, timestampStart)
       setStyleTransferSource(null)
       setShowStyleTransfer(false)
     }
@@ -211,7 +211,7 @@ export function ClipSelector({
                   ? "ring-2 ring-primary ring-offset-2"
                   : "hover:border-primary/50"
               )}
-              onClick={(e) => handleClipClick(clip.clip_index, e)}
+              onClick={(e) => handleClipClick(clip.clip_index, clip.timestamp_start, e)}
             >
               <CardContent className="p-0">
                 {/* Thumbnail */}

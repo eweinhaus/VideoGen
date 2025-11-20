@@ -60,6 +60,7 @@ def generate_clip_scripts(
                     "camera_angle": "Medium shot",
                     "characters": [],
                     "scenes": [],
+                    "objects": [],
                     "lyrics_context": None,
                     "beat_intensity": "medium"
                 })
@@ -118,6 +119,7 @@ def generate_clip_scripts(
             camera_angle=llm_script.get("camera_angle", "Medium shot"),
             characters=llm_script.get("characters", []),
             scenes=llm_script.get("scenes", []),
+            objects=llm_script.get("objects", []),  # Extract objects field from LLM output
             lyrics_context=lyrics_context,  # Always use filtered or validated lyrics
             beat_intensity=llm_script.get("beat_intensity", "medium")
         )

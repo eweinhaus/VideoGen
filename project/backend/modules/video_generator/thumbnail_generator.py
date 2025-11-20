@@ -149,9 +149,32 @@ async def generate_clip_thumbnail(
                     bucket="clip-thumbnails",
                     path=thumbnail_path_storage,
                     file_data=thumbnail_bytes,
-                    content_type="image/jpeg"
+                    content_type="image/jpeg",
+                    overwrite=True  # Allow overwriting existing thumbnails
                 )
             except Exception as e:
+                # Check if it's a 409 duplicate error - if so, try to get the existing file URL
+                error_str = str(e).lower()
+                if "409" in error_str or "duplicate" in error_str or "already exists" in error_str:
+                    logger.debug(
+                        f"Thumbnail already exists, getting existing URL",
+                        extra={"job_id": str(job_id), "clip_index": clip_index}
+                    )
+                    try:
+                        # Try to get the signed URL for the existing file
+                        thumbnail_url = await storage.get_signed_url(
+                            bucket="clip-thumbnails",
+                            path=thumbnail_path_storage,
+                            expires_in=31536000  # 1 year
+                        )
+                        if thumbnail_url:
+                            return thumbnail_url
+                    except Exception as url_error:
+                        logger.warning(
+                            f"Failed to get existing thumbnail URL: {url_error}",
+                            extra={"job_id": str(job_id), "clip_index": clip_index}
+                        )
+                
                 logger.warning(
                     f"Failed to upload thumbnail: {e}",
                     extra={"job_id": str(job_id), "clip_index": clip_index}

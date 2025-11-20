@@ -28,6 +28,7 @@ export default function JobProgressPage() {
   const { job, isLoading: jobLoading, error, fetchJob } = useJob(jobId)
   const [sseError, setSseError] = useState<string | null>(null)
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | undefined>(undefined)
+  const [selectedClipTimestamp, setSelectedClipTimestamp] = useState<number | undefined>(undefined)
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<any>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
@@ -80,6 +81,17 @@ export default function JobProgressPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]) // Only depend on jobId, not fetchJob to prevent unnecessary refetches
+
+  // Scroll to top when video loads
+  useEffect(() => {
+    const isCompleted = job?.status === "completed" && job?.videoUrl
+    if (isCompleted && job?.videoUrl) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      }, 100)
+    }
+  }, [job?.status, job?.videoUrl])
 
   // Hide loading modal immediately once we're on the job page
   useEffect(() => {
@@ -294,6 +306,28 @@ export default function JobProgressPage() {
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back to Upload
         </Button>
+        
+        {/* Sticky header with progress and video - pinned to top when video loaded */}
+        {isCompleted && job?.videoUrl && (
+          <div className="sticky top-0 z-30 bg-background/95 backdrop-blur-sm border-b pb-4 mb-6 -mx-4 px-4 -mt-4 pt-4 space-y-4">
+            <Alert>
+              <AlertDescription>
+                Video generation completed successfully!
+              </AlertDescription>
+            </Alert>
+            <VideoPlayer 
+              videoUrl={job.videoUrl} 
+              jobId={jobId} 
+              seekTo={selectedClipTimestamp}
+            />
+            <ProgressTracker
+              jobId={jobId}
+              onComplete={handleComplete}
+              onError={handleError}
+            />
+          </div>
+        )}
+        
         <Card className="w-full">
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -413,32 +447,13 @@ export default function JobProgressPage() {
               </div>
             ) : (
               <div className="space-y-6">
-                {isCompleted && job.videoUrl && (
-                  <div className="space-y-4">
-                    <Alert>
-                      <AlertDescription>
-                        Video generation completed successfully!
-                      </AlertDescription>
-                    </Alert>
-                    <VideoPlayer videoUrl={job.videoUrl} jobId={jobId} />
-                    <Card>
-                      <CardContent className="pt-6">
-                        <ClipSelector
-                          jobId={jobId}
-                          onClipSelect={(clipIndex) => {
-                            setSelectedClipIndex(clipIndex)
-                          }}
-                          selectedClipIndex={selectedClipIndex}
-                          totalClips={undefined}
-                        />
-                      </CardContent>
-                    </Card>
-                    
-                    {/* Unified ClipChatbot for all clips */}
+                {isCompleted && job.videoUrl ? (
+                  <>
+                    {/* Scrollable content below - clip selector */}
                     <Card>
                       <CardContent className="pt-6">
                         <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold">Modify Clips</h3>
+                          <h3 className="text-lg font-semibold">Select a Clip to Modify</h3>
                           {selectedClipIndex !== undefined && (
                             <Button
                               variant="outline"
@@ -451,24 +466,35 @@ export default function JobProgressPage() {
                             </Button>
                           )}
                         </div>
-                        <ClipChatbot
+                        <ClipSelector
                           jobId={jobId}
-                          onRegenerationComplete={async (newVideoUrl) => {
-                            // Refresh job to get updated video URL and trigger re-render
-                            try {
-                              await fetchJob(jobId)
-                              console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
-                              // Force a small delay to ensure state updates propagate
-                              setTimeout(() => {
-                                // Job store should have updated, triggering VideoPlayer re-render
-                              }, 100)
-                            } catch (error) {
-                              console.error("Failed to refresh job after regeneration:", error)
-                            }
+                          onClipSelect={(clipIndex, timestampStart) => {
+                            setSelectedClipIndex(clipIndex)
+                            setSelectedClipTimestamp(timestampStart)
                           }}
+                          selectedClipIndex={selectedClipIndex}
+                          totalClips={undefined}
                         />
                       </CardContent>
                     </Card>
+                    
+                    {/* Floating ClipChatbot - positioned fixed at bottom-left */}
+                    <ClipChatbot
+                      jobId={jobId}
+                      onRegenerationComplete={async (newVideoUrl) => {
+                        // Refresh job to get updated video URL and trigger re-render
+                        try {
+                          await fetchJob(jobId)
+                          console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                          // Force a small delay to ensure state updates propagate
+                          setTimeout(() => {
+                            // Job store should have updated, triggering VideoPlayer re-render
+                          }, 100)
+                        } catch (error) {
+                          console.error("Failed to refresh job after regeneration:", error)
+                        }
+                      }}
+                    />
                     
                     {/* Comparison Modal */}
                     {showComparison && comparisonData && selectedClipIndex !== undefined && (
@@ -483,13 +509,15 @@ export default function JobProgressPage() {
                         clipIndex={selectedClipIndex}
                       />
                     )}
-                  </div>
+                  </>
+                ) : (
+                  /* Show progress when video not loaded yet */
+                  <ProgressTracker
+                    jobId={jobId}
+                    onComplete={handleComplete}
+                    onError={handleError}
+                  />
                 )}
-                <ProgressTracker
-                  jobId={jobId}
-                  onComplete={handleComplete}
-                  onError={handleError}
-                />
               </div>
             )}
           </CardContent>
