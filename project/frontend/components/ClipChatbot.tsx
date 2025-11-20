@@ -91,6 +91,8 @@ export function ClipChatbot({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const conversationHistoryRef = useRef<Array<{ role: string; content: string }>>([])
   const isInitializedRef = useRef(false)
+  const isRestoringRef = useRef(false)
+  const hasRestoredMessagesRef = useRef(false)
 
   // Save selected clip index to localStorage
   const saveSelectedClip = useCallback((clipIndex: number | null) => {
@@ -195,29 +197,86 @@ export function ClipChatbot({
   useEffect(() => {
     // Reset initialization flag when jobId changes
     isInitializedRef.current = false
+    hasRestoredMessagesRef.current = false
+    
+    console.log(`[ClipChatbot] Loading messages for jobId: ${jobId}, storageKey: ${storageKey}`)
     
     try {
-      // Load messages
+      // Load messages - verify the data exists and is valid
       const savedMessages = localStorage.getItem(storageKey)
+      console.log(`[ClipChatbot] Found saved messages in localStorage:`, savedMessages ? `${savedMessages.length} chars` : 'none')
+      
       if (savedMessages) {
-        const parsed = JSON.parse(savedMessages)
-        // Convert timestamp strings back to Date objects
-        const restoredMessages: Message[] = parsed.map((msg: any) => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp),
-        }))
-        setMessages(restoredMessages)
+        try {
+          const parsed = JSON.parse(savedMessages)
+          console.log(`[ClipChatbot] Parsed messages:`, Array.isArray(parsed) ? `${parsed.length} messages` : 'not an array')
+          
+          // Verify it's an array
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Convert timestamp strings back to Date objects
+            const restoredMessages: Message[] = parsed.map((msg: any) => {
+              // Handle both Date objects (if somehow still serialized) and ISO strings
+              let timestamp: Date
+              if (msg.timestamp instanceof Date) {
+                timestamp = msg.timestamp
+              } else if (typeof msg.timestamp === "string") {
+                timestamp = new Date(msg.timestamp)
+              } else {
+                // Fallback to current date if timestamp is invalid
+                console.warn("[ClipChatbot] Invalid timestamp in message, using current date:", msg)
+                timestamp = new Date()
+              }
+              
+              return {
+                ...msg,
+                timestamp,
+              }
+            })
+            
+            // Only set messages if we successfully parsed them
+            if (restoredMessages.length > 0) {
+              console.log(`[ClipChatbot] Restoring ${restoredMessages.length} messages from localStorage`)
+              hasRestoredMessagesRef.current = true
+              setMessages(restoredMessages)
+              console.log(`[ClipChatbot] Successfully restored ${restoredMessages.length} messages`)
+            } else {
+              console.warn("[ClipChatbot] Parsed messages array was empty, starting fresh")
+              hasRestoredMessagesRef.current = false
+              setMessages([])
+            }
+          } else {
+            console.warn(`[ClipChatbot] Saved messages is not a valid array (type: ${typeof parsed}, length: ${Array.isArray(parsed) ? parsed.length : 'N/A'}), starting fresh`)
+            setMessages([])
+          }
+        } catch (parseErr) {
+          console.error("[ClipChatbot] Failed to parse saved messages:", parseErr)
+          // Try to recover by checking if it's corrupted JSON
+          setMessages([])
+        }
       } else {
-        // Clear messages if no saved data for this job
+        // No saved messages - start fresh
+        console.log(`[ClipChatbot] No saved messages found for jobId: ${jobId}, starting fresh`)
         setMessages([])
       }
 
       // Load conversation history
       const savedHistory = localStorage.getItem(conversationHistoryKey)
       if (savedHistory) {
-        conversationHistoryRef.current = JSON.parse(savedHistory)
+        try {
+          const parsed = JSON.parse(savedHistory)
+          if (Array.isArray(parsed)) {
+            conversationHistoryRef.current = parsed
+            console.log(`Restored ${parsed.length} conversation history entries`)
+          } else {
+            console.warn("Saved conversation history is not a valid array, starting fresh")
+            conversationHistoryRef.current = []
+          }
+        } catch (parseErr) {
+          console.error("Failed to parse conversation history:", parseErr)
+          conversationHistoryRef.current = []
+        }
       } else {
-        // Clear conversation history if no saved data
+        // No saved history - start fresh
         conversationHistoryRef.current = []
       }
 
@@ -232,7 +291,12 @@ export function ClipChatbot({
       conversationHistoryRef.current = []
     }
     
-    isInitializedRef.current = true
+    // Set initialization flag to true AFTER all restoration is complete
+    // Use requestAnimationFrame to ensure DOM updates are processed first
+    requestAnimationFrame(() => {
+      isInitializedRef.current = true
+      console.log(`[ClipChatbot] Initialization complete for jobId: ${jobId}`)
+    })
   }, [jobId, storageKey, conversationHistoryKey, comparisonStateKey])
 
   // Restore selected clip index on mount (if not already set by clip fetch)
@@ -260,47 +324,108 @@ export function ClipChatbot({
   useEffect(() => {
     if (!isInitializedRef.current || clips.length === 0 || loadingClips) return
     
-    const persisted = getPersistedComparisonState()
-    if (persisted && persisted.clipIndex !== null) {
-      // Verify the clip still exists
-      const clipExists = clips.some(c => c.clip_index === persisted.clipIndex)
-      if (clipExists && persisted.clipIndex === selectedClipIndex && persisted.show && persisted.data) {
-        // Restore comparison state if the selected clip matches
-        setComparisonData(persisted.data)
-        setShowComparison(true)
-      } else if (persisted.clipIndex !== selectedClipIndex) {
-        // Clear comparison state if clip doesn't match
-        setShowComparison(false)
-        setComparisonData(null)
-        saveComparisonState(false, null)
+    isRestoringRef.current = true
+    
+    try {
+      const persisted = getPersistedComparisonState()
+      if (persisted && persisted.clipIndex !== null) {
+        // Verify the clip still exists
+        const clipExists = clips.some(c => c.clip_index === persisted.clipIndex)
+        if (clipExists && persisted.clipIndex === selectedClipIndex && persisted.show && persisted.data) {
+          // Restore comparison state if the selected clip matches
+          setComparisonData(persisted.data)
+          setShowComparison(true)
+        } else if (persisted.clipIndex !== selectedClipIndex) {
+          // Clear comparison state if clip doesn't match
+          setShowComparison(false)
+          setComparisonData(null)
+          // Manually clear localStorage to avoid triggering save effect
+          localStorage.removeItem(comparisonStateKey)
+        }
       }
-    } else if (persisted === null && showComparison) {
-      // Clear comparison state if no persisted state but currently showing
-      setShowComparison(false)
-      setComparisonData(null)
+    } catch (err) {
+      console.error("Failed to restore comparison state:", err)
+    } finally {
+      // Reset restoring flag after state updates complete
+      // Use requestAnimationFrame to ensure state updates are processed first
+      requestAnimationFrame(() => {
+        isRestoringRef.current = false
+      })
     }
-  }, [clips, loadingClips, selectedClipIndex, getPersistedComparisonState, saveComparisonState, showComparison])
+  }, [clips, loadingClips, selectedClipIndex, getPersistedComparisonState, comparisonStateKey])
 
-  // Save comparison state when it changes
+  // Save comparison state when it changes (but skip if we're in the middle of restoring)
   useEffect(() => {
-    if (!isInitializedRef.current) return
+    if (!isInitializedRef.current || isRestoringRef.current) return
     saveComparisonState(showComparison, comparisonData)
   }, [showComparison, comparisonData, saveComparisonState])
 
   // Save messages to localStorage whenever they change
   useEffect(() => {
-    if (!isInitializedRef.current) return
+    // Skip saving if not initialized (prevents saving during initial restore)
+    if (!isInitializedRef.current) {
+      console.log(`[ClipChatbot] Skipping save - not initialized yet. Messages count: ${messages.length}`)
+      return
+    }
+    
+    // Don't save empty messages array (but allow saving if messages exist)
+    // UNLESS we just restored messages and they're now empty (which means they were cleared after restore)
+    if (messages.length === 0) {
+      // If we had restored messages but now they're empty, log a warning
+      if (hasRestoredMessagesRef.current) {
+        console.warn(`[ClipChatbot] Messages were restored but are now empty - this might indicate a problem`)
+      }
+      console.log(`[ClipChatbot] Skipping save - messages array is empty`)
+      return
+    }
+    
+    // If we successfully restored messages and they still exist, mark that we've saved them
+    if (hasRestoredMessagesRef.current && messages.length > 0) {
+      console.log(`[ClipChatbot] Saving restored messages (${messages.length} messages)`)
+      hasRestoredMessagesRef.current = false // Reset flag after first save after restore
+    }
     
     try {
+      console.log(`[ClipChatbot] Saving ${messages.length} messages to localStorage`)
+      
       // Convert Date objects to ISO strings for storage
       const messagesToSave = messages.map((msg) => ({
         ...msg,
         timestamp: msg.timestamp.toISOString(),
       }))
-      localStorage.setItem(storageKey, JSON.stringify(messagesToSave))
-    } catch (err) {
-      console.error("Failed to save messages to localStorage:", err)
-      // Silently fail - chat will continue to work, just won't persist
+      const serialized = JSON.stringify(messagesToSave)
+      
+      // Check if we're about to exceed localStorage quota (typical limit is ~5-10MB)
+      // If serialized data is too large, try to keep only the most recent messages
+      if (serialized.length > 4 * 1024 * 1024) { // 4MB threshold (leave room for other data)
+        console.warn("[ClipChatbot] Chat history is large, keeping only the most recent messages")
+        // Keep the last 100 messages to prevent quota issues
+        const recentMessages = messagesToSave.slice(-100)
+        const truncatedSerialized = JSON.stringify(recentMessages)
+        localStorage.setItem(storageKey, truncatedSerialized)
+        console.log(`[ClipChatbot] Truncated chat history from ${messagesToSave.length} to ${recentMessages.length} messages`)
+      } else {
+        localStorage.setItem(storageKey, serialized)
+        console.log(`[ClipChatbot] Successfully saved ${messages.length} messages to localStorage (${serialized.length} bytes)`)
+      }
+    } catch (err: any) {
+      // Handle quota exceeded error specifically
+      if (err?.name === "QuotaExceededError" || err?.code === 22) {
+        console.warn("localStorage quota exceeded, attempting to keep only recent messages")
+        try {
+          // Try saving only the most recent 50 messages
+          const recentMessages = messages.slice(-50).map((msg) => ({
+            ...msg,
+            timestamp: msg.timestamp.toISOString(),
+          }))
+          localStorage.setItem(storageKey, JSON.stringify(recentMessages))
+          console.log(`Successfully saved ${recentMessages.length} recent messages after quota error`)
+        } catch (retryErr) {
+          console.error("Failed to save messages even after truncation:", retryErr)
+        }
+      } else {
+        console.error("Failed to save messages to localStorage:", err)
+      }
     }
   }, [messages, storageKey])
 

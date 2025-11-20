@@ -367,7 +367,7 @@ async def compare_clip_versions(
                         "thumbnail_url": latest_version.get("thumbnail_url"),
                         "prompt": latest_version.get("prompt", ""),
                         "version_number": latest_version.get("version_number"),
-                        "duration": None,
+                        "duration": float(latest_version.get("duration")) if latest_version.get("duration") is not None else None,
                         "user_instruction": latest_version.get("user_instruction"),
                         "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
                         "created_at": latest_version.get("created_at")
@@ -383,7 +383,7 @@ async def compare_clip_versions(
                         "thumbnail_url": previous_version.get("thumbnail_url"),
                         "prompt": previous_version.get("prompt", ""),
                         "version_number": previous_version.get("version_number"),
-                        "duration": None,
+                        "duration": float(previous_version.get("duration")) if previous_version.get("duration") is not None else None,
                         "user_instruction": previous_version.get("user_instruction"),
                         "cost": float(previous_version.get("cost", 0)) if previous_version.get("cost") else None,
                         "created_at": previous_version.get("created_at")
@@ -395,7 +395,7 @@ async def compare_clip_versions(
                         "thumbnail_url": latest_version.get("thumbnail_url"),
                         "prompt": latest_version.get("prompt", ""),
                         "version_number": latest_version.get("version_number"),
-                        "duration": None,
+                        "duration": float(latest_version.get("duration")) if latest_version.get("duration") is not None else None,
                         "user_instruction": latest_version.get("user_instruction"),
                         "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
                         "created_at": latest_version.get("created_at")
@@ -486,7 +486,7 @@ async def compare_clip_versions(
                         "thumbnail_url": version_data.get("thumbnail_url"),
                         "prompt": version_data.get("prompt"),
                         "version_number": version_data.get("version_number"),
-                        "duration": None,
+                        "duration": float(version_data.get("duration")) if version_data.get("duration") is not None else None,
                         "user_instruction": version_data.get("user_instruction"),
                         "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
                         "created_at": version_data.get("created_at")
@@ -503,7 +503,7 @@ async def compare_clip_versions(
                                 "thumbnail_url": prev_version_data.get("thumbnail_url"),
                                 "prompt": prev_version_data.get("prompt", ""),
                                 "version_number": prev_version_data.get("version_number"),
-                                "duration": None,
+                                "duration": float(prev_version_data.get("duration")) if prev_version_data.get("duration") is not None else None,
                                 "user_instruction": prev_version_data.get("user_instruction"),
                                 "cost": float(prev_version_data.get("cost", 0)) if prev_version_data.get("cost") else None,
                                 "created_at": prev_version_data.get("created_at")
@@ -1163,6 +1163,7 @@ async def regenerate_clip_endpoint(
                             "prompt": result.modified_prompt,
                             "user_instruction": request.instruction.strip(),
                             "cost": float(result.cost) if result.cost else 0.0,
+                            "duration": float(result.clip.actual_duration) if result.clip.actual_duration else None,
                             "is_current": True,  # This is the current version
                             "created_at": "now()"
                         }

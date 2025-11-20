@@ -1117,6 +1117,7 @@ async def regenerate_clip_with_recomposition(
                 "prompt": original_prompt,
                 "user_instruction": None,  # Original has no instruction
                 "cost": float(original_clip.cost) if original_clip.cost else 0.0,
+                "duration": float(original_clip.actual_duration) if original_clip.actual_duration else None,
                 "is_current": False,  # Version 1 is not current after regeneration
                 "created_at": "now()"
             }
