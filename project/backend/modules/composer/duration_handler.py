@@ -3,6 +3,7 @@ Duration handling for composer module.
 
 Trims clips if too long. Short clips are handled by cascading compensation.
 """
+import asyncio
 from pathlib import Path
 from typing import Tuple, List, Dict, Any
 from uuid import UUID

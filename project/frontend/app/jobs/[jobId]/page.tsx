@@ -440,12 +440,18 @@ export default function JobProgressPage() {
                         </div>
                         <ClipChatbot
                           jobId={jobId}
-                          onRegenerationComplete={(newVideoUrl) => {
-                            // Refresh job to get updated video URL
-                            fetchJob(jobId).catch((error) => {
+                          onRegenerationComplete={async (newVideoUrl) => {
+                            // Refresh job to get updated video URL and trigger re-render
+                            try {
+                              await fetchJob(jobId)
+                              console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                              // Force a small delay to ensure state updates propagate
+                              setTimeout(() => {
+                                // Job store should have updated, triggering VideoPlayer re-render
+                              }, 100)
+                            } catch (error) {
                               console.error("Failed to refresh job after regeneration:", error)
-                            })
-                            console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                            }
                           }}
                         />
                       </CardContent>

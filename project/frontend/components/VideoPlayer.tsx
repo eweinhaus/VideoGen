@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
@@ -22,6 +22,14 @@ export function VideoPlayer({
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Reset loading state when video URL changes (e.g., after recomposition)
+  useEffect(() => {
+    if (videoUrl) {
+      setIsLoading(true)
+      setError(null)
+    }
+  }, [videoUrl])
 
   const handleVideoLoad = () => {
     setIsLoading(false)
@@ -66,6 +74,7 @@ export function VideoPlayer({
           </div>
         )}
         <video
+          key={videoUrl} // Force re-mount when URL changes
           src={videoUrl}
           controls
           preload="metadata"

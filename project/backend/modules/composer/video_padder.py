@@ -9,7 +9,7 @@ from uuid import UUID
 from shared.errors import CompositionError
 from shared.logging import get_logger
 from .utils import run_ffmpeg_command, get_video_duration, get_audio_duration
-from .config import OUTPUT_FPS
+from .config import OUTPUT_FPS, FFMPEG_PRESET
 
 logger = get_logger("composer.video_padder")
 
@@ -95,7 +95,7 @@ async def pad_video_to_audio(
             "-vf", f"scale={target_width}:{target_height},fps={OUTPUT_FPS},fade=t=out:st={fade_start}:d={fade_duration}",
             "-t", str(duration_diff),
             "-c:v", "libx264",
-            "-preset", "medium",
+            "-preset", FFMPEG_PRESET,
             "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-y",
