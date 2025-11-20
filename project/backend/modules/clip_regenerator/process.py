@@ -599,7 +599,6 @@ async def regenerate_clip(
     # Otherwise, use the original prompt
     if latest_version_prompt:
         # Create a new ClipPrompt with the latest version's prompt but original reference URLs
-        from shared.models.video import ClipPrompt
         original_prompt = ClipPrompt(
             clip_index=original_prompt.clip_index,
             prompt=latest_version_prompt,  # Use latest version's prompt
