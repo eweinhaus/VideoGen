@@ -324,6 +324,8 @@ async def load_scene_plan_from_job_stages(job_id: UUID) -> Optional[ScenePlan]:
     """
     Load ScenePlan object from job_stages.metadata.
     
+    Metadata structure: {"scene_plan": {"job_id": ..., "video_summary": ..., ...}}
+    
     Args:
         job_id: Job ID to load scene plan for
         
@@ -362,9 +364,22 @@ async def load_scene_plan_from_job_stages(job_id: UUID) -> Optional[ScenePlan]:
                 )
                 return None
         
+        # The orchestrator saves metadata as {"scene_plan": scene_plan_dict}
+        # Check if we have a nested structure and extract the actual scene_plan dict
+        if "scene_plan" in metadata and isinstance(metadata.get("scene_plan"), dict):
+            # Nested structure: metadata = {"scene_plan": {...}}
+            scene_plan_data = metadata["scene_plan"]
+        else:
+            # Direct structure: metadata = {...} (for backward compatibility)
+            scene_plan_data = metadata
+        
+        # Fill in missing required fields
+        if "job_id" not in scene_plan_data:
+            scene_plan_data["job_id"] = str(job_id)
+        
         # Reconstruct Pydantic model
         try:
-            scene_plan = ScenePlan(**metadata)
+            scene_plan = ScenePlan(**scene_plan_data)
             logger.debug(
                 f"Successfully loaded scene plan from job_stages",
                 extra={"job_id": str(job_id)}

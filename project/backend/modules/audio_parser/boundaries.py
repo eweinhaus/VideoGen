@@ -745,10 +745,11 @@ def generate_boundaries_with_breakpoints(
         List of ClipBoundary objects, all within 4-8s range
     """
     # Hard constraints for clip durations
-    # MIN_DURATION lowered to 3.0s to allow smaller clips rather than leaving gaps
-    # Better to have a 3-4s clip than to leave audio uncovered
-    MIN_DURATION = 3.0
+    # Clips must be 4-8 seconds (Veo 3.1 constraint: max 8s)
+    # If remaining time < 3s, extend previous clip instead of creating tiny clip
+    MIN_DURATION = 4.0
     MAX_DURATION = 8.0
+    EXTEND_THRESHOLD = 3.0  # If remaining < 3s, extend neighbor instead of creating new clip
     
     # Get target duration (used as fallback when no breakpoints available)
     target_duration = _get_target_duration_for_segment(segment_type, beat_intensity)
@@ -771,11 +772,11 @@ def generate_boundaries_with_breakpoints(
             f"min_clips={min_clips_required}, max_clips={max_clips}"
         )
     
-    # Edge case: Very short segments (<3s)
+    # Edge case: Very short segments (<4s)
     if total_duration < MIN_DURATION:
         logger.warning(
             f"Segment too short ({total_duration:.1f}s < {MIN_DURATION}s minimum), "
-            f"creating single clip anyway"
+            f"creating single clip anyway (will be < 4s, but better than gap)"
         )
         return [ClipBoundary(
             start=0.0,
@@ -812,11 +813,11 @@ def generate_boundaries_with_breakpoints(
         # Calculate remaining time in segment
         remaining_time = total_duration - current_time
         
-        # If less than 3s remaining, exit main loop and let continuation loop handle it
-        # With MIN_DURATION=3.0s, we can create clips down to 3s in the main loop
-        # Only exit if remaining time is truly too small (< 3s)
+        # If less than 4s remaining, exit main loop and let continuation loop handle it
+        # The continuation loop will extend the previous clip if remaining < 3s,
+        # or create a minimum 4s clip if remaining is 3-4s
         if remaining_time < MIN_DURATION:
-            break
+            break  # Will be handled in continuation loop
         
         # Find next breakpoint within acceptable range (4-8s from current_time)
         candidate_breakpoints = [
@@ -961,25 +962,48 @@ def generate_boundaries_with_breakpoints(
             ))
             current_time = end_time
         
-        # If remaining time < 3s, we MUST cover it - NO GAPS ALLOWED
-        # Strategy: Try to extend last clip first, otherwise create small clip
+        # If remaining time < 4s, ALWAYS extend previous clip (never create clips < 4s)
+        # Strategy: Extend neighbor clip to cover remainder, even if it slightly exceeds 8s
         else:  # remaining_time < MIN_DURATION
             if boundaries:
                 last_boundary = boundaries[-1]
                 extended_duration = total_duration - last_boundary.start
+                
+                # ALWAYS extend previous clip for remaining < 4s
+                # Better to have a clip slightly over 8s than a clip < 4s or a gap
                 if extended_duration <= MAX_DURATION:
-                    # Extend last clip to cover remainder - this is preferred
+                    # Extend last clip to cover remainder
                     boundaries[-1] = ClipBoundary(
                         start=last_boundary.start,
                         end=total_duration,
                         duration=extended_duration,
                         metadata=last_boundary.metadata
                     )
-                    logger.debug(f"Extended last clip to cover remaining {remaining_time:.2f}s")
+                    logger.debug(
+                        f"Extended last clip to cover remaining {remaining_time:.2f}s "
+                        f"(would have been < 4s clip, extending neighbor instead)"
+                    )
                 else:
-                    # Can't extend without exceeding 8s - create small clip anyway
-                    # CRITICAL: Better to have a small clip (even < 1s) than a gap!
-                    # Blank space between clips is NOT acceptable
+                    # Can't extend without exceeding 8s - extend anyway to prevent gap
+                    # Better to have clip slightly over 8s than a gap or < 4s clip
+                    logger.warning(
+                        f"Cannot extend last clip without exceeding 8s (would be {extended_duration:.2f}s) "
+                        f"but remaining {remaining_time:.2f}s < 4s. Extending anyway to prevent gap."
+                    )
+                    boundaries[-1] = ClipBoundary(
+                        start=last_boundary.start,
+                        end=total_duration,
+                        duration=extended_duration,
+                        metadata={
+                            **last_boundary.metadata,
+                            "warning": "clip_duration_exceeds_maximum",
+                            "note": f"Extended to {extended_duration:.2f}s to cover {remaining_time:.2f}s remainder (no clips < 4s allowed)"
+                        }
+                    )
+            else:
+                # No boundaries yet - if remaining < 4s, this is a very short segment
+                # Create clip anyway (it's the only option)
+                if remaining_time >= EXTEND_THRESHOLD:
                     boundaries.append(ClipBoundary(
                         start=current_time,
                         end=total_duration,
@@ -987,29 +1011,25 @@ def generate_boundaries_with_breakpoints(
                         metadata={
                             "segment_type": segment_type,
                             "beat_intensity": beat_intensity,
-                            "clip_index": len(boundaries),
-                            "is_continuation": True,
-                            "warning": "clip_duration_below_minimum",
-                            "note": "Created to prevent gap - better than blank space"
+                            "clip_index": 0
                         }
                     ))
+                else:
+                    # Segment is < 3s - create it anyway (edge case)
                     logger.warning(
-                        f"Created clip with duration {remaining_time:.2f}s < {MIN_DURATION}s "
-                        f"to avoid gap (NO GAPS ALLOWED - blank space between clips is NOT acceptable)"
+                        f"Very short segment ({remaining_time:.2f}s < 3s) - creating clip anyway"
                     )
-            else:
-                # No boundaries yet - create one for remaining time (even if very short)
-                boundaries.append(ClipBoundary(
-                    start=current_time,
-                    end=total_duration,
-                    duration=remaining_time,
-                    metadata={
-                        "segment_type": segment_type,
-                        "beat_intensity": beat_intensity,
-                        "clip_index": 0,
-                        "warning": "clip_duration_below_minimum" if remaining_time < MIN_DURATION else None
-                    }
-                ))
+                    boundaries.append(ClipBoundary(
+                        start=current_time,
+                        end=total_duration,
+                        duration=remaining_time,
+                        metadata={
+                            "segment_type": segment_type,
+                            "beat_intensity": beat_intensity,
+                            "clip_index": 0,
+                            "warning": "segment_too_short"
+                        }
+                    ))
             current_time = total_duration
             break
     
@@ -1028,9 +1048,50 @@ def generate_boundaries_with_breakpoints(
             new_start = boundaries[i].end
             new_duration = boundaries[i + 1].end - new_start
             
-            # If adjusting start makes duration too short, extend the end (up to segment end)
-            if new_duration < MIN_DURATION:
-                # Try to extend end to reach minimum, but cap at total_duration (segment end)
+            # If adjusting start makes duration < 3s, extend previous clip instead
+            if new_duration < EXTEND_THRESHOLD:
+                # Extend previous clip to cover the gap (if it won't exceed 8s)
+                prev_extended_duration = boundaries[i + 1].end - boundaries[i].start
+                if prev_extended_duration <= MAX_DURATION:
+                    # Extend previous clip
+                    boundaries[i] = ClipBoundary(
+                        start=boundaries[i].start,
+                        end=boundaries[i + 1].end,
+                        duration=prev_extended_duration,
+                        metadata=boundaries[i].metadata
+                    )
+                    # Remove the next clip (it's been merged into previous)
+                    boundaries.pop(i + 1)
+                    logger.debug(
+                        f"Extended clip {i} to cover gap (merged with clip {i+1}): "
+                        f"new duration {prev_extended_duration:.2f}s"
+                    )
+                    continue  # Skip to next iteration (indices shifted)
+                else:
+                    # Can't extend previous without exceeding 8s - extend next clip end instead
+                    # Try to extend end to reach minimum, but cap at total_duration
+                    new_end = min(new_start + MIN_DURATION, total_duration)
+                    new_duration = new_end - new_start
+                    if new_duration < EXTEND_THRESHOLD:
+                        # Still too short - must extend previous even if it exceeds 8s
+                        logger.warning(
+                            f"Cannot fix gap without creating < 3s clip. "
+                            f"Extending previous clip to {prev_extended_duration:.2f}s (exceeds 8s max)."
+                        )
+                        boundaries[i] = ClipBoundary(
+                            start=boundaries[i].start,
+                            end=boundaries[i + 1].end,
+                            duration=prev_extended_duration,
+                            metadata={
+                                **boundaries[i].metadata,
+                                "warning": "clip_duration_exceeds_maximum",
+                                "note": "Extended to fix gap and avoid < 3s clip"
+                            }
+                        )
+                        boundaries.pop(i + 1)
+                        continue
+            elif new_duration < MIN_DURATION:
+                # Duration is 3-4s - try to extend end to reach 4s minimum
                 new_end = min(new_start + MIN_DURATION, total_duration)
                 new_duration = new_end - new_start
             else:
@@ -1047,54 +1108,50 @@ def generate_boundaries_with_breakpoints(
     # This is a final safety check to catch any remaining uncovered time
     if boundaries and boundaries[-1].end < total_duration:
         remaining = total_duration - boundaries[-1].end
-        
-        # ALWAYS cover remaining time, no matter how small - blank space is NOT acceptable
         last_boundary = boundaries[-1]
         new_duration = total_duration - last_boundary.start
         
-        if new_duration <= MAX_DURATION:
-            # Extend last boundary to cover remainder
+        # If remaining < 4s, ALWAYS extend previous clip (never create clips < 4s)
+        if remaining < MIN_DURATION:
+            # Must extend previous clip, even if it slightly exceeds 8s
             boundaries[-1] = ClipBoundary(
                 start=last_boundary.start,
                 end=total_duration,
                 duration=new_duration,
-                metadata=last_boundary.metadata
-            )
-            logger.debug(f"Extended last boundary to cover remaining {remaining:.2f}s")
-        else:
-            # Can't extend without exceeding 8s - create small clip anyway
-            # CRITICAL: Better to have a tiny clip than a gap!
-            boundaries.append(ClipBoundary(
-                start=last_boundary.end,
-                end=total_duration,
-                duration=remaining,
                 metadata={
-                    "segment_type": segment_type,
-                    "beat_intensity": beat_intensity,
-                    "clip_index": len(boundaries),
-                    "is_remainder": True,
-                    "warning": "clip_duration_below_minimum" if remaining < MIN_DURATION else None,
-                    "note": "Created to prevent gap - better than blank space"
+                    **last_boundary.metadata,
+                    "warning": "clip_duration_exceeds_maximum" if new_duration > MAX_DURATION else None,
+                    "note": f"Extended to cover {remaining:.2f}s remainder (no clips < 4s allowed)"
                 }
-            ))
-            logger.warning(
-                f"Created final clip with duration {remaining:.2f}s "
-                f"{'(< MIN_DURATION)' if remaining < MIN_DURATION else ''} "
-                f"to avoid gap (NO GAPS ALLOWED)"
+            )
+            logger.debug(
+                f"Extended last boundary to cover remaining {remaining:.2f}s "
+                f"(would have been < 4s clip, extending neighbor instead)"
             )
         elif remaining >= MIN_DURATION:
-            # Create additional clip for remaining time
-            boundaries.append(ClipBoundary(
-                start=boundaries[-1].end,
-                end=total_duration,
-                duration=remaining,
-                metadata={
-                    "segment_type": segment_type,
-                    "beat_intensity": beat_intensity,
-                    "clip_index": len(boundaries),
-                    "is_remainder": True
-                }
-            ))
+            # Remaining is 4-8s - create a proper clip
+            if new_duration <= MAX_DURATION:
+                # Can extend previous clip without exceeding 8s
+                boundaries[-1] = ClipBoundary(
+                    start=last_boundary.start,
+                    end=total_duration,
+                    duration=new_duration,
+                    metadata=last_boundary.metadata
+                )
+                logger.debug(f"Extended last boundary to cover remaining {remaining:.2f}s")
+            else:
+                # Can't extend - create new clip for remaining 4-8s
+                boundaries.append(ClipBoundary(
+                    start=last_boundary.end,
+                    end=total_duration,
+                    duration=remaining,
+                    metadata={
+                        "segment_type": segment_type,
+                        "beat_intensity": beat_intensity,
+                        "clip_index": len(boundaries),
+                        "is_remainder": True
+                    }
+                ))
     
     # Final validation: ensure all boundaries are 4-8s
     validated_boundaries = []
@@ -1154,7 +1211,7 @@ def generate_boundaries_with_breakpoints(
 def validate_boundaries(
     boundaries: List[ClipBoundary],
     total_duration: float,
-    min_duration: float = 3.0,
+    min_duration: float = 4.0,
     max_duration: float = 8.0
 ) -> Tuple[bool, List[str]]:
     """

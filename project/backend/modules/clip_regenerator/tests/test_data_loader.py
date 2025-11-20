@@ -270,17 +270,22 @@ async def test_load_clip_prompts_from_job_stages_missing_stage(sample_job_id, mo
 @pytest.mark.asyncio
 async def test_load_scene_plan_from_job_stages_success(sample_job_id, mock_database_client):
     """Test loading scene plan with valid metadata."""
-    # Sample scene plan metadata
+    # Sample scene plan metadata - nested structure as saved by orchestrator
     scene_plan_metadata = {
-        "characters": [],
-        "scenes": [],
-        "clip_scripts": [],
-        "transitions": [],
-        "style": {
-            "visual_style": "cyberpunk",
-            "color_palette": "neon",
-            "lighting": "dark",
-            "cinematography": "dynamic"
+        "scene_plan": {
+            "job_id": str(sample_job_id),
+            "video_summary": "Test video summary",
+            "characters": [],
+            "scenes": [],
+            "clip_scripts": [],
+            "transitions": [],
+            "style": {
+                "visual_style": "cyberpunk",
+                "color_palette": ["#00FFFF", "#FF00FF"],
+                "lighting": "dark",
+                "cinematography": "dynamic",
+                "mood": "futuristic"
+            }
         }
     }
     
