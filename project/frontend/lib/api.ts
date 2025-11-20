@@ -430,7 +430,7 @@ export interface ClipComparisonResponse {
     duration: number
     user_instruction?: string | null
     cost?: number | null
-  }
+  } | null
   duration_mismatch: boolean
   duration_diff: number
 }
@@ -472,6 +472,29 @@ export async function getJobAnalytics(jobId: string): Promise<JobAnalyticsRespon
     `/api/v1/jobs/${jobId}/analytics`,
     { method: "GET" },
     5000
+  )
+}
+
+export interface RevertClipResponse {
+  job_id: string
+  clip_index: number
+  reverted_to_version: number
+  video_url: string
+  status: string
+}
+
+export async function revertClipToVersion(
+  jobId: string,
+  clipIndex: number,
+  versionNumber: number = 1
+): Promise<RevertClipResponse> {
+  return request<RevertClipResponse>(
+    `/api/v1/jobs/${jobId}/clips/${clipIndex}/revert`,
+    {
+      method: "POST",
+      body: JSON.stringify({ version_number: versionNumber }),
+    },
+    300000 // 5 minute timeout for composition
   )
 }
 

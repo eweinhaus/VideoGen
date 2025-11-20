@@ -11,6 +11,7 @@ export interface JobResponse {
   current_stage: string | null
   progress: number
   video_url: string | null
+  audio_url?: string | null
   error_message: string | null
   created_at: string
   updated_at: string

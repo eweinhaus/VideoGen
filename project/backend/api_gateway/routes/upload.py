@@ -203,6 +203,8 @@ async def upload_audio(
             "progress": 0,
             "current_stage": "audio_parser",  # Set initial stage so frontend knows what's next
             "stop_at_stage": stop_at_stage,  # Store stop_at_stage for orchestrator
+            "video_model": video_model,  # Store video_model for orchestrator
+            "aspect_ratio": aspect_ratio,  # Store aspect_ratio for orchestrator
             "template": template,  # Store template for orchestrator
             "created_at": datetime.utcnow().isoformat()
         }

@@ -124,12 +124,20 @@ async def load_clips_from_job_stages(job_id: UUID) -> Optional[Clips]:
                 clip_data["cost"] = Decimal(0)
             
             # Ensure numeric fields are the right type
-            for field in ["actual_duration", "target_duration", "duration_diff", "generation_time"]:
-                if field in clip_data:
+            for field in ["actual_duration", "target_duration", "original_target_duration", "duration_diff", "generation_time"]:
+                if field in clip_data and clip_data[field] is not None:
                     try:
                         clip_data[field] = float(clip_data[field])
                     except (ValueError, TypeError):
-                        clip_data[field] = 0.0
+                        # For original_target_duration, default to target_duration if conversion fails
+                        if field == "original_target_duration":
+                            clip_data[field] = clip_data.get("target_duration", 0.0)
+                        else:
+                            clip_data[field] = 0.0
+            
+            # Ensure metadata is a dict (default to empty dict if missing or invalid)
+            if "metadata" not in clip_data or not isinstance(clip_data.get("metadata"), dict):
+                clip_data["metadata"] = {}
             
             validated_clips.append(clip_data)
         
@@ -324,6 +332,8 @@ async def load_scene_plan_from_job_stages(job_id: UUID) -> Optional[ScenePlan]:
     """
     Load ScenePlan object from job_stages.metadata.
     
+    Metadata structure: {"scene_plan": {"job_id": ..., "video_summary": ..., ...}}
+    
     Args:
         job_id: Job ID to load scene plan for
         
@@ -362,9 +372,22 @@ async def load_scene_plan_from_job_stages(job_id: UUID) -> Optional[ScenePlan]:
                 )
                 return None
         
+        # The orchestrator saves metadata as {"scene_plan": scene_plan_dict}
+        # Check if we have a nested structure and extract the actual scene_plan dict
+        if "scene_plan" in metadata and isinstance(metadata.get("scene_plan"), dict):
+            # Nested structure: metadata = {"scene_plan": {...}}
+            scene_plan_data = metadata["scene_plan"]
+        else:
+            # Direct structure: metadata = {...} (for backward compatibility)
+            scene_plan_data = metadata
+        
+        # Fill in missing required fields
+        if "job_id" not in scene_plan_data:
+            scene_plan_data["job_id"] = str(job_id)
+        
         # Reconstruct Pydantic model
         try:
-            scene_plan = ScenePlan(**metadata)
+            scene_plan = ScenePlan(**scene_plan_data)
             logger.debug(
                 f"Successfully loaded scene plan from job_stages",
                 extra={"job_id": str(job_id)}

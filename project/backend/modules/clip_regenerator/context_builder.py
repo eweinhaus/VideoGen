@@ -55,12 +55,14 @@ def build_llm_context(
                 # Use ID as fallback
                 character_names.append(character.id)
     
-    # Extract scene locations
+    # Extract scene locations from scene descriptions
+    # Note: Scene model doesn't have a 'location' field, so we extract from description
     scene_locations = []
     if scene_plan.scenes:
         for scene in scene_plan.scenes:
-            if scene.location:
-                scene_locations.append(scene.location)
+            # Use description as location info (scenes typically describe location)
+            if scene.description:
+                scene_locations.append(scene.description)
     
     # Extract mood
     mood = "Not specified"

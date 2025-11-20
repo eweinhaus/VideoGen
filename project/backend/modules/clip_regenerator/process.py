@@ -570,13 +570,15 @@ async def regenerate_clip(
         }
     )
     
-    # Get job configuration (video_model, aspect_ratio)
+    # Get job configuration (aspect_ratio only - video_model always defaults to Veo 3.1 for regeneration)
     logger.debug(
         f"Loading job configuration",
         extra={"job_id": str(job_id)}
     )
     job_config = await _get_job_config(job_id)
-    video_model = job_config["video_model"]
+    # Always default to Veo 3.1 for regeneration
+    # Only switch to Kling Turbo if content moderation retry is needed (handled in video generator)
+    video_model = "veo_31"
     aspect_ratio = job_config["aspect_ratio"]
     logger.debug(
         f"Job configuration loaded",
@@ -584,7 +586,8 @@ async def regenerate_clip(
             "job_id": str(job_id),
             "video_model": video_model,
             "aspect_ratio": aspect_ratio,
-            "environment": environment
+            "environment": environment,
+            "note": "Always using Veo 3.1 for regeneration (Kling Turbo only used in content moderation retry)"
         }
     )
     
@@ -1072,6 +1075,80 @@ async def regenerate_clip_with_recomposition(
             }
         )
     
+    # Save original clip to clip_versions table BEFORE overwriting (if not already saved)
+    # This preserves the original for comparison purposes
+    # IMPORTANT: Load the TRUE original from clip_versions v1 if it exists, not from job_stages
+    # (job_stages may already have a regenerated clip from a previous regeneration)
+    original_clip = clips.clips[clip_position]
+    try:
+        db = DatabaseClient()
+        # Check if version 1 already exists for this clip
+        existing_version = await db.table("clip_versions").select("*").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).eq("version_number", 1).limit(1).execute()
+        
+        # Only save if version 1 doesn't exist yet
+        if not existing_version.data or len(existing_version.data) == 0:
+            # This is the first regeneration - save the current clip as version 1 (original)
+            # Get prompt for original clip
+            clip_prompts = await load_clip_prompts_from_job_stages(job_id)
+            original_prompt = ""
+            if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
+                original_prompt = clip_prompts.clip_prompts[clip_index].prompt
+            
+            # Get thumbnail if available
+            thumbnail_url = None
+            try:
+                thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_index).limit(1).execute()
+                if thumb_result.data and len(thumb_result.data) > 0:
+                    thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+            except Exception:
+                pass  # Table may not exist
+            
+            # Save original clip as version 1
+            version_data = {
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "version_number": 1,
+                "video_url": original_clip.video_url,
+                "thumbnail_url": thumbnail_url,
+                "prompt": original_prompt,
+                "user_instruction": None,  # Original has no instruction
+                "cost": float(original_clip.cost) if original_clip.cost else 0.0,
+                "is_current": False,  # Version 1 is not current after regeneration
+                "created_at": "now()"
+            }
+            
+            await db.table("clip_versions").insert(version_data).execute()
+            logger.info(
+                f"Saved original clip to clip_versions as version 1",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "video_url": original_clip.video_url
+                }
+            )
+        else:
+            # Version 1 already exists - this means we've regenerated before
+            # The original is already saved, so we don't need to save it again
+            logger.debug(
+                f"Original clip (version 1) already exists in clip_versions, skipping save",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "existing_v1_url": existing_version.data[0].get("video_url")
+                }
+            )
+    except Exception as e:
+        # Don't fail regeneration if clip_versions save fails, but log the warning
+        logger.warning(
+            f"Failed to save original clip to clip_versions: {e}",
+            extra={"job_id": str(job_id), "clip_index": clip_index},
+            exc_info=True
+        )
+    
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
     updated_clips[clip_position] = new_clip
@@ -1221,27 +1298,36 @@ async def regenerate_clip_with_recomposition(
         # Save updated clips to database so subsequent regenerations use latest versions
         try:
             from api_gateway.services.db_helpers import update_job_stage
+            # Build clips dict, ensuring all values are JSON serializable
             clips_dict = {
                 "job_id": str(updated_clips_obj.job_id),
                 "clips": [
                     {
                         "clip_index": clip.clip_index,
                         "video_url": clip.video_url,
-                        "actual_duration": clip.actual_duration,
-                        "target_duration": clip.target_duration,
-                        "duration_diff": clip.duration_diff,
+                        "actual_duration": float(clip.actual_duration) if clip.actual_duration is not None else None,
+                        "target_duration": float(clip.target_duration) if clip.target_duration is not None else None,
+                        "duration_diff": float(clip.duration_diff) if clip.duration_diff is not None else None,
                         "status": clip.status,
                         "cost": str(clip.cost),
-                        "retry_count": clip.retry_count,
-                        "generation_time": clip.generation_time
+                        "retry_count": int(clip.retry_count) if clip.retry_count is not None else 0,
+                        "generation_time": float(clip.generation_time) if clip.generation_time is not None else None,
+                        # Include metadata but ensure all UUIDs are converted to strings
+                        "metadata": (
+                            {
+                                k: str(v) if isinstance(v, UUID) else v
+                                for k, v in clip.metadata.items()
+                            }
+                            if clip.metadata else {}
+                        )
                     }
                     for clip in updated_clips_obj.clips
                 ],
-                "total_clips": updated_clips_obj.total_clips,
-                "successful_clips": updated_clips_obj.successful_clips,
-                "failed_clips": updated_clips_obj.failed_clips,
+                "total_clips": int(updated_clips_obj.total_clips),
+                "successful_clips": int(updated_clips_obj.successful_clips),
+                "failed_clips": int(updated_clips_obj.failed_clips),
                 "total_cost": str(updated_clips_obj.total_cost),
-                "total_generation_time": updated_clips_obj.total_generation_time
+                "total_generation_time": float(updated_clips_obj.total_generation_time) if updated_clips_obj.total_generation_time is not None else None
             }
             await update_job_stage(
                 job_id=job_id,

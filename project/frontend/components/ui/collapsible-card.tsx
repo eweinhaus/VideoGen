@@ -22,6 +22,7 @@ export function CollapsibleCard({
   const [isOpen, setIsOpen] = React.useState(false) // Always default to closed
   const contentRef = React.useRef<HTMLDivElement>(null)
   const measureRef = React.useRef<HTMLDivElement>(null)
+  const headerRef = React.useRef<HTMLDivElement>(null)
   const [contentHeight, setContentHeight] = React.useState<number>(0)
 
   // Handle initial mount - only set to open if defaultOpen is explicitly true
@@ -91,11 +92,49 @@ export function CollapsibleCard({
     }
   }, [defaultOpen, measureHeight])
 
+  const handleToggle = () => {
+    const wasOpen = isOpen
+    const willOpen = !wasOpen
+    
+    // Only track position when opening (not closing)
+    if (willOpen && headerRef.current) {
+      // Get header position before opening
+      const headerRect = headerRef.current.getBoundingClientRect()
+      const headerViewportTop = headerRect.top
+      
+      // Toggle the state
+      setIsOpen(willOpen)
+      
+      // After opening, scroll to keep header in same viewport position
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (headerRef.current) {
+            const newHeaderRect = headerRef.current.getBoundingClientRect()
+            const newHeaderViewportTop = newHeaderRect.top
+            const difference = newHeaderViewportTop - headerViewportTop
+            
+            // Scroll to compensate for the difference to keep header in same viewport position
+            if (Math.abs(difference) > 1) {
+              window.scrollBy({
+                top: -difference,
+                behavior: 'auto'
+              })
+            }
+          }
+        })
+      })
+    } else {
+      // Just toggle when closing
+      setIsOpen(willOpen)
+    }
+  }
+
   return (
     <Card className={cn("mt-6 relative", className)}>
       <CardHeader 
+        ref={headerRef}
         className="py-5 cursor-pointer hover:bg-muted/50 transition-colors"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={handleToggle}
       >
         <div className="flex items-center justify-between">
           <CardTitle className="text-xl leading-none">{title}</CardTitle>

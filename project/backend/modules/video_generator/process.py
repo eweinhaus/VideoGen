@@ -9,6 +9,7 @@ import time
 import io
 import random
 import re
+from dataclasses import dataclass
 from typing import Optional, Dict, List, Union, Tuple, Callable, Any
 from uuid import UUID
 from decimal import Decimal
@@ -28,6 +29,17 @@ from modules.video_generator.image_handler import download_and_upload_image
 from modules.video_generator.model_validator import validate_model_config
 
 logger = get_logger("video_generator.process")
+
+
+@dataclass
+class ContentModerationRetryState:
+    """Tracks retry state for content moderation errors across the 4-attempt pipeline."""
+    attempt_number: int  # 1-4
+    current_model: str  # "veo_31" or "kling_v25_turbo"
+    prompt_sanitized: bool  # Whether prompt has been sanitized
+    using_reference_images: bool  # Whether using reference images
+    original_prompt: str  # Store original for logging
+    sanitized_prompt: Optional[str] = None  # Store sanitized version
 
 
 def extract_unique_image_urls(clip_prompts: List[ClipPrompt]) -> Dict[str, str]:
@@ -247,6 +259,267 @@ async def process(
     # We intentionally do not build extra scene plan context here.
     # The prompt generator outputs are considered final and self-contained.
     
+    async def _retry_content_moderation_clip(
+        clip_prompt: ClipPrompt,
+        retry_state: ContentModerationRetryState,
+        image_cache_param: Dict[str, Optional[str]],
+        settings_dict: dict,
+        environment: str,
+        aspect_ratio: str,
+        progress_callback: Optional[Callable] = None,
+        event_publisher: Optional[Callable] = None
+    ) -> Optional[Clip]:
+        """
+        Retry a clip that failed content moderation using the 4-attempt pipeline.
+        
+        Attempt 1: Veo 3.1 + original prompt + ref images (already failed, so skip)
+        Attempt 2: Veo 3.1 + sanitized prompt + ref images
+        Attempt 3: Kling Turbo + sanitized prompt + no ref images
+        Attempt 4: Kling Turbo + sanitized prompt + no ref images (if attempt 3 fails)
+        
+        Args:
+            clip_prompt: ClipPrompt to retry
+            retry_state: Current retry state (will be updated)
+            image_cache_param: Pre-downloaded image cache
+            settings_dict: Generation settings
+            environment: Environment name
+            aspect_ratio: Aspect ratio for video
+            progress_callback: Optional progress callback
+            event_publisher: Optional event publisher
+            
+        Returns:
+            Clip if successful, None if all attempts fail
+        """
+        # Determine which attempts to perform based on current state
+        # retry_state.attempt_number indicates the last failed attempt
+        # So we need to try attempts (retry_state.attempt_number + 1) through 4
+        
+        max_attempts = 4
+        start_attempt = retry_state.attempt_number + 1
+        
+        for attempt_num in range(start_attempt, max_attempts + 1):
+            retry_state.attempt_number = attempt_num
+            
+            # Determine model and reference image usage for this attempt
+            if attempt_num == 2:
+                # Attempt 2: Veo 3.1 with sanitized prompt + reference images
+                current_model = "veo_31"
+                use_ref_images = True
+                
+                # Sanitize prompt if not already done
+                if not retry_state.prompt_sanitized:
+                    from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
+                    retry_state.sanitized_prompt = sanitize_prompt_for_content_moderation(
+                        retry_state.original_prompt, job_id=str(job_id)
+                    )
+                    retry_state.prompt_sanitized = True
+                
+                clip_prompt.prompt = retry_state.sanitized_prompt
+                logger.info(
+                    f"Content moderation retry attempt {attempt_num} for clip {clip_prompt.clip_index}: "
+                    f"Veo 3.1 with sanitized prompt + reference images",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "attempt": attempt_num,
+                        "model": current_model,
+                        "using_ref_images": use_ref_images,
+                        "prompt_sanitized": True
+                    }
+                )
+            else:
+                # Attempts 3-4: Kling Turbo without reference images
+                current_model = "kling_v25_turbo"
+                use_ref_images = False
+                
+                # Ensure prompt is sanitized
+                if not retry_state.prompt_sanitized:
+                    from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
+                    retry_state.sanitized_prompt = sanitize_prompt_for_content_moderation(
+                        retry_state.original_prompt, job_id=str(job_id)
+                    )
+                    retry_state.prompt_sanitized = True
+                
+                clip_prompt.prompt = retry_state.sanitized_prompt or retry_state.original_prompt
+                
+                logger.info(
+                    f"Content moderation retry attempt {attempt_num} for clip {clip_prompt.clip_index}: "
+                    f"Kling Turbo with sanitized prompt (no reference images)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "attempt": attempt_num,
+                        "model": current_model,
+                        "using_ref_images": False,
+                        "prompt_sanitized": True
+                    }
+                )
+            
+            retry_state.current_model = current_model
+            retry_state.using_reference_images = use_ref_images
+            
+            # Prepare reference images if needed
+            image_url = None
+            reference_image_urls = []
+            
+            if use_ref_images:
+                # Collect reference images (same logic as main generation)
+                prompt_lower = clip_prompt.prompt.lower()
+                camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+                
+                is_face_heavy = any(keyword in prompt_lower for keyword in [
+                    "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                    "facial", "head", "head and shoulders", "bust shot", "face fills",
+                    "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                    "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                    "from waist", "from chest", "from shoulders"
+                ]) or is_medium_shot
+                
+                collected_urls = []
+                max_reference_images = 3
+                
+                # Add character references
+                if clip_prompt.character_reference_urls:
+                    max_char_refs = len(clip_prompt.character_reference_urls) if is_face_heavy else min(len(clip_prompt.character_reference_urls), 2)
+                    for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                        if len(collected_urls) >= max_reference_images:
+                            break
+                        cached_url = image_cache_param.get(char_ref_url)
+                        if cached_url:
+                            collected_urls.append(cached_url)
+                        else:
+                            downloaded_url = await download_and_upload_image(char_ref_url, job_id)
+                            if downloaded_url:
+                                collected_urls.append(downloaded_url)
+                
+                # Add scene reference
+                if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
+                    cached_url = image_cache_param.get(clip_prompt.scene_reference_url)
+                    if cached_url:
+                        collected_urls.append(cached_url)
+                    else:
+                        downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+                        if downloaded_url:
+                            collected_urls.append(downloaded_url)
+                
+                # Add object references
+                if clip_prompt.object_reference_urls and len(collected_urls) < max_reference_images:
+                    remaining_slots = max_reference_images - len(collected_urls)
+                    max_obj_refs = min(len(clip_prompt.object_reference_urls), remaining_slots)
+                    for obj_ref_url in clip_prompt.object_reference_urls[:max_obj_refs]:
+                        if len(collected_urls) >= max_reference_images:
+                            break
+                        cached_url = image_cache_param.get(obj_ref_url)
+                        if cached_url:
+                            collected_urls.append(cached_url)
+                        else:
+                            downloaded_url = await download_and_upload_image(obj_ref_url, job_id)
+                            if downloaded_url:
+                                collected_urls.append(downloaded_url)
+                
+                if collected_urls:
+                    reference_image_urls = collected_urls
+                    image_url = collected_urls[0]
+            else:
+                # No reference images for Kling Turbo attempts
+                image_url = None
+                reference_image_urls = []
+            
+            # Try generating with current attempt configuration
+            try:
+                clip = await generate_video_clip(
+                    clip_prompt=clip_prompt,
+                    image_url=image_url,
+                    reference_image_urls=reference_image_urls,
+                    settings=settings_dict,
+                    job_id=job_id,
+                    environment=environment,
+                    extra_context=None,
+                    progress_callback=progress_callback,
+                    video_model=current_model,
+                    aspect_ratio=aspect_ratio,
+                )
+                
+                logger.info(
+                    f"Content moderation retry successful for clip {clip_prompt.clip_index} on attempt {attempt_num}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "attempt": attempt_num,
+                        "model": current_model
+                    }
+                )
+                
+                # Emit completion event
+                if event_publisher:
+                    complete_event = {
+                        "event_type": "video_generation_complete",
+                        "data": {
+                            "clip_index": clip_prompt.clip_index,
+                            "video_url": clip.video_url,
+                            "duration": clip.actual_duration,
+                            "cost": float(clip.cost),
+                        }
+                    }
+                    try:
+                        await event_publisher("video_generation_complete", complete_event["data"])
+                    except Exception as e:
+                        logger.warning(f"Failed to publish complete event: {e}", extra={"job_id": str(job_id)})
+                
+                return clip
+                
+            except RetryableError as e:
+                error_msg = str(e).lower()
+                is_content_moderation = (
+                    "content moderation" in error_msg or
+                    "flagged as sensitive" in error_msg or
+                    "e005" in error_msg
+                )
+                
+                if is_content_moderation and attempt_num < max_attempts:
+                    # Continue to next attempt
+                    logger.warning(
+                        f"Content moderation retry attempt {attempt_num} failed for clip {clip_prompt.clip_index}, "
+                        f"will try attempt {attempt_num + 1}",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "attempt": attempt_num,
+                            "error": str(e)
+                        }
+                    )
+                    # Add delay before next attempt (exponential backoff)
+                    delay = 2 * (2 ** (attempt_num - 1)) + random.uniform(0, 2)
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    # Not content moderation or last attempt - re-raise
+                    raise
+            except Exception as e:
+                # Non-retryable error or unexpected error
+                logger.error(
+                    f"Content moderation retry attempt {attempt_num} failed with non-retryable error for clip {clip_prompt.clip_index}: {e}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "attempt": attempt_num,
+                        "error": str(e)
+                    }
+                )
+                raise
+        
+        # All attempts failed
+        logger.error(
+            f"Content moderation retry exhausted all {max_attempts} attempts for clip {clip_prompt.clip_index}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_prompt.clip_index,
+                "max_attempts": max_attempts
+            }
+        )
+        return None
+    
     async def generate_with_retry(
         clip_prompt: ClipPrompt,
         image_cache_param: Dict[str, Optional[str]]
@@ -449,8 +722,17 @@ async def process(
                     except Exception as e:
                         logger.warning(f"Failed to publish progress event: {e}", extra={"job_id": str(job_id)})
             
+            # Initialize retry state attribute if not present
+            if not hasattr(clip_prompt, '_content_mod_retry_state'):
+                clip_prompt._content_mod_retry_state = None
+            
             # Retry logic
-            for attempt in range(3):
+            # For content moderation errors with Veo 3.1: 4 attempts (2 Veo + 2 Kling)
+            # For other errors: 3 attempts (existing behavior)
+            max_attempts = 3
+            is_content_moderation_retry = False
+            
+            for attempt in range(max_attempts):
                 try:
                     logger.info(
                         f"Generating clip {clip_prompt.clip_index} (attempt {attempt + 1}/3)",
@@ -495,66 +777,132 @@ async def process(
                     return clip
                     
                 except RetryableError as e:
-                    if attempt < 2:
+                    if attempt < max_attempts - 1:
                         error_msg = str(e)
                         
-                        # Check if this is a content moderation error that requires fallback to Kling Turbo
-                        # This happens when Veo 3.1 content moderation fails and prompt can't be sanitized
-                        is_fallback_to_kling = (
-                            "fallback to kling turbo" in error_msg.lower() or
-                            "fallback to kling" in error_msg.lower()
+                        # Detect content moderation errors
+                        is_content_moderation = (
+                            "content moderation" in error_msg.lower() or
+                            "flagged as sensitive" in error_msg.lower() or
+                            "e005" in error_msg.lower() or
+                            "prompt sanitized" in error_msg.lower()
                         )
                         
-                        if is_fallback_to_kling and selected_model_key == "veo_31":
-                            # Immediately switch to Kling Turbo (text-only) for this clip
-                            logger.info(
-                                f"Content moderation error detected for clip {clip_prompt.clip_index}, "
-                                f"switching to Kling Turbo (text-only) immediately",
-                                extra={
-                                    "job_id": str(job_id),
-                                    "clip_index": clip_prompt.clip_index,
-                                    "original_model": selected_model_key,
-                                    "fallback_model": "kling_v25_turbo",
-                                    "reference_images": False
-                                }
-                            )
-                            # Retry with Kling Turbo (text-only, no reference images)
-                            clip = await generate_video_clip(
-                                clip_prompt=clip_prompt,
-                                image_url=None,  # No reference images for fallback
-                                reference_image_urls=[],  # Empty for fallback
-                                settings=settings_dict,
-                                job_id=job_id,
-                                environment=environment,
-                                extra_context=None,
-                                progress_callback=progress_callback,
-                                video_model="kling_v25_turbo",  # Use fallback model
-                                aspect_ratio=aspect_ratio,
-                            )
-                            logger.info(
-                                f"Clip {clip_prompt.clip_index} generated successfully with Kling Turbo fallback",
-                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
-                            )
-                            # Emit completion event
-                            complete_event = {
-                                "event_type": "video_generation_complete",
-                                "data": {
-                                    "clip_index": clip_prompt.clip_index,
-                                    "video_url": clip.video_url,
-                                    "duration": clip.actual_duration,
-                                    "cost": float(clip.cost),
-                                }
-                            }
-                            events.append(complete_event)
-                            if event_publisher:
-                                try:
-                                    await event_publisher("video_generation_complete", complete_event["data"])
-                                except Exception as e:
-                                    logger.warning(f"Failed to publish complete event: {e}", extra={"job_id": str(job_id)})
-                            return clip
+                        # Handle content moderation errors with structured 4-attempt pipeline
+                        if is_content_moderation and selected_model_key == "veo_31":
+                            # Initialize retry state on first content moderation error
+                            if clip_prompt._content_mod_retry_state is None:
+                                clip_prompt._content_mod_retry_state = ContentModerationRetryState(
+                                    attempt_number=1,  # Attempt 1 just failed
+                                    current_model="veo_31",
+                                    prompt_sanitized=False,
+                                    using_reference_images=True,
+                                    original_prompt=clip_prompt.prompt
+                                )
+                                logger.info(
+                                    f"Content moderation error detected for clip {clip_prompt.clip_index}, "
+                                    f"initializing structured retry pipeline (attempt 1 failed)",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "attempt": 1,
+                                        "model": "veo_31"
+                                    }
+                                )
+                            
+                            retry_state = clip_prompt._content_mod_retry_state
+                            
+                            # Check if we've exhausted Veo attempts (attempts 1-2)
+                            if retry_state.attempt_number < 2:
+                                # Still within Veo attempts - continue with attempt 2
+                                retry_state.attempt_number = 2
+                                
+                                # Sanitize prompt for attempt 2
+                                if not retry_state.prompt_sanitized:
+                                    from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
+                                    retry_state.sanitized_prompt = sanitize_prompt_for_content_moderation(
+                                        retry_state.original_prompt, job_id=str(job_id)
+                                    )
+                                    retry_state.prompt_sanitized = True
+                                    clip_prompt.prompt = retry_state.sanitized_prompt
+                                    logger.info(
+                                        f"Content moderation retry attempt 2 for clip {clip_prompt.clip_index}: "
+                                        f"Veo 3.1 with sanitized prompt + reference images",
+                                        extra={
+                                            "job_id": str(job_id),
+                                            "clip_index": clip_prompt.clip_index,
+                                            "attempt": 2,
+                                            "model": "veo_31",
+                                            "prompt_sanitized": True
+                                        }
+                                    )
+                                
+                                # Retry with Veo 3.1 + sanitized prompt + reference images
+                                delay = 2 * (2 ** attempt) + random.uniform(0, 2)
+                                logger.warning(
+                                    f"Content moderation retry attempt 2 for clip {clip_prompt.clip_index}, "
+                                    f"retrying in {delay:.1f}s",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "attempt": 2,
+                                        "delay": delay
+                                    }
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            else:
+                                # Veo attempts exhausted - use centralized retry function for attempts 3-4
+                                is_content_moderation_retry = True
+                                logger.info(
+                                    f"Veo attempts exhausted for clip {clip_prompt.clip_index}, "
+                                    f"switching to Kling Turbo attempts (3-4)",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "veo_attempts": 2
+                                    }
+                                )
+                                
+                                # Use centralized retry function for attempts 3-4
+                                clip = await _retry_content_moderation_clip(
+                                    clip_prompt=clip_prompt,
+                                    retry_state=retry_state,
+                                    image_cache_param=image_cache_param,
+                                    settings_dict=settings_dict,
+                                    environment=environment,
+                                    aspect_ratio=aspect_ratio,
+                                    progress_callback=progress_callback,
+                                    event_publisher=event_publisher
+                                )
+                                
+                                if clip:
+                                    # Success - add to events and return
+                                    complete_event = {
+                                        "event_type": "video_generation_complete",
+                                        "data": {
+                                            "clip_index": clip_prompt.clip_index,
+                                            "video_url": clip.video_url,
+                                            "duration": clip.actual_duration,
+                                            "cost": float(clip.cost),
+                                        }
+                                    }
+                                    events.append(complete_event)
+                                    return clip
+                                else:
+                                    # All attempts failed
+                                    logger.error(
+                                        f"Content moderation retry exhausted all 4 attempts for clip {clip_prompt.clip_index}",
+                                        extra={
+                                            "job_id": str(job_id),
+                                            "clip_index": clip_prompt.clip_index
+                                        }
+                                    )
+                                    # Fall through to error handling
+                                    raise
                         
-                        # Check if this is a content moderation error that was sanitized
-                        # If so, sanitize the prompt before retrying
+                        # Non-content-moderation errors: use existing retry logic
+                        # Check if this is a content moderation error that was sanitized (legacy handling)
                         if "content moderation" in error_msg.lower() or "prompt sanitized" in error_msg.lower():
                             from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
                             
@@ -806,7 +1154,7 @@ async def process(
         async def retry_failed_clip(clip_prompt: ClipPrompt, error_info: dict) -> Optional[Clip]:
             async with retry_semaphore:
                 try:
-                    # Check if this is a content moderation error that should fallback to Kling Turbo
+                    # Check if this is a content moderation error
                     error_str = error_info.get("error", "").lower()
                     is_content_moderation = (
                         "content moderation" in error_str or 
@@ -814,113 +1162,244 @@ async def process(
                         "e005" in error_str
                     )
                     
-                    # Determine which model to use for retry
-                    retry_model = selected_model_key
+                    # If content moderation error with Veo 3.1, use structured retry pipeline
+                    if is_content_moderation and selected_model_key == "veo_31":
+                        # Initialize or get existing retry state
+                        if not hasattr(clip_prompt, '_content_mod_retry_state') or clip_prompt._content_mod_retry_state is None:
+                            # Initialize retry state (attempt 1 already failed in per-clip retry)
+                            clip_prompt._content_mod_retry_state = ContentModerationRetryState(
+                                attempt_number=1,  # Attempt 1 already failed
+                                current_model="veo_31",
+                                prompt_sanitized=False,
+                                using_reference_images=True,
+                                original_prompt=clip_prompt.prompt
+                            )
+                            logger.info(
+                                f"Batch retry: Initializing content moderation retry state for clip {clip_prompt.clip_index}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "attempt": 1
+                                }
+                            )
+                        
+                        retry_state = clip_prompt._content_mod_retry_state
+                        
+                        # Check if we should continue with Veo attempts or switch to Kling
+                        if retry_state.attempt_number < 2:
+                            # Still need to try attempt 2 (Veo with sanitized prompt)
+                            logger.info(
+                                f"Batch retry: Continuing content moderation retry for clip {clip_prompt.clip_index} "
+                                f"at attempt {retry_state.attempt_number + 1}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "current_attempt": retry_state.attempt_number,
+                                    "next_attempt": retry_state.attempt_number + 1
+                                }
+                            )
+                        else:
+                            # Veo attempts exhausted, will use Kling attempts (3-4)
+                            logger.info(
+                                f"Batch retry: Veo attempts exhausted for clip {clip_prompt.clip_index}, "
+                                f"using Kling Turbo attempts (3-4)",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "veo_attempts_completed": retry_state.attempt_number
+                                }
+                            )
+                        
+                        # Use centralized retry function (handles attempts 2-4)
+                        clip = await _retry_content_moderation_clip(
+                            clip_prompt=clip_prompt,
+                            retry_state=retry_state,
+                            image_cache_param=image_cache,
+                            settings_dict=settings_dict,
+                            environment=environment,
+                            aspect_ratio=aspect_ratio,
+                            progress_callback=None,  # Skip progress updates for batch retries
+                            event_publisher=None  # Skip events for batch retries
+                        )
+                        
+                        if clip:
+                            logger.info(
+                                f"Batch retry successful for clip {clip_prompt.clip_index}",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                            )
+                            return clip
+                        else:
+                            logger.warning(
+                                f"Batch retry exhausted all attempts for clip {clip_prompt.clip_index}",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                            )
+                            return None
+                    
+                    # Non-content-moderation errors: use retry loop with Veo 3.1 (or selected model)
+                    # Only fallback to Kling Turbo for content moderation errors
+                    # Give failed clips 2 more attempts in batch retry using the original model
+                    retry_model = selected_model_key  # Use Veo 3.1 (or whatever was originally selected)
                     use_reference_images_retry = use_references
                     
-                    if is_content_moderation and selected_model_key == "veo_31":
-                        # Fallback to Kling Turbo for content moderation errors
-                        # Kling Turbo doesn't support reference images, so use text-only
-                        retry_model = "kling_v25_turbo"
-                        use_reference_images_retry = False
-                        logger.info(
-                            f"Retrying clip {clip_prompt.clip_index} with Kling Turbo (text-only) "
-                            f"due to content moderation error",
-                            extra={
-                                "job_id": str(job_id),
-                                "clip_index": clip_prompt.clip_index,
-                                "original_model": selected_model_key,
-                                "fallback_model": retry_model,
-                                "reference_images": False
-                            }
-                        )
-                    
-                    # Re-download images if needed (only if not using fallback model)
-                    image_url = None  # Single image (backward compatibility)
-                    reference_image_urls = []  # Multiple images for Veo 3.1
-                    
-                    if use_reference_images_retry:
-                        # Detect if clip is face-heavy (same logic as main generation)
-                        prompt_lower = clip_prompt.prompt.lower()
-                        camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
-                        is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
-                        
-                        is_face_heavy = any(keyword in prompt_lower for keyword in [
-                            "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
-                            "facial", "head", "head and shoulders", "bust shot", "face fills",
-                            "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
-                            "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
-                            "from waist", "from chest", "from shoulders"
-                        ]) or is_medium_shot
-                        
-                        collected_urls = []
-                        max_reference_images = 3  # Veo 3.1 limit
-                        
-                        # Add character reference URLs
-                        # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
-                        # OTHER CLIPS: Limit to 2 to leave room for scene/objects
-                        if clip_prompt.character_reference_urls:
-                            if is_face_heavy:
-                                # Face-heavy clips: Prioritize ALL character references
-                                max_char_refs = len(clip_prompt.character_reference_urls)  # No limit for face-heavy
-                            else:
-                                # Other clips: Limit to 2 to leave room for scene/objects
-                                max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
-                            
-                            for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
-                                if len(collected_urls) >= max_reference_images:
-                                    break
-                                cached_url = image_cache.get(char_ref_url)
-                                if cached_url:
-                                    collected_urls.append(cached_url)
-                                else:
-                                    downloaded_url = await download_and_upload_image(char_ref_url, job_id)
-                                    if downloaded_url:
-                                        collected_urls.append(downloaded_url)
-                        
-                        # Add scene reference URL if available and we have room (max 3 total)
-                        # For face-heavy clips: Only add scene if there's room after ALL characters
-                        if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
-                            cached_url = image_cache.get(clip_prompt.scene_reference_url)
-                            if cached_url:
-                                collected_urls.append(cached_url)
-                            else:
-                                downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
-                                if downloaded_url:
-                                    collected_urls.append(downloaded_url)
-                        
-                        if collected_urls:
-                            reference_image_urls = collected_urls
-                            image_url = collected_urls[0]  # First image for backward compatibility
-                    else:
-                        # Text-only mode for fallback (no reference images)
-                        logger.debug(
-                            f"Using text-only mode for clip {clip_prompt.clip_index} (fallback model)",
-                            extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
-                        )
-                    
-                    # Generate with fallback model (text-only if content moderation error)
-                    clip = await generate_video_clip(
-                        clip_prompt=clip_prompt,
-                        image_url=image_url,
-                        reference_image_urls=reference_image_urls,  # Empty for fallback
-                        settings=settings_dict,
-                        job_id=job_id,
-                        environment=environment,
-                        extra_context=None,
-                        progress_callback=None,  # Skip progress updates for retries
-                        video_model=retry_model,  # Use fallback model if content moderation error
-                        aspect_ratio=aspect_ratio,
-                    )
-                    
                     logger.info(
-                        f"Retry successful for clip {clip_prompt.clip_index}",
-                        extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                        f"Batch retry for clip {clip_prompt.clip_index}: using {retry_model} "
+                        f"(non-content-moderation error, will NOT fallback to Kling Turbo)",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "retry_model": retry_model,
+                            "fallback_to_kling": False
+                        }
                     )
-                    return clip
+                    
+                    for batch_attempt in range(2):  # 2 additional attempts in batch retry
+                        try:
+                            logger.info(
+                                f"Batch retry attempt {batch_attempt + 1}/2 for clip {clip_prompt.clip_index} "
+                                f"using {retry_model} (non-content-moderation error, keeping original model)",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "attempt": batch_attempt + 1,
+                                    "error_type": "non-content-moderation",
+                                    "model": retry_model,
+                                    "using_reference_images": use_reference_images_retry
+                                }
+                            )
+                            
+                            # Re-download images if needed (only if not using fallback model)
+                            image_url = None  # Single image (backward compatibility)
+                            reference_image_urls = []  # Multiple images for Veo 3.1
+                            
+                            if use_reference_images_retry:
+                                # Detect if clip is face-heavy (same logic as main generation)
+                                prompt_lower = clip_prompt.prompt.lower()
+                                camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                                is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+                                
+                                is_face_heavy = any(keyword in prompt_lower for keyword in [
+                                    "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                                    "facial", "head", "head and shoulders", "bust shot", "face fills",
+                                    "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                                    "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                                    "from waist", "from chest", "from shoulders"
+                                ]) or is_medium_shot
+                                
+                                collected_urls = []
+                                max_reference_images = 3  # Veo 3.1 limit
+                                
+                                # Add character reference URLs
+                                if clip_prompt.character_reference_urls:
+                                    max_char_refs = len(clip_prompt.character_reference_urls) if is_face_heavy else min(len(clip_prompt.character_reference_urls), 2)
+                                    for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                                        if len(collected_urls) >= max_reference_images:
+                                            break
+                                        cached_url = image_cache.get(char_ref_url)
+                                        if cached_url:
+                                            collected_urls.append(cached_url)
+                                        else:
+                                            downloaded_url = await download_and_upload_image(char_ref_url, job_id)
+                                            if downloaded_url:
+                                                collected_urls.append(downloaded_url)
+                                
+                                # Add scene reference URL if available
+                                if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
+                                    cached_url = image_cache.get(clip_prompt.scene_reference_url)
+                                    if cached_url:
+                                        collected_urls.append(cached_url)
+                                    else:
+                                        downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+                                        if downloaded_url:
+                                            collected_urls.append(downloaded_url)
+                                
+                                if collected_urls:
+                                    reference_image_urls = collected_urls
+                                    image_url = collected_urls[0]
+                            
+                            # Generate with retry model
+                            clip = await generate_video_clip(
+                                clip_prompt=clip_prompt,
+                                image_url=image_url,
+                                reference_image_urls=reference_image_urls,
+                                settings=settings_dict,
+                                job_id=job_id,
+                                environment=environment,
+                                extra_context=None,
+                                progress_callback=None,  # Skip progress updates for retries
+                                video_model=retry_model,
+                                aspect_ratio=aspect_ratio,
+                            )
+                            
+                            logger.info(
+                                f"Batch retry successful for clip {clip_prompt.clip_index} on attempt {batch_attempt + 1}",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index, "attempt": batch_attempt + 1}
+                            )
+                            return clip
+                            
+                        except RetryableError as e:
+                            if batch_attempt < 1:  # Still have attempts left
+                                error_msg = str(e)
+                                
+                                # Parse Retry-After from error message if present
+                                retry_after = None
+                                retry_after_match = re.search(r'retry after ([\d.]+)s', error_msg, re.IGNORECASE)
+                                if retry_after_match:
+                                    try:
+                                        retry_after = float(retry_after_match.group(1))
+                                    except (ValueError, AttributeError):
+                                        pass
+                                
+                                # Use Retry-After if available, otherwise exponential backoff
+                                if retry_after is not None:
+                                    jitter = random.uniform(0.1, 0.2) * retry_after
+                                    delay = retry_after + jitter
+                                else:
+                                    base_delay = 2 * (2 ** batch_attempt)
+                                    jitter = random.uniform(0, 2)
+                                    delay = base_delay + jitter
+                                
+                                logger.warning(
+                                    f"Batch retry attempt {batch_attempt + 1} failed for clip {clip_prompt.clip_index}, "
+                                    f"retrying in {delay:.1f}s",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "attempt": batch_attempt + 1,
+                                        "error": str(e),
+                                        "delay": delay
+                                    }
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            else:
+                                # Last attempt failed
+                                logger.warning(
+                                    f"Batch retry exhausted all 2 attempts for clip {clip_prompt.clip_index}",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "error": str(e)
+                                    }
+                                )
+                                raise
+                        except Exception as e:
+                            # Non-retryable error - don't retry
+                            logger.warning(
+                                f"Batch retry failed for clip {clip_prompt.clip_index} with non-retryable error: {e}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "attempt": batch_attempt + 1,
+                                    "error": str(e)
+                                }
+                            )
+                            raise
+                    
+                    # All attempts exhausted
+                    return None
                 except Exception as e:
                     logger.warning(
-                        f"Retry failed for clip {clip_prompt.clip_index}: {e}",
+                        f"Batch retry failed for clip {clip_prompt.clip_index}: {e}",
                         extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index, "error": str(e)}
                     )
                     return None

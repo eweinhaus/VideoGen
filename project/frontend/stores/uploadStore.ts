@@ -205,7 +205,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       if (error.errorDetails) {
         errorDetails = error.errorDetails
         // Use user_message if available, otherwise fall back to error message
-        if (errorDetails.user_message) {
+        if (errorDetails?.user_message) {
           errorMessage = errorDetails.user_message
         }
       }

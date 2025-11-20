@@ -26,6 +26,9 @@ class Job(BaseModel):
     total_cost: Decimal = Field(default=Decimal("0.00"), description="Total cost in USD")
     video_url: Optional[str] = None
     error_message: Optional[str] = None
+    video_model: Optional[str] = Field(default="kling_v21", description="Video generation model")
+    aspect_ratio: Optional[str] = Field(default="16:9", description="Aspect ratio for video")
+    template: Optional[str] = Field(default="standard", description="Template to use: standard, lipsync")
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None

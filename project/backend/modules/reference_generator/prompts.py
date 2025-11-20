@@ -91,8 +91,8 @@ def get_character_variation_suffix(variation_index: int) -> str:
         Suffix string describing camera angle/pose for this variation
     """
     if variation_index == 0:
-        # Base variation: frontal portrait
-        return "frontal portrait view, neutral expression, direct gaze, centered composition"
+        # Base variation: three-quarter body shot (not just head/portrait to ensure proper proportions)
+        return "three-quarter body shot, head and upper body visible, neutral expression, direct gaze, natural proportions, balanced composition"
     elif variation_index == 1:
         # Variation 1: profile view
         return "SAME PERSON, profile view from left side, slight smile, side angle, EXACT SAME FEATURES"
@@ -209,7 +209,7 @@ def build_character_features_block(character: Optional[Character]) -> str:
             f"Accessories: {features.accessories}. "
             f"Build: {features.build}. "
             f"Age: {features.age}. "
-            f"Anatomically correct human, proper human anatomy, two arms, two legs, natural proportions"
+            f"Anatomically correct human, proper human anatomy, natural body proportions, balanced head-to-body ratio, two arms, two legs, normal head size"
         )
         return features_block
     
@@ -287,8 +287,8 @@ def synthesize_prompt(
     # For character images: START with strong realism keywords (order matters in SDXL)
     if image_type == "character":
         # Put realism FIRST to override any style tendencies
-        # Emphasize face detail and clarity for better video generation preservation
-        fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human, sharp facial features, detailed face, clear eyes nose mouth, professional portrait quality")
+        # Balance face detail with proper body proportions to avoid disproportionately large heads
+        fragments.append("photorealistic photograph of a real person, hyperrealistic, lifelike human, natural body proportions, proper human anatomy, balanced head-to-body ratio, sharp facial features, professional photography quality")
     
     # For character images, use enhanced character features if available
     # CRITICAL: Always prefer structured features from scene planner over raw description
@@ -329,18 +329,19 @@ def synthesize_prompt(
     
     # Add style information (for characters, this reinforces realism)
     if image_type == "character":
-        # For characters: emphasize photography and realism
-        # Enhanced with face-specific keywords for better preservation in video generation
+        # For characters: emphasize photography and realism with proper body proportions
+        # Balance face detail with body proportions to prevent disproportionately large heads
         style_fragments = [
-            "professional portrait photography",
+            "professional photography, natural body proportions, anatomically correct proportions",
             "natural lighting, studio quality",
             f"mood: {mood}",
             f"{color_palette_str} color tones",
-            "DSLR camera, 85mm lens, f/2.8 aperture, shallow depth of field",
+            "DSLR camera, 50mm lens, f/4 aperture, medium depth of field",
             "natural skin texture, realistic skin pores, natural colors",
             "highly detailed, professional quality, 4K, sharp focus, crisp details",
             "sharp facial features, clear face definition, no face blur, no face distortion",
-            "preserve exact facial structure, consistent face, no face warping"
+            "preserve exact facial structure, consistent face, no face warping",
+            "normal head size, proportional head to body, natural human proportions"
         ]
     else:
         # For scenes: use scene plan style
@@ -431,7 +432,26 @@ def synthesize_object_prompt(
     # Build prompt fragments for product photography
     fragments = []
 
-    # Start with product photography keywords
+    # CRITICAL: Start with strongest single-object emphasis (order matters in SDXL)
+    # This must come FIRST to override any tendency to generate multiple instances
+    obj_name_lower = obj.name.lower() if obj.name else ""
+    
+    # Detect collectible objects that are commonly shown in groups
+    collectible_keywords = ["snowman", "toy", "doll", "ball", "ornament", "decoration", "figure", "statue"]
+    is_collectible = any(keyword in obj_name_lower for keyword in collectible_keywords)
+    
+    if is_collectible:
+        # Extra-strong emphasis for collectible objects
+        fragments.append(f"one single {obj.name}, not multiple {obj.name}s, not a collection of {obj.name}s, not a group of {obj.name}s, not a row of {obj.name}s, not a pattern of {obj.name}s")
+        fragments.append("single object only, one object, one instance, not multiple instances, not repeated, not duplicated")
+    else:
+        # Standard single-object emphasis
+        fragments.append(f"one single {obj.name}, single object only, one object, one instance, not multiple instances")
+    
+    # Reinforce single unified view
+    fragments.append("single unified view, one perspective, one angle, one camera angle, no multiple views, no grid layout, no collage, no montage")
+
+    # Add product photography keywords
     fragments.append("professional product photography")
 
     # Add object description with all features
@@ -446,9 +466,19 @@ def synthesize_object_prompt(
     )
     fragments.append(object_desc)
 
-    # Add variation suffix for different angles
+    # Add variation suffix for different angles (for base variation, ensure single view)
     variation_suffix = get_object_variation_suffix(variation_index)
     fragments.append(variation_suffix)
+    
+    # Reinforce single object emphasis again (repetition helps in SDXL)
+    if is_collectible:
+        fragments.append(f"one single {obj.name} only, not multiple, not a collection, not a group")
+    else:
+        fragments.append("one single object only, not multiple, not repeated")
+    
+    # Reinforce single view for base variation (index 0)
+    if variation_index == 0:
+        fragments.append("single unified composition, centered object, one camera angle, one perspective only")
 
     # Add style information (simplified for product photography)
     # Use color palette from style but adapt for product shots

@@ -1651,11 +1651,13 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                         "video_url": clip.video_url,
                         "actual_duration": clip.actual_duration,
                         "target_duration": clip.target_duration,
+                        "original_target_duration": clip.original_target_duration,
                         "duration_diff": clip.duration_diff,
                         "status": clip.status,
                         "cost": str(clip.cost),
                         "retry_count": clip.retry_count,
-                        "generation_time": clip.generation_time
+                        "generation_time": clip.generation_time,
+                        "metadata": clip.metadata if clip.metadata else {}
                     }
                     for clip in clips.clips
                 ],
@@ -1760,11 +1762,13 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
                                 "video_url": clip.video_url,
                                 "actual_duration": clip.actual_duration,
                                 "target_duration": clip.target_duration,
+                                "original_target_duration": clip.original_target_duration,
                                 "duration_diff": clip.duration_diff,
                                 "status": clip.status,
                                 "cost": str(clip.cost),
                                 "retry_count": clip.retry_count,
-                                "generation_time": clip.generation_time
+                                "generation_time": clip.generation_time,
+                                "metadata": clip.metadata if clip.metadata else {}
                             }
                             for clip in clips.clips
                         ],

@@ -25,6 +25,7 @@ function jobResponseToJob(response: JobResponse): Job {
     currentStage: response.current_stage ?? null,
     progress: response.progress ?? 0,
     videoUrl: response.video_url ?? null,
+    audioUrl: response.audio_url ?? undefined,
     errorMessage: response.error_message ?? null,
     createdAt: response.created_at || new Date().toISOString(),
     updatedAt: response.updated_at || new Date().toISOString(),

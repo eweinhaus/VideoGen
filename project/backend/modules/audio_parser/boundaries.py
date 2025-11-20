@@ -6,8 +6,8 @@ Generate beat-aligned clip boundaries for video segmentation.
 
 import math
 import numpy as np
-from typing import List
-from shared.models.audio import ClipBoundary
+from typing import List, Optional, Tuple
+from shared.models.audio import ClipBoundary, Breakpoint
 from shared.logging import get_logger
 
 logger = get_logger("audio_parser")
@@ -571,3 +571,708 @@ def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBound
         )
         for i in range(num_segments)
     ]
+
+
+def find_beat_aligned_time(
+    start_time: float,
+    target_duration: float,
+    beat_timestamps: List[float],
+    tolerance: float = 0.05
+) -> float:
+    """
+    Find beat-aligned time closest to target duration from start.
+    
+    Args:
+        start_time: Start time in seconds
+        target_duration: Target duration in seconds
+        beat_timestamps: List of beat timestamps
+        tolerance: Maximum deviation from beat alignment (seconds)
+        
+    Returns:
+        Timestamp of beat that gives duration closest to target
+    """
+    if not beat_timestamps:
+        return start_time + target_duration
+    
+    target_time = start_time + target_duration
+    
+    # Find nearest beat to target time
+    nearest_beat_idx = min(
+        range(len(beat_timestamps)),
+        key=lambda i: abs(beat_timestamps[i] - target_time)
+    )
+    
+    nearest_beat = beat_timestamps[nearest_beat_idx]
+    
+    # Check if within tolerance
+    if abs(nearest_beat - target_time) <= tolerance:
+        return nearest_beat
+    
+    # Otherwise return target time (will be adjusted later)
+    return target_time
+
+
+def extend_to_minimum(
+    start_time: float,
+    min_duration: float,
+    beat_timestamps: List[float],
+    max_time: float
+) -> float:
+    """
+    Extend from start_time to reach minimum duration.
+    Aligns to nearest beat, caps at max_time.
+    
+    Args:
+        start_time: Start time in seconds
+        min_duration: Minimum duration required
+        beat_timestamps: List of beat timestamps
+        max_time: Maximum allowed time (segment end)
+        
+    Returns:
+        End time that meets minimum duration
+    """
+    target_time = start_time + min_duration
+    
+    if target_time >= max_time:
+        return max_time
+    
+    if not beat_timestamps:
+        return min(target_time, max_time)
+    
+    # Find beats after target_time
+    candidate_beats = [b for b in beat_timestamps if b >= target_time and b <= max_time]
+    
+    if candidate_beats:
+        # Use first beat that meets minimum
+        return candidate_beats[0]
+    
+    # No beats available, use max_time
+    return max_time
+
+
+def cap_at_maximum(
+    start_time: float,
+    max_duration: float,
+    beat_timestamps: List[float]
+) -> float:
+    """
+    Cap duration at maximum (8s for Veo 3.1).
+    CRITICAL: This ensures subdivision works.
+    
+    Args:
+        start_time: Start time in seconds
+        max_duration: Maximum duration allowed (8.0s)
+        beat_timestamps: List of beat timestamps
+        
+    Returns:
+        End time capped at maximum duration
+    """
+    max_time = start_time + max_duration
+    
+    if not beat_timestamps:
+        return max_time
+    
+    # Find beats before max_time
+    candidate_beats = [b for b in beat_timestamps if b <= max_time]
+    
+    if candidate_beats:
+        # Use last beat before max_time
+        return candidate_beats[-1]
+    
+    # No beats available, use max_time
+    return max_time
+
+
+def align_breakpoint_to_beat(
+    breakpoint_time: float,
+    beat_timestamps: List[float],
+    tolerance: float = 0.05
+) -> float:
+    """
+    Align breakpoint to nearest beat within tolerance.
+    
+    Args:
+        breakpoint_time: Breakpoint timestamp
+        beat_timestamps: List of beat timestamps
+        tolerance: Maximum deviation from beat (seconds)
+        
+    Returns:
+        Aligned timestamp (beat-aligned if within tolerance, otherwise original)
+    """
+    if not beat_timestamps:
+        return breakpoint_time
+    
+    # Find nearest beat
+    nearest_beat_idx = min(
+        range(len(beat_timestamps)),
+        key=lambda i: abs(beat_timestamps[i] - breakpoint_time)
+    )
+    
+    nearest_beat = beat_timestamps[nearest_beat_idx]
+    
+    # Align if within tolerance
+    if abs(nearest_beat - breakpoint_time) <= tolerance:
+        return nearest_beat
+    
+    return breakpoint_time
+
+
+def generate_boundaries_with_breakpoints(
+    beat_timestamps: List[float],
+    bpm: float,
+    total_duration: float,
+    breakpoints: List[Breakpoint],
+    max_clips: int = None,
+    segment_type: str = "verse",
+    beat_intensity: str = "medium"
+) -> List[ClipBoundary]:
+    """
+    Generate clip boundaries using breakpoint-aware algorithm.
+    
+    Prioritizes logical breakpoints (lyrics, energy, silence, harmonic) over
+    rigid target durations, while ensuring all clips are 4-8s.
+    
+    Args:
+        beat_timestamps: List of beat timestamps in seconds (relative to segment start)
+        bpm: Beats per minute
+        total_duration: Total segment duration in seconds
+        breakpoints: List of detected breakpoints (relative to segment start)
+        max_clips: Maximum number of clips (default: None, calculates based on duration)
+        segment_type: Type of segment (intro/verse/chorus/bridge/outro)
+        beat_intensity: Beat intensity (low/medium/high)
+        
+    Returns:
+        List of ClipBoundary objects, all within 4-8s range
+    """
+    # Hard constraints for clip durations
+    # Clips must be 4-8 seconds (Veo 3.1 constraint: max 8s)
+    # If remaining time < 3s, extend previous clip instead of creating tiny clip
+    MIN_DURATION = 4.0
+    MAX_DURATION = 8.0
+    EXTEND_THRESHOLD = 3.0  # If remaining < 3s, extend neighbor instead of creating new clip
+    
+    # Get target duration (used as fallback when no breakpoints available)
+    target_duration = _get_target_duration_for_segment(segment_type, beat_intensity)
+    
+    # CRITICAL: Ensure subdivision works for segments >=8s
+    # Calculate minimum clips required based on MAX_DURATION constraint (8s)
+    min_clips_required = math.ceil(total_duration / MAX_DURATION)
+    
+    # Calculate max_clips if not specified
+    if max_clips is None:
+        target_clips = round(total_duration / target_duration)
+        max_clips = max(min_clips_required, min(25, target_clips))
+    else:
+        # Ensure max_clips is at least the minimum required for subdivision
+        max_clips = max(max_clips, min_clips_required)
+    
+    if total_duration >= 8.0:
+        logger.info(
+            f"Segment {total_duration:.1f}s >= 8s, forcing subdivision: "
+            f"min_clips={min_clips_required}, max_clips={max_clips}"
+        )
+    
+    # Edge case: Very short segments (<4s)
+    if total_duration < MIN_DURATION:
+        logger.warning(
+            f"Segment too short ({total_duration:.1f}s < {MIN_DURATION}s minimum), "
+            f"creating single clip anyway (will be < 4s, but better than gap)"
+        )
+        return [ClipBoundary(
+            start=0.0,
+            end=total_duration,
+            duration=total_duration
+        )]
+    
+    # Align breakpoints to beats (within tolerance)
+    aligned_breakpoints = []
+    for bp in breakpoints:
+        aligned_time = align_breakpoint_to_beat(bp.timestamp, beat_timestamps, tolerance=0.05)
+        aligned_breakpoints.append(Breakpoint(
+            timestamp=aligned_time,
+            confidence=bp.confidence,
+            source=bp.source,
+            type=bp.type,
+            metadata=bp.metadata
+        ))
+    
+    # Sort breakpoints by timestamp
+    aligned_breakpoints.sort(key=lambda bp: bp.timestamp)
+    
+    # Filter breakpoints to valid range (not too close to boundaries)
+    valid_breakpoints = [
+        bp for bp in aligned_breakpoints
+        if 1.0 <= bp.timestamp <= (total_duration - 1.0)
+    ]
+    
+    boundaries = []
+    current_time = 0.0
+    clip_index = 0
+    
+    while current_time < total_duration and len(boundaries) < max_clips:
+        # Calculate remaining time in segment
+        remaining_time = total_duration - current_time
+        
+        # If less than 4s remaining, exit main loop and let continuation loop handle it
+        # The continuation loop will extend the previous clip if remaining < 3s,
+        # or create a minimum 4s clip if remaining is 3-4s
+        if remaining_time < MIN_DURATION:
+            break  # Will be handled in continuation loop
+        
+        # Find next breakpoint within acceptable range (4-8s from current_time)
+        candidate_breakpoints = [
+            bp for bp in valid_breakpoints
+            if (current_time + MIN_DURATION) <= bp.timestamp <= min(current_time + MAX_DURATION, total_duration)
+        ]
+        
+        if candidate_breakpoints:
+            # Use highest-confidence breakpoint
+            best_breakpoint = max(candidate_breakpoints, key=lambda bp: bp.confidence)
+            end_time = best_breakpoint.timestamp
+            
+            logger.debug(
+                f"Clip {clip_index}: Using breakpoint at {end_time:.2f}s "
+                f"(source={best_breakpoint.source}, confidence={best_breakpoint.confidence:.2f})"
+            )
+        else:
+            # No breakpoint in range - use beat-aligned target duration
+            end_time = find_beat_aligned_time(current_time, target_duration, beat_timestamps)
+            
+            # Ensure end_time is valid and within segment
+            if end_time <= current_time:
+                # Invalid - calculate based on remaining time
+                if remaining_time <= MAX_DURATION:
+                    end_time = total_duration
+                else:
+                    end_time = current_time + MAX_DURATION
+            elif end_time > total_duration:
+                # Would exceed segment - use remaining time
+                if remaining_time <= MAX_DURATION:
+                    end_time = total_duration
+                else:
+                    end_time = current_time + MAX_DURATION
+        
+        # Validate duration (4-8s)
+        duration = end_time - current_time
+        
+        if duration < MIN_DURATION:
+            # Extend to minimum
+            end_time = extend_to_minimum(current_time, MIN_DURATION, beat_timestamps, total_duration)
+            duration = end_time - current_time
+        elif duration > MAX_DURATION:
+            # Cap at maximum (CRITICAL for subdivision)
+            end_time = cap_at_maximum(current_time, MAX_DURATION, beat_timestamps)
+            duration = end_time - current_time
+            logger.debug(
+                f"Clip {clip_index}: Capped duration at {MAX_DURATION}s "
+                f"(would have been {end_time - current_time:.2f}s)"
+            )
+        
+        # Final validation
+        if duration < MIN_DURATION:
+            # Still too short - extend to total_duration if near end
+            if total_duration - current_time < MIN_DURATION * 1.5:
+                # Near end, extend last clip
+                end_time = total_duration
+                duration = end_time - current_time
+            else:
+                # Not near end, skip this boundary or merge
+                logger.warning(
+                    f"Clip {clip_index}: Duration {duration:.2f}s < {MIN_DURATION}s, "
+                    f"extending to minimum"
+                )
+                end_time = extend_to_minimum(current_time, MIN_DURATION, beat_timestamps, total_duration)
+                duration = end_time - current_time
+        
+        # Create boundary
+        boundaries.append(ClipBoundary(
+            start=current_time,
+            end=end_time,
+            duration=duration,
+            metadata={
+                "segment_type": segment_type,
+                "beat_intensity": beat_intensity,
+                "clip_index": clip_index
+            }
+        ))
+        
+        current_time = end_time
+        clip_index += 1
+        
+        # Check if we've reached the end
+        if current_time >= total_duration:
+            break
+    
+    # CRITICAL: Ensure continuous coverage - NO GAPS ALLOWED
+    # If loop exited early, continue generating clips until segment is fully covered
+    # ALWAYS cover full segment, even if it means exceeding max_clips or creating very short clips
+    while current_time < total_duration:
+        # Calculate remaining time
+        remaining_time = total_duration - current_time
+        
+        # If remaining time fits in one clip (4-8s), create it and we're done
+        if MIN_DURATION <= remaining_time <= MAX_DURATION:
+            boundaries.append(ClipBoundary(
+                start=current_time,
+                end=total_duration,
+                duration=remaining_time,
+                metadata={
+                    "segment_type": segment_type,
+                    "beat_intensity": beat_intensity,
+                    "clip_index": len(boundaries),
+                    "is_continuation": True
+                }
+            ))
+            current_time = total_duration
+            break
+        
+        # If remaining time > 8s, create an 8s clip and continue
+        elif remaining_time > MAX_DURATION:
+            # Find beat-aligned end time for 8s clip
+            target_end = current_time + MAX_DURATION
+            if beat_timestamps:
+                # Find nearest beat to target_end
+                candidate_beats = [b for b in beat_timestamps if current_time < b <= target_end]
+                if candidate_beats:
+                    end_time = candidate_beats[-1]  # Use last beat before target
+                else:
+                    end_time = target_end
+            else:
+                end_time = target_end
+            
+            # Ensure we don't exceed segment
+            end_time = min(end_time, total_duration)
+            duration = end_time - current_time
+            
+            # Validate duration
+            if duration < MIN_DURATION:
+                end_time = extend_to_minimum(current_time, MIN_DURATION, beat_timestamps, total_duration)
+                duration = end_time - current_time
+            
+            boundaries.append(ClipBoundary(
+                start=current_time,
+                end=end_time,
+                duration=duration,
+                metadata={
+                    "segment_type": segment_type,
+                    "beat_intensity": beat_intensity,
+                    "clip_index": len(boundaries),
+                    "is_continuation": True
+                }
+            ))
+            current_time = end_time
+        
+        # If remaining time < 4s, ALWAYS extend previous clip (never create clips < 4s)
+        # Strategy: Extend neighbor clip to cover remainder, even if it slightly exceeds 8s
+        else:  # remaining_time < MIN_DURATION
+            if boundaries:
+                last_boundary = boundaries[-1]
+                extended_duration = total_duration - last_boundary.start
+                
+                # ALWAYS extend previous clip for remaining < 4s
+                # Better to have a clip slightly over 8s than a clip < 4s or a gap
+                if extended_duration <= MAX_DURATION:
+                    # Extend last clip to cover remainder
+                    boundaries[-1] = ClipBoundary(
+                        start=last_boundary.start,
+                        end=total_duration,
+                        duration=extended_duration,
+                        metadata=last_boundary.metadata
+                    )
+                    logger.debug(
+                        f"Extended last clip to cover remaining {remaining_time:.2f}s "
+                        f"(would have been < 4s clip, extending neighbor instead)"
+                    )
+                else:
+                    # Can't extend without exceeding 8s - extend anyway to prevent gap
+                    # Better to have clip slightly over 8s than a gap or < 4s clip
+                    logger.warning(
+                        f"Cannot extend last clip without exceeding 8s (would be {extended_duration:.2f}s) "
+                        f"but remaining {remaining_time:.2f}s < 4s. Extending anyway to prevent gap."
+                    )
+                    boundaries[-1] = ClipBoundary(
+                        start=last_boundary.start,
+                        end=total_duration,
+                        duration=extended_duration,
+                        metadata={
+                            **last_boundary.metadata,
+                            "warning": "clip_duration_exceeds_maximum",
+                            "note": f"Extended to {extended_duration:.2f}s to cover {remaining_time:.2f}s remainder (no clips < 4s allowed)"
+                        }
+                    )
+            else:
+                # No boundaries yet - if remaining < 4s, this is a very short segment
+                # Create clip anyway (it's the only option)
+                if remaining_time >= EXTEND_THRESHOLD:
+                    boundaries.append(ClipBoundary(
+                        start=current_time,
+                        end=total_duration,
+                        duration=remaining_time,
+                        metadata={
+                            "segment_type": segment_type,
+                            "beat_intensity": beat_intensity,
+                            "clip_index": 0
+                        }
+                    ))
+                else:
+                    # Segment is < 3s - create it anyway (edge case)
+                    logger.warning(
+                        f"Very short segment ({remaining_time:.2f}s < 3s) - creating clip anyway"
+                    )
+                    boundaries.append(ClipBoundary(
+                        start=current_time,
+                        end=total_duration,
+                        duration=remaining_time,
+                        metadata={
+                            "segment_type": segment_type,
+                            "beat_intensity": beat_intensity,
+                            "clip_index": 0,
+                            "warning": "segment_too_short"
+                        }
+                    ))
+            current_time = total_duration
+            break
+    
+    # CRITICAL FINAL CHECK: Ensure NO gaps WITHIN this segment - clips must be contiguous
+    # This only checks gaps within the segment (not between segments, which are structure boundaries).
+    for i in range(len(boundaries) - 1):
+        gap = boundaries[i + 1].start - boundaries[i].end
+        if gap > 0.01:  # More than 10ms gap (allowing for floating point precision)
+            logger.error(
+                f"CRITICAL: Gap detected within segment between clip {i} and {i+1}: {gap:.3f}s "
+                f"({boundaries[i].end:.3f}s - {boundaries[i+1].start:.3f}s). "
+                f"NO GAPS ALLOWED - fixing by making clip {i+1} start exactly at clip {i} end."
+            )
+            # Fix: Make next clip start exactly where previous ends (NO GAP)
+            # This ensures continuous coverage within the segment
+            new_start = boundaries[i].end
+            new_duration = boundaries[i + 1].end - new_start
+            
+            # If adjusting start makes duration < 3s, extend previous clip instead
+            if new_duration < EXTEND_THRESHOLD:
+                # Extend previous clip to cover the gap (if it won't exceed 8s)
+                prev_extended_duration = boundaries[i + 1].end - boundaries[i].start
+                if prev_extended_duration <= MAX_DURATION:
+                    # Extend previous clip
+                    boundaries[i] = ClipBoundary(
+                        start=boundaries[i].start,
+                        end=boundaries[i + 1].end,
+                        duration=prev_extended_duration,
+                        metadata=boundaries[i].metadata
+                    )
+                    # Remove the next clip (it's been merged into previous)
+                    boundaries.pop(i + 1)
+                    logger.debug(
+                        f"Extended clip {i} to cover gap (merged with clip {i+1}): "
+                        f"new duration {prev_extended_duration:.2f}s"
+                    )
+                    continue  # Skip to next iteration (indices shifted)
+                else:
+                    # Can't extend previous without exceeding 8s - extend next clip end instead
+                    # Try to extend end to reach minimum, but cap at total_duration
+                    new_end = min(new_start + MIN_DURATION, total_duration)
+                    new_duration = new_end - new_start
+                    if new_duration < EXTEND_THRESHOLD:
+                        # Still too short - must extend previous even if it exceeds 8s
+                        logger.warning(
+                            f"Cannot fix gap without creating < 3s clip. "
+                            f"Extending previous clip to {prev_extended_duration:.2f}s (exceeds 8s max)."
+                        )
+                        boundaries[i] = ClipBoundary(
+                            start=boundaries[i].start,
+                            end=boundaries[i + 1].end,
+                            duration=prev_extended_duration,
+                            metadata={
+                                **boundaries[i].metadata,
+                                "warning": "clip_duration_exceeds_maximum",
+                                "note": "Extended to fix gap and avoid < 3s clip"
+                            }
+                        )
+                        boundaries.pop(i + 1)
+                        continue
+            elif new_duration < MIN_DURATION:
+                # Duration is 3-4s - try to extend end to reach 4s minimum
+                new_end = min(new_start + MIN_DURATION, total_duration)
+                new_duration = new_end - new_start
+            else:
+                new_end = boundaries[i + 1].end
+            
+            boundaries[i + 1] = ClipBoundary(
+                start=new_start,
+                end=new_end,
+                duration=new_duration,
+                metadata=boundaries[i + 1].metadata
+            )
+    
+    # CRITICAL: Ensure last boundary covers to the end - NO GAPS ALLOWED
+    # This is a final safety check to catch any remaining uncovered time
+    if boundaries and boundaries[-1].end < total_duration:
+        remaining = total_duration - boundaries[-1].end
+        last_boundary = boundaries[-1]
+        new_duration = total_duration - last_boundary.start
+        
+        # If remaining < 4s, ALWAYS extend previous clip (never create clips < 4s)
+        if remaining < MIN_DURATION:
+            # Must extend previous clip, even if it slightly exceeds 8s
+            boundaries[-1] = ClipBoundary(
+                start=last_boundary.start,
+                end=total_duration,
+                duration=new_duration,
+                metadata={
+                    **last_boundary.metadata,
+                    "warning": "clip_duration_exceeds_maximum" if new_duration > MAX_DURATION else None,
+                    "note": f"Extended to cover {remaining:.2f}s remainder (no clips < 4s allowed)"
+                }
+            )
+            logger.debug(
+                f"Extended last boundary to cover remaining {remaining:.2f}s "
+                f"(would have been < 4s clip, extending neighbor instead)"
+            )
+        elif remaining >= MIN_DURATION:
+            # Remaining is 4-8s - create a proper clip
+            if new_duration <= MAX_DURATION:
+                # Can extend previous clip without exceeding 8s
+                boundaries[-1] = ClipBoundary(
+                    start=last_boundary.start,
+                    end=total_duration,
+                    duration=new_duration,
+                    metadata=last_boundary.metadata
+                )
+                logger.debug(f"Extended last boundary to cover remaining {remaining:.2f}s")
+            else:
+                # Can't extend - create new clip for remaining 4-8s
+                boundaries.append(ClipBoundary(
+                    start=last_boundary.end,
+                    end=total_duration,
+                    duration=remaining,
+                    metadata={
+                        "segment_type": segment_type,
+                        "beat_intensity": beat_intensity,
+                        "clip_index": len(boundaries),
+                        "is_remainder": True
+                    }
+                ))
+    
+    # Final validation: ensure all boundaries are 4-8s
+    validated_boundaries = []
+    for i, boundary in enumerate(boundaries):
+        if boundary.duration < MIN_DURATION:
+            logger.warning(
+                f"Boundary {i}: duration {boundary.duration:.2f}s < {MIN_DURATION}s, "
+                f"merging with previous or next"
+            )
+            # Try to merge with previous
+            if validated_boundaries:
+                prev = validated_boundaries[-1]
+                merged_duration = boundary.end - prev.start
+                if merged_duration <= MAX_DURATION:
+                    validated_boundaries[-1] = ClipBoundary(
+                        start=prev.start,
+                        end=boundary.end,
+                        duration=merged_duration,
+                        metadata=prev.metadata
+                    )
+                    continue
+            # Can't merge, skip this boundary
+            continue
+        elif boundary.duration > MAX_DURATION:
+            logger.warning(
+                f"Boundary {i}: duration {boundary.duration:.2f}s > {MAX_DURATION}s, "
+                f"capping at maximum"
+            )
+            # Cap at maximum
+            validated_boundaries.append(ClipBoundary(
+                start=boundary.start,
+                end=boundary.start + MAX_DURATION,
+                duration=MAX_DURATION,
+                metadata=boundary.metadata
+            ))
+        else:
+            validated_boundaries.append(boundary)
+    
+    # Ensure we have at least one boundary
+    if not validated_boundaries:
+        logger.warning("No valid boundaries generated, creating fallback single clip")
+        return [ClipBoundary(
+            start=0.0,
+            end=min(total_duration, MAX_DURATION),
+            duration=min(total_duration, MAX_DURATION)
+        )]
+    
+    logger.info(
+        f"Generated {len(validated_boundaries)} breakpoint-aware clip boundaries "
+        f"(used {len(valid_breakpoints)} breakpoints, "
+        f"durations: {[f'{b.duration:.1f}s' for b in validated_boundaries]})"
+    )
+    
+    return validated_boundaries[:max_clips]
+
+
+def validate_boundaries(
+    boundaries: List[ClipBoundary],
+    total_duration: float,
+    min_duration: float = 4.0,
+    max_duration: float = 8.0
+) -> Tuple[bool, List[str]]:
+    """
+    Validate all boundaries meet requirements.
+    
+    Args:
+        boundaries: List of clip boundaries to validate
+        total_duration: Total audio duration in seconds
+        min_duration: Minimum allowed duration (default: 4.0s)
+        max_duration: Maximum allowed duration (default: 8.0s)
+        
+    Returns:
+        Tuple of (is_valid, list_of_errors)
+    """
+    errors = []
+    
+    if not boundaries:
+        errors.append("No boundaries provided")
+        return False, errors
+    
+    # Check duration range
+    for i, boundary in enumerate(boundaries):
+        if boundary.duration < min_duration:
+            errors.append(
+                f"Boundary {i} [{boundary.start:.2f}s - {boundary.end:.2f}s]: "
+                f"duration {boundary.duration:.2f}s < {min_duration}s"
+            )
+        if boundary.duration > max_duration:
+            errors.append(
+                f"Boundary {i} [{boundary.start:.2f}s - {boundary.end:.2f}s]: "
+                f"duration {boundary.duration:.2f}s > {max_duration}s"
+            )
+    
+    # Check coverage
+    if boundaries[0].start > 0.1:  # 100ms tolerance
+        errors.append(
+            f"First boundary doesn't start at 0.0s (starts at {boundaries[0].start:.2f}s)"
+        )
+    
+    if boundaries[-1].end < total_duration - 0.1:  # 100ms tolerance
+        errors.append(
+            f"Last boundary doesn't cover full duration "
+            f"(ends at {boundaries[-1].end:.2f}s, total duration is {total_duration:.2f}s)"
+        )
+    
+    # Check no gaps
+    for i in range(len(boundaries) - 1):
+        gap = boundaries[i+1].start - boundaries[i].end
+        if gap > 0.1:  # 100ms tolerance
+            errors.append(
+                f"Gap between boundary {i} and {i+1}: {gap:.2f}s "
+                f"({boundaries[i].end:.2f}s -> {boundaries[i+1].start:.2f}s)"
+            )
+    
+    # Check no overlaps (shouldn't happen, but validate)
+    for i in range(len(boundaries) - 1):
+        if boundaries[i].end > boundaries[i+1].start + 0.1:  # 100ms tolerance
+            overlap = boundaries[i].end - boundaries[i+1].start
+            errors.append(
+                f"Overlap between boundary {i} and {i+1}: {overlap:.2f}s"
+            )
+    
+    is_valid = len(errors) == 0
+    return is_valid, errors

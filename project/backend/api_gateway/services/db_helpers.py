@@ -6,6 +6,9 @@ Utility functions for common database operations.
 
 import json
 from typing import Optional, Dict, Any
+from uuid import UUID
+from decimal import Decimal
+from datetime import datetime, date
 from shared.database import DatabaseClient
 from shared.redis_client import RedisClient
 from shared.logging import get_logger
@@ -14,6 +17,39 @@ logger = get_logger(__name__)
 
 db_client = DatabaseClient()
 redis_client = RedisClient()
+
+
+def make_json_serializable(obj: Any) -> Any:
+    """
+    Recursively convert non-JSON-serializable objects to serializable types.
+    
+    Handles:
+    - UUID -> str
+    - Decimal -> str
+    - datetime -> ISO format string
+    - date -> ISO format string
+    - dict/list -> recursively process values
+    
+    Args:
+        obj: Object to make JSON serializable
+        
+    Returns:
+        JSON-serializable version of the object
+    """
+    if isinstance(obj, UUID):
+        return str(obj)
+    elif isinstance(obj, Decimal):
+        return str(obj)
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, set):
+        return [make_json_serializable(item) for item in obj]
+    else:
+        return obj
 
 
 async def invalidate_job_cache(job_id: str) -> None:
@@ -53,7 +89,10 @@ async def update_job_stage(
         }
         
         if metadata:
-            stage_data["metadata"] = json.dumps(metadata) if isinstance(metadata, dict) else metadata
+            # Convert metadata to JSON-serializable format (recursively convert UUIDs, Decimals, etc. to strings)
+            # PostgREST will handle JSON serialization for JSONB fields, but we need to ensure all values are JSON-serializable
+            serializable_metadata = make_json_serializable(metadata)
+            stage_data["metadata"] = serializable_metadata
         
         # Check if stage exists
         existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", stage_name).execute()
