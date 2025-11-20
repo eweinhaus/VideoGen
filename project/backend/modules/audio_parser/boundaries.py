@@ -1006,7 +1006,7 @@ def generate_boundaries_with_breakpoints(
             break
     
     # CRITICAL FINAL CHECK: Ensure NO gaps WITHIN this segment - clips must be contiguous
-    # This only checks gaps within the segment (not between segments, which are structure boundaries)
+    # This only checks gaps within the segment (not between segments, which are structure boundaries).
     for i in range(len(boundaries) - 1):
         gap = boundaries[i + 1].start - boundaries[i].end
         if gap > 0.01:  # More than 10ms gap (allowing for floating point precision)
