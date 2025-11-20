@@ -91,8 +91,8 @@ def get_character_variation_suffix(variation_index: int) -> str:
         Suffix string describing camera angle/pose for this variation
     """
     if variation_index == 0:
-        # Base variation: frontal portrait
-        return "frontal portrait view, neutral expression, direct gaze, centered composition"
+        # Base variation: three-quarter body shot (not just head/portrait to ensure proper proportions)
+        return "three-quarter body shot, head and upper body visible, neutral expression, direct gaze, natural proportions, balanced composition"
     elif variation_index == 1:
         # Variation 1: profile view
         return "SAME PERSON, profile view from left side, slight smile, side angle, EXACT SAME FEATURES"
@@ -209,7 +209,7 @@ def build_character_features_block(character: Optional[Character]) -> str:
             f"Accessories: {features.accessories}. "
             f"Build: {features.build}. "
             f"Age: {features.age}. "
-            f"Anatomically correct human, proper human anatomy, two arms, two legs, natural proportions"
+            f"Anatomically correct human, proper human anatomy, natural body proportions, balanced head-to-body ratio, two arms, two legs, normal head size"
         )
         return features_block
     
@@ -287,8 +287,8 @@ def synthesize_prompt(
     # For character images: START with strong realism keywords (order matters in SDXL)
     if image_type == "character":
         # Put realism FIRST to override any style tendencies
-        # Emphasize face detail and clarity for better video generation preservation
-        fragments.append("photorealistic portrait photograph of a real person, hyperrealistic, lifelike human, sharp facial features, detailed face, clear eyes nose mouth, professional portrait quality")
+        # Balance face detail with proper body proportions to avoid disproportionately large heads
+        fragments.append("photorealistic photograph of a real person, hyperrealistic, lifelike human, natural body proportions, proper human anatomy, balanced head-to-body ratio, sharp facial features, professional photography quality")
     
     # For character images, use enhanced character features if available
     # CRITICAL: Always prefer structured features from scene planner over raw description
@@ -329,18 +329,19 @@ def synthesize_prompt(
     
     # Add style information (for characters, this reinforces realism)
     if image_type == "character":
-        # For characters: emphasize photography and realism
-        # Enhanced with face-specific keywords for better preservation in video generation
+        # For characters: emphasize photography and realism with proper body proportions
+        # Balance face detail with body proportions to prevent disproportionately large heads
         style_fragments = [
-            "professional portrait photography",
+            "professional photography, natural body proportions, anatomically correct proportions",
             "natural lighting, studio quality",
             f"mood: {mood}",
             f"{color_palette_str} color tones",
-            "DSLR camera, 85mm lens, f/2.8 aperture, shallow depth of field",
+            "DSLR camera, 50mm lens, f/4 aperture, medium depth of field",
             "natural skin texture, realistic skin pores, natural colors",
             "highly detailed, professional quality, 4K, sharp focus, crisp details",
             "sharp facial features, clear face definition, no face blur, no face distortion",
-            "preserve exact facial structure, consistent face, no face warping"
+            "preserve exact facial structure, consistent face, no face warping",
+            "normal head size, proportional head to body, natural human proportions"
         ]
     else:
         # For scenes: use scene plan style
