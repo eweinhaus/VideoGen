@@ -214,10 +214,18 @@ async def verify_job_ownership(
         job = result.data[0]
         
         # Verify ownership
-        # Allow admin email to bypass ownership check
+        # Check if user has admin role in database
         user_email = current_user.get("email")
         user_id = current_user.get("user_id")
-        is_admin = user_email == "etweinhaus@gmail.com"
+        
+        # Query user_roles table to check if user is admin
+        is_admin = False
+        try:
+            role_result = await db_client.table("user_roles").select("role").eq("user_id", user_id).execute()
+            if role_result.data and len(role_result.data) > 0:
+                is_admin = role_result.data[0].get("role") == "admin"
+        except Exception as e:
+            logger.warning("Failed to check admin role", exc_info=e, extra={"user_id": user_id})
         
         # Log for debugging
         logger.debug(

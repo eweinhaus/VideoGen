@@ -38,14 +38,34 @@ export function VideoPlayer({
   useEffect(() => {
     if (seekTo !== undefined && videoRef.current && !isLoading) {
       const video = videoRef.current
+      // Add small offset to compensate for keyframe seeking
+      // Browsers seek to nearest keyframe which is often slightly before requested time
+      const adjustedSeekTime = seekTo + 0.04 // Add 40ms (1 frame at 24fps)
+      
       // Wait for video to be ready before seeking
       if (video.readyState >= 2) {
         // readyState 2 = HAVE_CURRENT_DATA
-        video.currentTime = seekTo
+        video.currentTime = adjustedSeekTime
+        
+        // Verify seek position after a short delay
+        setTimeout(() => {
+          if (video.currentTime < seekTo) {
+            // Still too early, try again
+            video.currentTime = adjustedSeekTime
+          }
+        }, 100)
       } else {
         // Wait for video to load metadata before seeking
         const handleLoadedMetadata = () => {
-          video.currentTime = seekTo
+          video.currentTime = adjustedSeekTime
+          
+          // Verify seek position after a short delay
+          setTimeout(() => {
+            if (video.currentTime < seekTo) {
+              video.currentTime = adjustedSeekTime
+            }
+          }, 100)
+          
           video.removeEventListener("loadedmetadata", handleLoadedMetadata)
         }
         video.addEventListener("loadedmetadata", handleLoadedMetadata)

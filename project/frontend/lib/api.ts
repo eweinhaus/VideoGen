@@ -433,6 +433,8 @@ export interface ClipComparisonResponse {
   } | null
   duration_mismatch: boolean
   duration_diff: number
+  clip_start_time?: number | null  // Start time of clip in full audio (for trimming)
+  clip_end_time?: number | null    // End time of clip in full audio (for trimming)
 }
 
 export async function getClipComparison(

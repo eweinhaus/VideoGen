@@ -331,10 +331,34 @@ async def compare_clip_versions(
         HTTPException: 404 if versions not found, 403 if access denied
     """
     try:
-        from modules.clip_regenerator.data_loader import load_clips_from_job_stages, load_clip_prompts_from_job_stages
+        from modules.clip_regenerator.data_loader import (
+            load_clips_from_job_stages, 
+            load_clip_prompts_from_job_stages,
+            load_audio_data_from_job_stages
+        )
         
         # Verify job ownership
         job = await verify_job_ownership(job_id, current_user)
+        
+        # Load audio analysis to get clip boundaries (for audio trimming in frontend)
+        audio_analysis = await load_audio_data_from_job_stages(UUID(job_id))
+        clip_start_time = None
+        clip_end_time = None
+        
+        if audio_analysis and audio_analysis.clip_boundaries:
+            if 0 <= clip_index < len(audio_analysis.clip_boundaries):
+                boundary = audio_analysis.clip_boundaries[clip_index]
+                clip_start_time = boundary.start
+                clip_end_time = boundary.end
+                logger.debug(
+                    f"Loaded clip boundary for audio trimming",
+                    extra={
+                        "job_id": job_id,
+                        "clip_index": clip_index,
+                        "start": clip_start_time,
+                        "end": clip_end_time
+                    }
+                )
         
         # Load comparison versions from clip_versions table
         # Strategy: Compare the previous version (before latest) vs the latest version
@@ -582,7 +606,10 @@ async def compare_clip_versions(
                 "cost": original_data.get("cost")
             },
             "duration_mismatch": duration_mismatch,
-            "duration_diff": duration_diff
+            "duration_diff": duration_diff,
+            # Add clip boundary info for audio trimming in frontend
+            "clip_start_time": clip_start_time,
+            "clip_end_time": clip_end_time
         }
         
         # Add regenerated data if it exists

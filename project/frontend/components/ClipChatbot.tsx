@@ -519,6 +519,28 @@ export function ClipChatbot({
         onRegenerationComplete(finalVideoUrl)
       }
       
+      // CRITICAL FIX: Refresh clips to update thumbnails after regeneration
+      // Thumbnails are generated during regeneration, but UI needs to refetch them
+      if (data.clip_index !== undefined && data.clip_index !== null) {
+        // Delay slightly to ensure backend has saved the new thumbnail
+        setTimeout(async () => {
+          try {
+            const response = await getJobClips(jobId)
+            setClips(response.clips)
+            console.log("✅ Clips refreshed after regeneration, thumbnails updated")
+            
+            // Automatically refresh comparison for this clip if it's shown
+            if (showComparison && selectedClipIndex === data.clip_index) {
+              handleCompareClip(data.clip_index).catch((err) => {
+                console.warn("Failed to auto-refresh comparison after regeneration:", err)
+              })
+            }
+          } catch (err) {
+            console.warn("Failed to refresh clips after regeneration:", err)
+          }
+        }, 1000) // Wait 1 second for thumbnail generation
+      }
+      
       // Reset state after a delay
       setTimeout(() => {
         setProgress(null)
@@ -792,6 +814,8 @@ export function ClipChatbot({
           originalClip={comparisonData.original}
           regeneratedClip={comparisonData.regenerated}
           audioUrl={audioUrl ?? undefined}
+          clipStartTime={comparisonData.clip_start_time ?? null}
+          clipEndTime={comparisonData.clip_end_time ?? null}
           onClose={() => {
             setShowComparison(false)
             setComparisonData(null)
