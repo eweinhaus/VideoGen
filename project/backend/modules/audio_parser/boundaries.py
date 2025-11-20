@@ -823,9 +823,20 @@ def generate_boundaries_with_breakpoints(
             # No breakpoint in range - use beat-aligned target duration
             end_time = find_beat_aligned_time(current_time, target_duration, beat_timestamps)
             
-            # Ensure we don't exceed segment
-            if end_time > total_duration:
-                end_time = total_duration
+            # If no beats available or beat-aligned time is invalid, calculate based on remaining time
+            if end_time <= current_time or end_time > total_duration:
+                # Calculate how much time is left
+                remaining_time = total_duration - current_time
+                
+                # If remaining time fits in one clip (4-8s), use it all
+                if MIN_DURATION <= remaining_time <= MAX_DURATION:
+                    end_time = total_duration
+                # If remaining time is > 8s, cap at 8s (will create another clip for the rest)
+                elif remaining_time > MAX_DURATION:
+                    end_time = current_time + MAX_DURATION
+                # If remaining time is < 4s, we'll extend in validation below
+                else:
+                    end_time = total_duration  # Will be validated below
         
         # Validate duration (4-8s)
         duration = end_time - current_time
@@ -878,7 +889,60 @@ def generate_boundaries_with_breakpoints(
         if current_time >= total_duration:
             break
     
-    # Ensure full coverage
+    # CRITICAL: Ensure full coverage - check for gaps and fill them
+    # This handles cases where the loop exited early or left gaps
+    if boundaries:
+        # Check for gaps between boundaries
+        for i in range(len(boundaries) - 1):
+            gap = boundaries[i + 1].start - boundaries[i].end
+            if gap > 0.1:  # More than 100ms gap
+                logger.warning(
+                    f"Gap detected between clip {i} and {i+1}: {gap:.2f}s "
+                    f"({boundaries[i].end:.2f}s - {boundaries[i+1].start:.2f}s). "
+                    f"Filling gap with additional clip."
+                )
+                # Create a clip to fill the gap
+                gap_start = boundaries[i].end
+                gap_end = boundaries[i + 1].start
+                gap_duration = gap_end - gap_start
+                
+                # If gap is >= MIN_DURATION, create a new clip
+                if gap_duration >= MIN_DURATION and len(boundaries) < max_clips:
+                    # Insert clip to fill gap
+                    boundaries.insert(i + 1, ClipBoundary(
+                        start=gap_start,
+                        end=gap_end,
+                        duration=gap_duration,
+                        metadata={
+                            "segment_type": segment_type,
+                            "beat_intensity": beat_intensity,
+                            "clip_index": i + 1,
+                            "is_gap_filler": True
+                        }
+                    ))
+                    # Update clip indices for subsequent boundaries
+                    for j in range(i + 2, len(boundaries)):
+                        if "clip_index" in boundaries[j].metadata:
+                            boundaries[j].metadata["clip_index"] = j
+                elif gap_duration < MIN_DURATION:
+                    # Gap is too small - extend previous clip to cover it
+                    extended_duration = boundaries[i + 1].end - boundaries[i].start
+                    if extended_duration <= MAX_DURATION:
+                        boundaries[i] = ClipBoundary(
+                            start=boundaries[i].start,
+                            end=boundaries[i + 1].end,
+                            duration=extended_duration,
+                            metadata=boundaries[i].metadata
+                        )
+                        # Remove the next boundary since we merged it
+                        boundaries.pop(i + 1)
+                        # Update indices
+                        for j in range(i + 1, len(boundaries)):
+                            if "clip_index" in boundaries[j].metadata:
+                                boundaries[j].metadata["clip_index"] = j
+                        break  # Restart gap checking after merge
+    
+    # Ensure last boundary covers to the end
     if boundaries and boundaries[-1].end < total_duration:
         remaining = total_duration - boundaries[-1].end
         
