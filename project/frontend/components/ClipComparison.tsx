@@ -27,6 +27,8 @@ interface ClipComparisonProps {
   onClose: () => void
   onRevert?: (clipIndex: number, versionNumber: number) => Promise<void>
   clipIndex?: number
+  clipStartTime?: number | null  // Start time of clip in full audio (for trimming)
+  clipEndTime?: number | null    // End time of clip in full audio (for trimming)
 }
 
 export function ClipComparison({
@@ -38,6 +40,8 @@ export function ClipComparison({
   onClose,
   onRevert,
   clipIndex,
+  clipStartTime,
+  clipEndTime,
 }: ClipComparisonProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -156,62 +160,84 @@ export function ClipComparison({
             )
             originalVideo.currentTime = syncTime
             regeneratedVideo.currentTime = syncTime
-            if (audio) audio.currentTime = syncTime
+            // For audio with clip boundaries, sync relative to clip start
+            if (audio && clipStartTime !== null && clipStartTime !== undefined) {
+              audio.currentTime = clipStartTime + syncTime
+            } else if (audio) {
+              audio.currentTime = syncTime
+            }
           } else {
             // Sync audio to video time
             const syncTime = originalVideo.currentTime || 0
-            if (audio) audio.currentTime = syncTime
+            if (audio && clipStartTime !== null && clipStartTime !== undefined) {
+              audio.currentTime = clipStartTime + syncTime
+            } else if (audio) {
+              audio.currentTime = syncTime
+            }
           }
           await Promise.all([originalVideo.play(), regeneratedVideo.play()])
           if (audio) await audio.play()
         }
       }
     } else {
-      // Independent playback - only play audio if exactly one video is playing
-      const originalPlaying = originalVideo && !originalVideo.paused
-      const regeneratedPlaying = regeneratedClip && regeneratedVideo && !regeneratedVideo.paused
-      const willBeOriginalPlaying = originalVideo && !isPlaying
-      const willBeRegeneratedPlaying = regeneratedClip && regeneratedVideo && !isPlaying
+      // Independent playback mode
+      // Play/pause both videos independently, but sync audio to the playing video
       
-      // Determine if we should play audio (only if exactly one video will be playing)
-      const shouldPlayAudio = (willBeOriginalPlaying && !willBeRegeneratedPlaying) || 
-                              (!willBeOriginalPlaying && willBeRegeneratedPlaying)
+      const willBePlaying = !isPlaying
       
+      // Control video playback
       if (originalVideo) {
         if (isPlaying) {
           originalVideo.pause()
         } else {
-          await originalVideo.play()
+          try {
+            await originalVideo.play()
+          } catch (e) {
+            console.warn("Failed to play original video:", e)
+          }
         }
       }
       if (regeneratedClip && regeneratedVideo) {
         if (isPlaying) {
           regeneratedVideo.pause()
         } else {
-          await regeneratedVideo.play()
+          try {
+            await regeneratedVideo.play()
+          } catch (e) {
+            console.warn("Failed to play regenerated video:", e)
+          }
         }
       }
       
-      // Handle audio for independent playback
+      // Handle audio: Play if we're starting playback (regardless of number of videos)
+      // Sync audio to first available video's time + clip start offset
       if (audio) {
         if (isPlaying) {
-          // Pausing - check if we should pause audio
-          if ((originalPlaying && !regeneratedPlaying) || (!originalPlaying && regeneratedPlaying)) {
-            audio.pause()
-          }
-        } else if (shouldPlayAudio) {
-          // Starting - sync audio to the playing video
-          const playingVideo = willBeOriginalPlaying ? originalVideo : regeneratedVideo
-          if (playingVideo) {
-            audio.currentTime = playingVideo.currentTime || 0
-            await audio.play()
+          // Pausing
+          audio.pause()
+        } else if (willBePlaying) {
+          // Starting playback
+          // Sync audio to first available video
+          const syncVideo = originalVideo || regeneratedVideo
+          if (syncVideo) {
+            try {
+              // If we have clip boundaries, sync audio to clip start + video time
+              if (clipStartTime !== null && clipStartTime !== undefined) {
+                audio.currentTime = clipStartTime + (syncVideo.currentTime || 0)
+              } else {
+                audio.currentTime = syncVideo.currentTime || 0
+              }
+              await audio.play()
+            } catch (e) {
+              console.warn("Failed to play audio:", e)
+            }
           }
         }
       }
     }
     
     setIsPlaying(!isPlaying)
-  }, [isSynced, isPlaying, durationMismatch, regeneratedClip])
+  }, [isSynced, isPlaying, durationMismatch, regeneratedClip, clipStartTime])
   
   // Sync seek position (for synchronized mode)
   useEffect(() => {
@@ -223,31 +249,46 @@ export function ClipComparison({
     
     if (!originalVideo || !regeneratedVideo) return
     
-    const syncVideos = () => {
-      if (durationMismatch) {
-        // Sync to shorter duration
-        const shorterTime = Math.min(
-          originalVideo.currentTime || 0,
-          regeneratedVideo.currentTime || 0
-        )
-        originalVideo.currentTime = shorterTime
-        regeneratedVideo.currentTime = shorterTime
-        if (audio) audio.currentTime = shorterTime
-      } else {
-        // Sync to same time
-        const syncTime = originalVideo.currentTime || regeneratedVideo.currentTime || 0
-        originalVideo.currentTime = syncTime
-        regeneratedVideo.currentTime = syncTime
-        if (audio) audio.currentTime = syncTime
+    let isSyncing = false  // Prevent infinite loop from mutual triggering
+    
+    const syncVideos = (sourceVideo: HTMLVideoElement, targetVideo: HTMLVideoElement) => {
+      if (isSyncing) return
+      isSyncing = true
+      
+      try {
+        const sourceTime = sourceVideo.currentTime || 0
+        
+        if (durationMismatch) {
+          // Sync to shorter duration
+          const maxTime = Math.min(
+            originalVideo.duration || 0,
+            regeneratedVideo.duration || 0
+          )
+          const targetTime = Math.min(sourceTime, maxTime)
+          targetVideo.currentTime = targetTime
+          if (audio) audio.currentTime = targetTime
+        } else {
+          // Sync to same time
+          targetVideo.currentTime = sourceTime
+          if (audio) audio.currentTime = sourceTime
+        }
+      } finally {
+        // Use setTimeout to reset flag after sync completes
+        setTimeout(() => {
+          isSyncing = false
+        }, 50)
       }
     }
     
-    originalVideo.addEventListener("seeked", syncVideos)
-    regeneratedVideo.addEventListener("seeked", syncVideos)
+    const handleOriginalSeeked = () => syncVideos(originalVideo, regeneratedVideo)
+    const handleRegeneratedSeeked = () => syncVideos(regeneratedVideo, originalVideo)
+    
+    originalVideo.addEventListener("seeked", handleOriginalSeeked)
+    regeneratedVideo.addEventListener("seeked", handleRegeneratedSeeked)
     
     return () => {
-      originalVideo.removeEventListener("seeked", syncVideos)
-      regeneratedVideo.removeEventListener("seeked", syncVideos)
+      originalVideo.removeEventListener("seeked", handleOriginalSeeked)
+      regeneratedVideo.removeEventListener("seeked", handleRegeneratedSeeked)
     }
   }, [isSynced, durationMismatch, regeneratedClip])
   
@@ -288,10 +329,11 @@ export function ClipComparison({
     }
   }, [isSynced, audioUrl, regeneratedClip])
   
-  // Update timestamps
+  // Update timestamps and enforce audio boundaries
   useEffect(() => {
     const originalVideo = originalVideoRef.current
     const regeneratedVideo = regeneratedClip ? regeneratedVideoRef.current : null
+    const audio = audioRef.current
     
     const updateTimestamps = () => {
       if (originalVideo) {
@@ -299,6 +341,21 @@ export function ClipComparison({
       }
       if (regeneratedVideo) {
         setRegeneratedTime(regeneratedVideo.currentTime)
+      }
+      
+      // CRITICAL: Stop audio when video ends (audio might be longer than video clip)
+      if (audio && isPlaying) {
+        // Check if we've reached the end of either video
+        const originalEnded = originalVideo && originalVideo.currentTime >= originalVideo.duration - 0.1
+        const regeneratedEnded = regeneratedVideo && regeneratedVideo.currentTime >= regeneratedVideo.duration - 0.1
+        
+        if (originalEnded || regeneratedEnded) {
+          audio.pause()
+          // Reset to clip start if boundaries exist
+          if (clipStartTime !== null && clipStartTime !== undefined) {
+            audio.currentTime = clipStartTime
+          }
+        }
       }
     }
     
@@ -320,7 +377,7 @@ export function ClipComparison({
         regeneratedVideo.removeEventListener("timeupdate", updateTimestamps)
       }
     }
-  }, [regeneratedClip])
+  }, [regeneratedClip, isPlaying, clipStartTime])
   
   // Fullscreen handling
   const enterFullscreen = useCallback(async () => {
@@ -346,6 +403,16 @@ export function ClipComparison({
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
+      // Don't intercept keyboard shortcuts if user is typing in an input/textarea
+      const target = e.target as HTMLElement
+      const isTyping = target.tagName === 'INPUT' || 
+                       target.tagName === 'TEXTAREA' || 
+                       target.isContentEditable
+      
+      if (isTyping) {
+        return // Let the input handle the key press normally
+      }
+      
       if (e.key === " ") {
         e.preventDefault()
         handlePlay()
@@ -386,6 +453,35 @@ export function ClipComparison({
           ref={audioRef}
           src={audioUrl}
           preload="metadata"
+          onLoadedMetadata={() => {
+            // Set audio time boundaries if clip start/end times are provided
+            // This allows playing only the audio segment for this specific clip
+            const audio = audioRef.current
+            if (audio && clipStartTime !== null && clipStartTime !== undefined) {
+              // Set initial position to clip start time
+              audio.currentTime = clipStartTime
+              
+              // Log for debugging
+              console.log(`Audio trimmed to clip boundaries: ${clipStartTime}s - ${clipEndTime || 'end'}s`)
+            }
+          }}
+          onTimeUpdate={() => {
+            // Stop audio when reaching clip end time
+            const audio = audioRef.current
+            if (audio && clipEndTime !== null && clipEndTime !== undefined) {
+              if (audio.currentTime >= clipEndTime) {
+                audio.pause()
+                // Reset to clip start for replay
+                if (clipStartTime !== null && clipStartTime !== undefined) {
+                  audio.currentTime = clipStartTime
+                }
+                // Also pause videos if they're playing
+                if (originalVideoRef.current) originalVideoRef.current.pause()
+                if (regeneratedVideoRef.current) regeneratedVideoRef.current.pause()
+                setIsPlaying(false)
+              }
+            }
+          }}
           onError={(e) => {
             console.warn("Failed to load audio:", e)
             // Don't show error to user, just log it
@@ -554,6 +650,7 @@ export function ClipComparison({
           
           {/* Controls */}
           <div className="flex flex-col items-center gap-4">
+            {/* Primary playback controls */}
             <div className="flex items-center gap-4">
               <Button onClick={handlePlay} variant="default">
                 {isPlaying ? (
@@ -576,24 +673,31 @@ export function ClipComparison({
                 {isSynced ? "Synchronized" : "Independent"}
               </Button>
             </div>
-            {/* Revert button - only show if regenerated clip exists and onRevert is provided */}
+            
+            {/* Version management buttons */}
             {regeneratedClip && onRevert && clipIndex !== undefined && (
-              <Button
-                variant="outline"
-                onClick={async () => {
-                  try {
-                    await onRevert(clipIndex, 1) // Revert to version 1 (original)
-                    onClose() // Close modal after successful revert
-                  } catch (error) {
-                    console.error("Failed to revert clip:", error)
-                    setError(error instanceof Error ? error.message : "Failed to revert clip")
-                  }
-                }}
-                className="text-orange-600 border-orange-600 hover:bg-orange-50"
-              >
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Revert to Original
-              </Button>
+              <div className="flex flex-col items-center gap-3 w-full">
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      await onRevert(clipIndex, leftClip.version_number) // Revert to the original version being shown
+                      onClose() // Close modal after successful revert
+                    } catch (error) {
+                      console.error("Failed to revert clip:", error)
+                      setError(error instanceof Error ? error.message : "Failed to revert clip")
+                    }
+                  }}
+                  className="text-orange-600 border-orange-600 hover:bg-orange-50 min-w-[200px]"
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Use Original Version (v{leftClip.version_number})
+                </Button>
+                <div className="text-xs text-muted-foreground text-center max-w-md">
+                  This will re-stitch the full video using the original clip version (v{leftClip.version_number}) 
+                  instead of the regenerated version (v{rightClip?.version_number}).
+                </div>
+              </div>
             )}
           </div>
         </div>

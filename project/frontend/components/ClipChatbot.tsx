@@ -65,7 +65,7 @@ export function ClipChatbot({
   // Generate unique storage key for this job (unified chat)
   const storageKey = `clip_chat_${jobId}`
   const conversationHistoryKey = `clip_chat_history_${jobId}`
-  const selectedClipKey = `clip_chat_selected_${jobId}`
+  const selectedClipsKey = `clip_chat_selected_clips_${jobId}`
   const comparisonStateKey = `clip_chat_comparison_${jobId}`
   
   const [messages, setMessages] = useState<Message[]>([])
@@ -80,12 +80,14 @@ export function ClipChatbot({
   const [lastInstruction, setLastInstruction] = useState<string | null>(null)
   const [lastClipIndex, setLastClipIndex] = useState<number | null>(null)
   const [clips, setClips] = useState<ClipData[]>([])
-  const [selectedClipIndex, setSelectedClipIndex] = useState<number | null>(null)
+  const [selectedClipIndices, setSelectedClipIndices] = useState<number[]>([])
   const [loadingClips, setLoadingClips] = useState(true)
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<{
     original: any
     regenerated: any | null
+    clip_start_time?: number | null
+    clip_end_time?: number | null
   } | null>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -94,32 +96,32 @@ export function ClipChatbot({
   const isRestoringRef = useRef(false)
   const hasRestoredMessagesRef = useRef(false)
 
-  // Save selected clip index to localStorage
-  const saveSelectedClip = useCallback((clipIndex: number | null) => {
+  // Save selected clip indices to localStorage
+  const saveSelectedClips = useCallback((clipIndices: number[]) => {
     if (!isInitializedRef.current) return
     try {
-      if (clipIndex === null) {
-        localStorage.removeItem(selectedClipKey)
+      if (clipIndices.length === 0) {
+        localStorage.removeItem(selectedClipsKey)
       } else {
-        localStorage.setItem(selectedClipKey, JSON.stringify(clipIndex))
+        localStorage.setItem(selectedClipsKey, JSON.stringify(clipIndices))
       }
     } catch (err) {
-      console.error("Failed to save selected clip:", err)
+      console.error("Failed to save selected clips:", err)
     }
-  }, [selectedClipKey])
+  }, [selectedClipsKey])
 
-  // Restore selected clip index from localStorage
-  const getPersistedSelectedClip = useCallback((): number | null => {
+  // Restore selected clip indices from localStorage
+  const getPersistedSelectedClips = useCallback((): number[] => {
     try {
-      const saved = localStorage.getItem(selectedClipKey)
+      const saved = localStorage.getItem(selectedClipsKey)
       if (saved !== null) {
         return JSON.parse(saved)
       }
     } catch (err) {
-      console.error("Failed to restore selected clip:", err)
+      console.error("Failed to restore selected clips:", err)
     }
-    return null
-  }, [selectedClipKey])
+    return []
+  }, [selectedClipsKey])
 
   // Save comparison state to localStorage
   const saveComparisonState = useCallback((show: boolean, data: { original: any; regenerated: any | null } | null) => {
@@ -131,13 +133,13 @@ export function ClipChatbot({
         localStorage.setItem(comparisonStateKey, JSON.stringify({
           show,
           data,
-          clipIndex: selectedClipIndex
+          clipIndex: selectedClipIndices[0] // Use first selected clip for comparison
         }))
       }
     } catch (err) {
       console.error("Failed to save comparison state:", err)
     }
-  }, [comparisonStateKey, selectedClipIndex])
+  }, [comparisonStateKey, selectedClipIndices])
 
   // Restore comparison state from localStorage
   const getPersistedComparisonState = useCallback((): { show: boolean; data: { original: any; regenerated: any | null } | null; clipIndex: number | null } | null => {
@@ -164,17 +166,19 @@ export function ClipChatbot({
           setClips(response.clips)
           setLoadingClips(false)
           
-          // Restore persisted selected clip index if it exists
-          const persistedIndex = getPersistedSelectedClip()
-          if (persistedIndex !== null) {
-            // Validate that the selected clip still exists
-            const clipExists = response.clips.some(c => c.clip_index === persistedIndex)
-            if (clipExists) {
-              setSelectedClipIndex(persistedIndex)
+          // Restore persisted selected clip indices if they exist
+          const persistedIndices = getPersistedSelectedClips()
+          if (persistedIndices.length > 0) {
+            // Validate that all selected clips still exist
+            const validIndices = persistedIndices.filter(index =>
+              response.clips.some(c => c.clip_index === index)
+            )
+            if (validIndices.length > 0) {
+              setSelectedClipIndices(validIndices)
             } else {
-              // Selected clip no longer exists, clear selection
-              setSelectedClipIndex(null)
-              saveSelectedClip(null)
+              // No valid clips, clear selection
+              setSelectedClipIndices([])
+              saveSelectedClips([])
             }
           }
         }
@@ -191,7 +195,7 @@ export function ClipChatbot({
     return () => {
       mounted = false
     }
-  }, [jobId, getPersistedSelectedClip, saveSelectedClip])
+  }, [jobId, getPersistedSelectedClips, saveSelectedClips])
 
   // Load messages and conversation history from localStorage on mount or when jobId changes
   useEffect(() => {
@@ -299,28 +303,30 @@ export function ClipChatbot({
     })
   }, [jobId, storageKey, conversationHistoryKey, comparisonStateKey])
 
-  // Restore selected clip index on mount (if not already set by clip fetch)
+  // Restore selected clip indices on mount (if not already set by clip fetch)
   // This is handled in the clip fetch useEffect, but this is a fallback
   useEffect(() => {
-    if (selectedClipIndex === null && clips.length > 0 && isInitializedRef.current) {
-      const persistedIndex = getPersistedSelectedClip()
-      if (persistedIndex !== null) {
-        const clipExists = clips.some(c => c.clip_index === persistedIndex)
-        if (clipExists) {
-          setSelectedClipIndex(persistedIndex)
+    if (selectedClipIndices.length === 0 && clips.length > 0 && isInitializedRef.current) {
+      const persistedIndices = getPersistedSelectedClips()
+      if (persistedIndices.length > 0) {
+        const validIndices = persistedIndices.filter(index =>
+          clips.some(c => c.clip_index === index)
+        )
+        if (validIndices.length > 0) {
+          setSelectedClipIndices(validIndices)
         }
       }
     }
-  }, [clips, selectedClipIndex, getPersistedSelectedClip])
+  }, [clips, selectedClipIndices, getPersistedSelectedClips])
 
-  // Save selected clip index when it changes
+  // Save selected clip indices when they change
   useEffect(() => {
     if (isInitializedRef.current) {
-      saveSelectedClip(selectedClipIndex)
+      saveSelectedClips(selectedClipIndices)
     }
-  }, [selectedClipIndex, saveSelectedClip])
+  }, [selectedClipIndices, saveSelectedClips])
 
-  // Restore comparison state on mount (after clips are loaded) or when selected clip changes
+  // Restore comparison state on mount (after clips are loaded) or when selected clips change
   useEffect(() => {
     if (!isInitializedRef.current || clips.length === 0 || loadingClips) return
     
@@ -331,11 +337,11 @@ export function ClipChatbot({
       if (persisted && persisted.clipIndex !== null) {
         // Verify the clip still exists
         const clipExists = clips.some(c => c.clip_index === persisted.clipIndex)
-        if (clipExists && persisted.clipIndex === selectedClipIndex && persisted.show && persisted.data) {
+        if (clipExists && selectedClipIndices.includes(persisted.clipIndex) && persisted.show && persisted.data) {
           // Restore comparison state if the selected clip matches
           setComparisonData(persisted.data)
           setShowComparison(true)
-        } else if (persisted.clipIndex !== selectedClipIndex) {
+        } else if (!selectedClipIndices.includes(persisted.clipIndex)) {
           // Clear comparison state if clip doesn't match
           setShowComparison(false)
           setComparisonData(null)
@@ -352,7 +358,7 @@ export function ClipChatbot({
         isRestoringRef.current = false
       })
     }
-  }, [clips, loadingClips, selectedClipIndex, getPersistedComparisonState, comparisonStateKey])
+  }, [clips, loadingClips, selectedClipIndices, getPersistedComparisonState, comparisonStateKey])
 
   // Save comparison state when it changes (but skip if we're in the middle of restoring)
   useEffect(() => {
@@ -519,6 +525,28 @@ export function ClipChatbot({
         onRegenerationComplete(finalVideoUrl)
       }
       
+      // CRITICAL FIX: Refresh clips to update thumbnails after regeneration
+      // Thumbnails are generated during regeneration, but UI needs to refetch them
+      if (data.clip_index !== undefined && data.clip_index !== null) {
+        // Delay slightly to ensure backend has saved the new thumbnail
+        setTimeout(async () => {
+          try {
+            const response = await getJobClips(jobId)
+            setClips(response.clips)
+            console.log("✅ Clips refreshed after regeneration, thumbnails updated")
+            
+            // Automatically refresh comparison for this clip if it's shown
+            if (showComparison && selectedClipIndices.includes(data.clip_index)) {
+              handleCompareClip(data.clip_index).catch((err) => {
+                console.warn("Failed to auto-refresh comparison after regeneration:", err)
+              })
+            }
+          } catch (err) {
+            console.warn("Failed to refresh clips after regeneration:", err)
+          }
+        }, 1000) // Wait 1 second for thumbnail generation
+      }
+      
       // Reset state after a delay
       setTimeout(() => {
         setProgress(null)
@@ -551,12 +579,12 @@ export function ClipChatbot({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!input.trim() || isProcessing || selectedClipIndex === null) {
+    if (!input.trim() || isProcessing || selectedClipIndices.length === 0) {
       return
     }
 
     const userMessage = input.trim()
-    const clipIndex = selectedClipIndex
+    const clipIndices = selectedClipIndices
     setInput("")
     setError(null)
     setLastError(null)
@@ -566,10 +594,7 @@ export function ClipChatbot({
     setCostEstimate(null)
     setTemplateMatched(null)
     setLastInstruction(userMessage) // Store for retry
-    setLastClipIndex(clipIndex) // Store for retry
-
-    // Find the selected clip for thumbnail
-    const selectedClip = clips.find((c) => c.clip_index === clipIndex)
+    setLastClipIndex(clipIndices[0]) // Store first clip for retry
 
     // Add user message to conversation
     const newUserMessage: Message = {
@@ -578,16 +603,21 @@ export function ClipChatbot({
       timestamp: new Date(),
     }
     
-    // Add clip attachment message right after user message
-    const clipAttachmentMessage: Message = {
-      role: "user",
-      content: `Clip ${clipIndex + 1} attached`,
-      timestamp: new Date(),
-      attachedClipIndex: clipIndex,
-      thumbnailUrl: selectedClip?.thumbnail_url || null,
-    }
+    setMessages((prev) => [...prev, newUserMessage])
+
+    // Add clip attachment messages for all selected clips
+    const clipAttachmentMessages: Message[] = clipIndices.map((clipIndex) => {
+      const selectedClip = clips.find((c) => c.clip_index === clipIndex)
+      return {
+        role: "user" as const,
+        content: `Clip ${clipIndex + 1} attached`,
+        timestamp: new Date(),
+        attachedClipIndex: clipIndex,
+        thumbnailUrl: selectedClip?.thumbnail_url || null,
+      }
+    })
     
-    setMessages((prev) => [...prev, newUserMessage, clipAttachmentMessage])
+    setMessages((prev) => [...prev, ...clipAttachmentMessages])
 
     // Add to conversation history
     conversationHistoryRef.current.push({
@@ -597,10 +627,13 @@ export function ClipChatbot({
     saveConversationHistory()
 
     try {
-      // Call regeneration API
-      const response = await regenerateClip(jobId, clipIndex, {
+      // Call regeneration API for each selected clip
+      // Send all selected clip indices in the request
+      const firstClipIndex = clipIndices[0]
+      const response = await regenerateClip(jobId, firstClipIndex, {
         instruction: userMessage,
         conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 messages
+        clip_indices: clipIndices, // Send all selected clips
       })
 
       // Update cost estimate
@@ -608,16 +641,19 @@ export function ClipChatbot({
       setTemplateMatched(response.template_matched || null)
 
       // Add assistant response
+      const clipText = clipIndices.length > 1 
+        ? `${clipIndices.length} clips` 
+        : "this clip"
       const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : null
       const assistantMessage: Message = {
         role: "assistant",
         content: response.template_matched
           ? costText
-            ? `I'll apply the "${response.template_matched}" transformation to this clip. Estimated cost: ${costText}`
-            : `I'll apply the "${response.template_matched}" transformation to this clip.`
+            ? `I'll apply the "${response.template_matched}" transformation to ${clipText}. Estimated cost: ${costText}`
+            : `I'll apply the "${response.template_matched}" transformation to ${clipText}.`
           : costText
-            ? `I'll modify this clip based on your instruction. Estimated cost: ${costText}`
-            : `I'll modify this clip based on your instruction.`,
+            ? `I'll modify ${clipText} based on your instruction. Estimated cost: ${costText}`
+            : `I'll modify ${clipText} based on your instruction.`,
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, assistantMessage])
@@ -787,17 +823,19 @@ export function ClipChatbot({
 
   return (
     <>
-      {showComparison && comparisonData && selectedClipIndex !== null && (
+      {showComparison && comparisonData && selectedClipIndices.length > 0 && (
         <ClipComparison
           originalClip={comparisonData.original}
           regeneratedClip={comparisonData.regenerated}
           audioUrl={audioUrl ?? undefined}
+          clipStartTime={comparisonData.clip_start_time ?? null}
+          clipEndTime={comparisonData.clip_end_time ?? null}
           onClose={() => {
             setShowComparison(false)
             setComparisonData(null)
             saveComparisonState(false, null)
           }}
-          clipIndex={selectedClipIndex}
+          clipIndex={selectedClipIndices[0]}
         />
       )}
       <FloatingChat title="AI Assistant" jobId={jobId} defaultMinimized={true}>
@@ -924,31 +962,94 @@ export function ClipChatbot({
           </div>
         )}
 
+        {/* Compare Button - Prominent placement (above thumbnails) */}
+        {!loadingClips && clips.length > 0 && selectedClipIndices.length === 1 && (
+          <div className="border-t px-3 py-2 min-h-[56px] flex items-center">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleCompareClip(selectedClipIndices[0])}
+              disabled={loadingComparison || isProcessing}
+              className="w-full"
+            >
+              <GitCompare className="h-4 w-4 mr-2" />
+              {loadingComparison ? "Loading..." : "Compare Versions"}
+            </Button>
+          </div>
+        )}
+        
+        {/* Multi-clip compare hint (above thumbnails) */}
+        {!loadingClips && clips.length > 0 && selectedClipIndices.length > 1 && (
+          <div className="border-t px-3 py-2 min-h-[56px] flex items-center justify-center">
+            <p className="text-xs text-muted-foreground text-center">
+              Select a single clip to compare versions
+            </p>
+          </div>
+        )}
+
         {/* Clip Thumbnails Row */}
         {!loadingClips && clips.length > 0 && (
           <div className="border-t px-3 py-3">
-            <div className="flex gap-2 overflow-x-auto overflow-y-hidden pb-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent" style={{ minHeight: "100px" }}>
+            {/* Select All Checkbox */}
+            <div className="flex items-center justify-between mb-2">
+              <label className="flex items-center gap-2 text-sm font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+                <input
+                  type="checkbox"
+                  checked={selectedClipIndices.length === clips.length && clips.length > 0}
+                  onChange={(e) => {
+                    if (selectedClipIndices.length === clips.length) {
+                      // Deselect all
+                      setSelectedClipIndices([])
+                      saveSelectedClips([])
+                    } else {
+                      // Select all clips
+                      const allIndices = clips.map(c => c.clip_index)
+                      setSelectedClipIndices(allIndices)
+                      saveSelectedClips(allIndices)
+                    }
+                  }}
+                  disabled={isProcessing}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <span>Select All Clips ({clips.length})</span>
+              </label>
+              <span className="text-sm font-medium text-primary min-w-[80px] text-right">
+                {selectedClipIndices.length > 0 ? `${selectedClipIndices.length} selected` : '\u00A0'}
+              </span>
+            </div>
+            
+            <div className="flex gap-2 overflow-x-auto overflow-y-hidden pb-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent" style={{ minHeight: "106px" }}>
               {clips.map((clip) => {
                 const timestampRange = `${formatTimestamp(clip.timestamp_start)} - ${formatTimestamp(clip.timestamp_end)}`
+                const isSelected = selectedClipIndices.includes(clip.clip_index)
                 return (
                   <div
                     key={clip.clip_index}
-                    className="relative flex-shrink-0"
-                    style={{ width: "120px" }}
+                    className="relative flex-shrink-0 p-1"
+                    style={{ width: "128px" }}
                   >
                     <button
                       type="button"
                       onClick={() => {
-                        setSelectedClipIndex(clip.clip_index)
-                        saveSelectedClip(clip.clip_index)
+                        // Toggle selection
+                        if (isSelected) {
+                          const newSelection = selectedClipIndices.filter(i => i !== clip.clip_index)
+                          setSelectedClipIndices(newSelection)
+                          saveSelectedClips(newSelection)
+                        } else {
+                          const newSelection = [...selectedClipIndices, clip.clip_index].sort((a, b) => a - b)
+                          setSelectedClipIndices(newSelection)
+                          saveSelectedClips(newSelection)
+                        }
                       }}
                       disabled={isProcessing}
                       className={cn(
-                        "relative w-full rounded overflow-hidden border-2 transition-all",
-                        "flex flex-col h-full",
-                        selectedClipIndex === clip.clip_index
-                          ? "border-primary ring-2 ring-primary/20"
-                          : "border-muted hover:border-primary/50",
+                        "relative w-full rounded overflow-hidden transition-all",
+                        "flex flex-col h-full box-border",
+                        isSelected
+                          ? "border-4 border-blue-500 shadow-lg"
+                          : "border-4 border-transparent hover:border-blue-400/50",
                         isProcessing && "opacity-50 cursor-not-allowed"
                       )}
                     >
@@ -971,8 +1072,8 @@ export function ClipChatbot({
                            {clip.clip_index + 1}
                          </div>
                        )}
-                       {selectedClipIndex === clip.clip_index && (
-                         <div className="absolute inset-0 bg-primary/20" />
+                       {isSelected && (
+                         <div className="absolute inset-0 bg-blue-500/30 border-2 border-blue-500" />
                        )}
                        {/* Clip number badge */}
                        <div className="absolute top-0.5 left-0.5 bg-black/70 text-white text-xs font-bold px-1.5 py-0.5 rounded">
@@ -987,17 +1088,17 @@ export function ClipChatbot({
                  </div>
                )
              })}
-           </div>
-           <p className="text-xs text-muted-foreground mt-2 font-medium">
-              {selectedClipIndex !== null ? (
-                <>
-                  Clip {selectedClipIndex + 1} selected
-                </>
-              ) : (
-                "Select a clip to modify"
-              )}
-            </p>
           </div>
+          <p className="text-xs text-muted-foreground mt-2 font-medium min-h-[1.25rem]">
+             {selectedClipIndices.length > 0 ? (
+               <>
+                 {selectedClipIndices.length} clip{selectedClipIndices.length !== 1 ? 's' : ''} selected
+               </>
+             ) : (
+               "Click clips to select"
+             )}
+           </p>
+         </div>
         )}
 
         {/* Loading Clips */}
@@ -1021,37 +1122,20 @@ export function ClipChatbot({
           </div>
         )}
 
-        {/* Compare Button - Prominent placement */}
-        {selectedClipIndex !== null && (
-          <div className="border-t px-3 py-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => handleCompareClip(selectedClipIndex)}
-              disabled={loadingComparison || isProcessing}
-              className="w-full"
-            >
-              <GitCompare className="h-4 w-4 mr-2" />
-              {loadingComparison ? "Loading..." : "Compare Versions"}
-            </Button>
-          </div>
-        )}
-
         {/* Input Area */}
         <div className="border-t p-2">
           <form onSubmit={handleSubmit} className="flex gap-2">
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Enter instruction..."
-              disabled={isProcessing || selectedClipIndex === null}
+              placeholder={selectedClipIndices.length > 0 ? "Enter instruction..." : "Select clips first..."}
+              disabled={isProcessing || selectedClipIndices.length === 0}
               rows={2}
               className="resize-none text-sm font-medium min-h-[60px] max-h-[120px]"
             />
             <Button
               type="submit"
-              disabled={!input.trim() || isProcessing || selectedClipIndex === null}
+              disabled={!input.trim() || isProcessing || selectedClipIndices.length === 0}
               size="sm"
               className="h-[60px] px-4 self-end"
             >

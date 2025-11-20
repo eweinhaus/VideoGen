@@ -206,13 +206,14 @@ export function ClipSelector({
               </>
             )}
           </Button>
-          <Button
+          {/* Multi-Clip Mode button hidden - now using chat agent for multi-clip edits */}
+          {/* <Button
             variant="outline"
             size="sm"
             onClick={() => setShowMultiClip(!showMultiClip)}
           >
             {showMultiClip ? "Hide" : "Multi-Clip"} Mode
-          </Button>
+          </Button> */}
         </div>
       </div>
 

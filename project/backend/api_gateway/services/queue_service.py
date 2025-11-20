@@ -52,6 +52,7 @@ async def enqueue_job(
         "video_model": video_model,
         "aspect_ratio": aspect_ratio,
         "template": template,
+        "job_type": "generation",  # Distinguish from regeneration
         "created_at": datetime.utcnow().isoformat()
     }
     
@@ -95,6 +96,69 @@ async def remove_job(job_id: str) -> bool:
     except Exception as e:
         logger.error("Failed to remove job from queue", exc_info=e, extra={"job_id": job_id})
         return False
+
+
+async def enqueue_regeneration_job(
+    job_id: str,
+    user_id: str,
+    clip_indices: list,
+    user_instruction: str,
+    conversation_history: list = None,
+    regeneration_id: str = None
+) -> None:
+    """
+    Enqueue a regeneration job to the processing queue.
+    
+    Args:
+        job_id: Job ID to regenerate clips for
+        user_id: User ID
+        clip_indices: List of clip indices to regenerate
+        user_instruction: User's regeneration instruction
+        conversation_history: Optional conversation history for context
+        regeneration_id: Optional regeneration ID (generated if not provided)
+    """
+    if not regeneration_id:
+        regeneration_id = str(uuid.uuid4())
+    
+    job_data = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "clip_indices": clip_indices,
+        "user_instruction": user_instruction,
+        "conversation_history": conversation_history or [],
+        "regeneration_id": regeneration_id,
+        "job_type": "regeneration",  # Distinguish from generation
+        "created_at": datetime.utcnow().isoformat()
+    }
+    
+    try:
+        # Add to queue (using Redis list as queue)
+        # Encode as bytes since Redis client has decode_responses=False
+        queue_key = f"{QUEUE_NAME}:queue"
+        job_json = json.dumps(job_data)
+        await redis_client.client.lpush(queue_key, job_json.encode('utf-8'))
+        
+        # Store job data for worker to retrieve
+        regen_key = f"{QUEUE_NAME}:regeneration:{regeneration_id}"
+        await redis_client.client.set(regen_key, job_json.encode('utf-8'), ex=900)  # 15 min TTL
+        
+        logger.info(
+            "Regeneration job enqueued", 
+            extra={
+                "job_id": job_id, 
+                "user_id": user_id, 
+                "regeneration_id": regeneration_id,
+                "clip_indices": clip_indices
+            }
+        )
+        
+    except Exception as e:
+        logger.error(
+            "Failed to enqueue regeneration job", 
+            exc_info=e, 
+            extra={"job_id": job_id, "regeneration_id": regeneration_id}
+        )
+        raise
 
 
 async def get_queue_size() -> int:

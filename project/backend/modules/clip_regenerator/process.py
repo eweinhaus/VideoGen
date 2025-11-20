@@ -557,16 +557,70 @@ async def regenerate_clip(
             f"Clip prompt not found for index {clip_index}. Total prompts: {len(clip_prompts.clip_prompts)}"
         )
     
+    # CRITICAL FIX: Load the MOST RECENT version of the prompt for cumulative revisions
+    # Strategy: Check if there's a prior regenerated version in clip_versions table
+    # If yes, use that prompt (which already has prior revisions appended)
+    # If no, use the original prompt from clip_prompts
+    from modules.clip_regenerator.data_loader import load_clip_version
+    
+    db_client = DatabaseClient()
+    latest_version_prompt = None
+    latest_version_data = None
+    
+    try:
+        # Get the latest version from clip_versions table (highest version_number)
+        result = await db_client.table("clip_versions").select("*").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+        
+        if result.data and len(result.data) > 0:
+            latest_version_data = result.data[0]
+            latest_version_prompt = latest_version_data.get("prompt")
+            
+            logger.info(
+                f"Using prompt from latest version for cumulative revisions",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "version_number": latest_version_data.get("version_number"),
+                    "prompt_length": len(latest_version_prompt) if latest_version_prompt else 0
+                }
+            )
+    except Exception as e:
+        logger.debug(
+            f"No prior versions found in clip_versions table, using original prompt: {e}",
+            extra={"job_id": str(job_id), "clip_index": clip_index}
+        )
+    
+    # Get the original prompt for reference URLs and metadata
     original_prompt = clip_prompts.clip_prompts[clip_index]
+    
+    # If we found a latest version, use its prompt for cumulative revisions
+    # Otherwise, use the original prompt
+    if latest_version_prompt:
+        # Create a new ClipPrompt with the latest version's prompt but original reference URLs
+        from shared.models.video import ClipPrompt
+        original_prompt = ClipPrompt(
+            clip_index=original_prompt.clip_index,
+            prompt=latest_version_prompt,  # Use latest version's prompt
+            negative_prompt=original_prompt.negative_prompt,
+            duration=original_prompt.duration,
+            scene_reference_url=original_prompt.scene_reference_url,
+            character_reference_urls=original_prompt.character_reference_urls,
+            object_reference_urls=original_prompt.object_reference_urls,
+            metadata=original_prompt.metadata
+        )
+    
     logger.debug(
-        f"Original prompt retrieved",
+        f"Prompt retrieved for regeneration",
         extra={
             "job_id": str(job_id),
             "clip_index": clip_index,
             "prompt_length": len(original_prompt.prompt),
             "has_negative_prompt": bool(original_prompt.negative_prompt),
             "has_scene_reference": bool(original_prompt.scene_reference_url),
-            "character_references_count": len(original_prompt.character_reference_urls) if original_prompt.character_reference_urls else 0
+            "character_references_count": len(original_prompt.character_reference_urls) if original_prompt.character_reference_urls else 0,
+            "using_latest_version": latest_version_prompt is not None
         }
     )
     

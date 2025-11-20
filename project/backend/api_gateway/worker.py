@@ -6,6 +6,8 @@ Processes jobs from the queue and executes the video generation pipeline.
 
 import asyncio
 import json
+from uuid import UUID
+from decimal import Decimal
 from shared.redis_client import RedisClient
 from shared.database import DatabaseClient
 from shared.errors import RetryableError, PipelineError, BudgetExceededError
@@ -27,6 +29,56 @@ async def process_job(job_data: dict) -> None:
     """
     Process a single job from the queue.
     
+    Handles both generation and regeneration jobs based on job_type.
+    
+    Args:
+        job_data: Job data dictionary with job_id, user_id, and job_type
+    """
+    job_type = job_data.get("job_type", "generation")  # Default to generation for backward compatibility
+    job_id = job_data.get("job_id")
+    user_id = job_data.get("user_id")
+    
+    if not all([job_id, user_id]):
+        logger.error("Invalid job data", extra={"job_data": job_data})
+        return
+    
+    logger.info(
+        "Processing job",
+        extra={
+            "job_id": job_id,
+            "user_id": user_id,
+            "job_type": job_type
+        }
+    )
+    
+    try:
+        if job_type == "regeneration":
+            await process_regeneration_job(job_data)
+        else:
+            await process_generation_job(job_data)
+        
+        logger.info("Job processed successfully", extra={"job_id": job_id, "job_type": job_type})
+        
+    except (BudgetExceededError, PipelineError) as e:
+        logger.error("Job failed", exc_info=e, extra={"job_id": job_id, "job_type": job_type})
+        # Error handling is done in respective handlers
+    except RetryableError as e:
+        logger.warning("Retryable error occurred", exc_info=e, extra={"job_id": job_id, "job_type": job_type})
+        # Re-raise for queue retry mechanism
+        raise
+    except Exception as e:
+        logger.error("Unexpected error processing job", exc_info=e, extra={"job_id": job_id, "job_type": job_type})
+        # Mark as failed
+        await db_client.table("jobs").update({
+            "status": "failed",
+            "error_message": f"Unexpected error: {str(e)}"
+        }).eq("id", job_id).execute()
+
+
+async def process_generation_job(job_data: dict) -> None:
+    """
+    Process a video generation job from the queue.
+    
     Args:
         job_data: Job data dictionary with job_id, user_id, audio_url, user_prompt, stop_at_stage
     """
@@ -39,12 +91,12 @@ async def process_job(job_data: dict) -> None:
     aspect_ratio = job_data.get("aspect_ratio", "16:9")  # Default to 16:9 if not provided
     template = job_data.get("template", "standard")  # Default to standard if not provided
     
-    if not all([job_id, user_id, audio_url, user_prompt]):
-        logger.error("Invalid job data", extra={"job_data": job_data})
+    if not all([audio_url, user_prompt]):
+        logger.error("Invalid generation job data", extra={"job_data": job_data})
         return
     
     logger.info(
-        "Processing job",
+        "Processing generation job",
         extra={
             "job_id": job_id,
             "user_id": user_id,
@@ -55,43 +107,208 @@ async def process_job(job_data: dict) -> None:
         }
     )
     
-    try:
-        # Publish message that processing is starting
-        from api_gateway.services.event_publisher import publish_event
-        await publish_event(job_id, "message", {
-            "text": "Starting pipeline execution...",
-            "stage": "queue"
-        })
-        
-        # Check cancellation flag before starting
-        cancel_key = f"job_cancel:{job_id}"
-        if await redis_client.get(cancel_key):
-            logger.info("Job cancelled before processing", extra={"job_id": job_id})
-            await db_client.table("jobs").update({
-                "status": "failed",
-                "error_message": "Job cancelled by user"
-            }).eq("id", job_id).execute()
-            return
-        
-        # Execute pipeline (pass stop_at_stage, video_model, aspect_ratio, and template)
-        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template)
-        
-        logger.info("Job processed successfully", extra={"job_id": job_id})
-        
-    except (BudgetExceededError, PipelineError) as e:
-        logger.error("Job failed", exc_info=e, extra={"job_id": job_id})
-        # Error handling is done in orchestrator.handle_pipeline_error
-    except RetryableError as e:
-        logger.warning("Retryable error occurred", exc_info=e, extra={"job_id": job_id})
-        # Re-raise for queue retry mechanism
-        raise
-    except Exception as e:
-        logger.error("Unexpected error processing job", exc_info=e, extra={"job_id": job_id})
-        # Mark as failed
+    # Publish message that processing is starting
+    from api_gateway.services.event_publisher import publish_event
+    await publish_event(job_id, "message", {
+        "text": "Starting pipeline execution...",
+        "stage": "queue"
+    })
+    
+    # Check cancellation flag before starting
+    cancel_key = f"job_cancel:{job_id}"
+    if await redis_client.get(cancel_key):
+        logger.info("Job cancelled before processing", extra={"job_id": job_id})
         await db_client.table("jobs").update({
             "status": "failed",
-            "error_message": f"Unexpected error: {str(e)}"
+            "error_message": "Job cancelled by user"
         }).eq("id", job_id).execute()
+        return
+    
+    # Execute pipeline (pass stop_at_stage, video_model, aspect_ratio, and template)
+    await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template)
+
+
+async def process_regeneration_job(job_data: dict) -> None:
+    """
+    Process a clip regeneration job from the queue.
+    
+    Regenerates multiple clips in parallel based on user instruction.
+    
+    Args:
+        job_data: Job data dictionary with job_id, clip_indices, user_instruction, conversation_history
+    """
+    from modules.clip_regenerator.process import regenerate_clip_with_recomposition
+    from modules.clip_regenerator.status_manager import update_job_status
+    from api_gateway.services.event_publisher import publish_event
+    
+    job_id = job_data.get("job_id")
+    user_id = job_data.get("user_id")
+    clip_indices = job_data.get("clip_indices", [])
+    user_instruction = job_data.get("user_instruction")
+    conversation_history = job_data.get("conversation_history", [])
+    regeneration_id = job_data.get("regeneration_id")
+    
+    if not all([job_id, user_id, clip_indices, user_instruction]):
+        logger.error("Invalid regeneration job data", extra={"job_data": job_data})
+        await update_job_status(UUID(job_id), "completed")
+        return
+    
+    logger.info(
+        "Processing regeneration job",
+        extra={
+            "job_id": job_id,
+            "user_id": user_id,
+            "clip_indices": clip_indices,
+            "regeneration_id": regeneration_id
+        }
+    )
+    
+    # Create event publisher wrapper
+    async def event_pub(event_type: str, data: dict):
+        """Wrapper for event publishing."""
+        await publish_event(job_id, event_type, data)
+    
+    # Publish start event
+    await event_pub("regeneration_started", {
+        "regeneration_id": regeneration_id,
+        "clip_indices": clip_indices
+    })
+    
+    try:
+        # Process all clips in parallel (like video_generator does)
+        tasks = []
+        for clip_index in clip_indices:
+            task = regenerate_single_clip(
+                job_id=UUID(job_id),
+                clip_index=clip_index,
+                user_instruction=user_instruction,
+                user_id=UUID(user_id),
+                conversation_history=conversation_history,
+                event_pub=event_pub,
+                regeneration_id=regeneration_id
+            )
+            tasks.append(task)
+        
+        # Wait for all clips to regenerate in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results
+        successful_count = 0
+        failed_count = 0
+        total_cost = Decimal("0")
+        
+        for i, result in enumerate(results):
+            clip_index = clip_indices[i]
+            if isinstance(result, Exception):
+                logger.error(
+                    f"Failed to regenerate clip {clip_index}",
+                    exc_info=result,
+                    extra={"job_id": job_id, "clip_index": clip_index}
+                )
+                failed_count += 1
+                await event_pub("clip_regeneration_failed", {
+                    "clip_index": clip_index,
+                    "error": str(result)
+                })
+            else:
+                successful_count += 1
+                total_cost += result.get("cost", Decimal("0"))
+        
+        # Release job lock on completion
+        await update_job_status(UUID(job_id), "completed")
+        
+        # Publish completion event
+        await event_pub("regeneration_complete", {
+            "regeneration_id": regeneration_id,
+            "clip_indices": clip_indices,
+            "successful_count": successful_count,
+            "failed_count": failed_count,
+            "total_cost": float(total_cost)
+        })
+        
+        logger.info(
+            "Regeneration job completed",
+            extra={
+                "job_id": job_id,
+                "regeneration_id": regeneration_id,
+                "successful_count": successful_count,
+                "failed_count": failed_count,
+                "total_cost": float(total_cost)
+            }
+        )
+        
+    except Exception as e:
+        logger.error(
+            "Unexpected error during regeneration job",
+            exc_info=e,
+            extra={"job_id": job_id, "regeneration_id": regeneration_id}
+        )
+        # Release job lock on error
+        await update_job_status(UUID(job_id), "completed")
+        await event_pub("regeneration_failed", {
+            "regeneration_id": regeneration_id,
+            "error": str(e),
+            "error_type": "unexpected"
+        })
+
+
+async def regenerate_single_clip(
+    job_id: UUID,
+    clip_index: int,
+    user_instruction: str,
+    user_id: UUID,
+    conversation_history: list,
+    event_pub: callable,
+    regeneration_id: str
+) -> dict:
+    """
+    Regenerate a single clip (used for parallel processing).
+    
+    Args:
+        job_id: Job ID
+        clip_index: Clip index to regenerate
+        user_instruction: User's regeneration instruction
+        user_id: User ID
+        conversation_history: Conversation history for context
+        event_pub: Event publisher function
+        regeneration_id: Regeneration ID
+    
+    Returns:
+        Result dictionary with cost and video_url
+    """
+    from modules.clip_regenerator.process import regenerate_clip_with_recomposition
+    
+    logger.info(
+        f"Starting regeneration for clip {clip_index}",
+        extra={"job_id": str(job_id), "clip_index": clip_index}
+    )
+    
+    result = await regenerate_clip_with_recomposition(
+        job_id=job_id,
+        clip_index=clip_index,
+        user_instruction=user_instruction,
+        user_id=user_id,
+        conversation_history=conversation_history,
+        event_publisher=event_pub
+    )
+    
+    logger.info(
+        f"Completed regeneration for clip {clip_index}",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "cost": float(result.get("cost", 0))
+        }
+    )
+    
+    # Publish individual clip completion
+    await event_pub("clip_regeneration_complete", {
+        "clip_index": clip_index,
+        "new_clip_url": result.get("video_url"),
+        "cost": float(result.get("cost", 0))
+    })
+    
+    return result
 
 
 async def process_job_with_limit(job_data: dict) -> None:

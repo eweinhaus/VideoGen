@@ -38,14 +38,31 @@ export function VideoPlayer({
   useEffect(() => {
     if (seekTo !== undefined && videoRef.current && !isLoading) {
       const video = videoRef.current
+      
       // Wait for video to be ready before seeking
       if (video.readyState >= 2) {
         // readyState 2 = HAVE_CURRENT_DATA
         video.currentTime = seekTo
+        
+        // Verify seek position after a short delay
+        setTimeout(() => {
+          if (Math.abs(video.currentTime - seekTo) > 0.1) {
+            // If off by more than 100ms, try again
+            video.currentTime = seekTo
+          }
+        }, 100)
       } else {
         // Wait for video to load metadata before seeking
         const handleLoadedMetadata = () => {
           video.currentTime = seekTo
+          
+          // Verify seek position after a short delay
+          setTimeout(() => {
+            if (Math.abs(video.currentTime - seekTo) > 0.1) {
+              video.currentTime = seekTo
+            }
+          }, 100)
+          
           video.removeEventListener("loadedmetadata", handleLoadedMetadata)
         }
         video.addEventListener("loadedmetadata", handleLoadedMetadata)

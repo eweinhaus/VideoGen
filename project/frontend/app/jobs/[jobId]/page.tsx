@@ -82,13 +82,14 @@ export default function JobProgressPage() {
     setComparisonData(null)
   }, [jobId, comparisonStateKey])
   
-  const handleCompare = async () => {
-    if (selectedClipIndex === undefined) return
+  const handleCompare = async (forceClipIndex?: number) => {
+    const clipIndex = forceClipIndex !== undefined ? forceClipIndex : selectedClipIndex
+    if (clipIndex === undefined) return
     
     setLoadingComparison(true)
     
     try {
-      const data = await getClipComparison(jobId, selectedClipIndex)
+      const data = await getClipComparison(jobId, clipIndex)
       setComparisonData(data)
       setShowComparison(true)
     } catch (err) {
@@ -519,10 +520,20 @@ export default function JobProgressPage() {
                         try {
                           await fetchJob(jobId)
                           console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
-                          // Force a small delay to ensure state updates propagate
-                          setTimeout(() => {
-                            // Job store should have updated, triggering VideoPlayer re-render
-                          }, 100)
+                          
+                          // CRITICAL FIX: If comparison view is open for the regenerated clip,
+                          // refresh it to show old vs. new (not new vs. new)
+                          if (showComparison && selectedClipIndex !== undefined) {
+                            // Give backend a moment to save the new version
+                            setTimeout(async () => {
+                              try {
+                                await handleCompare(selectedClipIndex)
+                                console.log("✅ Comparison refreshed after regeneration")
+                              } catch (error) {
+                                console.error("Failed to refresh comparison after regeneration:", error)
+                              }
+                            }, 500)
+                          }
                         } catch (error) {
                           console.error("Failed to refresh job after regeneration:", error)
                         }
@@ -537,6 +548,8 @@ export default function JobProgressPage() {
                         mode="side-by-side"
                         syncPlayback={true}
                         audioUrl={job?.audioUrl ?? undefined}
+                        clipStartTime={comparisonData.clip_start_time ?? null}
+                        clipEndTime={comparisonData.clip_end_time ?? null}
                         onClose={() => {
                           setShowComparison(false)
                           setComparisonData(null)
