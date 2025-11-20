@@ -29,9 +29,58 @@ export default function JobProgressPage() {
   const [sseError, setSseError] = useState<string | null>(null)
   const [selectedClipIndex, setSelectedClipIndex] = useState<number | undefined>(undefined)
   const [selectedClipTimestamp, setSelectedClipTimestamp] = useState<number | undefined>(undefined)
+  const comparisonStateKey = `job_page_comparison_${jobId}`
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<any>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
+  
+  // Restore comparison state from localStorage on mount or when selectedClipIndex changes
+  useEffect(() => {
+    if (selectedClipIndex === undefined) return
+    
+    try {
+      const saved = localStorage.getItem(comparisonStateKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        // Only restore if the saved clipIndex matches the current selectedClipIndex
+        if (parsed.show && parsed.data && parsed.clipIndex === selectedClipIndex) {
+          setComparisonData(parsed.data)
+          setShowComparison(true)
+        } else if (parsed.clipIndex !== selectedClipIndex) {
+          // Clear comparison state if clip doesn't match
+          setShowComparison(false)
+          setComparisonData(null)
+          localStorage.removeItem(comparisonStateKey)
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore comparison state:", err)
+    }
+  }, [comparisonStateKey, selectedClipIndex])
+
+  // Save comparison state to localStorage
+  useEffect(() => {
+    try {
+      if (!showComparison || !comparisonData || selectedClipIndex === undefined) {
+        localStorage.removeItem(comparisonStateKey)
+      } else {
+        localStorage.setItem(comparisonStateKey, JSON.stringify({
+          show: showComparison,
+          data: comparisonData,
+          clipIndex: selectedClipIndex
+        }))
+      }
+    } catch (err) {
+      console.error("Failed to save comparison state:", err)
+    }
+  }, [showComparison, comparisonData, selectedClipIndex, comparisonStateKey])
+
+  // Clear comparison state when jobId changes
+  useEffect(() => {
+    localStorage.removeItem(comparisonStateKey)
+    setShowComparison(false)
+    setComparisonData(null)
+  }, [jobId, comparisonStateKey])
   
   const handleCompare = async () => {
     if (selectedClipIndex === undefined) return
@@ -464,6 +513,7 @@ export default function JobProgressPage() {
                     {/* Floating ClipChatbot - positioned fixed at bottom-left */}
                     <ClipChatbot
                       jobId={jobId}
+                      audioUrl={job?.audioUrl ?? undefined}
                       onRegenerationComplete={async (newVideoUrl) => {
                         // Refresh job to get updated video URL and trigger re-render
                         try {
@@ -487,7 +537,11 @@ export default function JobProgressPage() {
                         mode="side-by-side"
                         syncPlayback={true}
                         audioUrl={job?.audioUrl ?? undefined}
-                        onClose={() => setShowComparison(false)}
+                        onClose={() => {
+                          setShowComparison(false)
+                          setComparisonData(null)
+                          localStorage.removeItem(comparisonStateKey)
+                        }}
                         onRevert={handleRevert}
                         clipIndex={selectedClipIndex}
                       />

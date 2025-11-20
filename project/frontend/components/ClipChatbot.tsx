@@ -54,16 +54,19 @@ interface ClipData {
 interface ClipChatbotProps {
   jobId: string
   onRegenerationComplete?: (newVideoUrl: string) => void
+  audioUrl?: string | null
 }
 
 export function ClipChatbot({
   jobId,
   onRegenerationComplete,
+  audioUrl,
 }: ClipChatbotProps) {
   // Generate unique storage key for this job (unified chat)
   const storageKey = `clip_chat_${jobId}`
   const conversationHistoryKey = `clip_chat_history_${jobId}`
   const selectedClipKey = `clip_chat_selected_${jobId}`
+  const comparisonStateKey = `clip_chat_comparison_${jobId}`
   
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -115,6 +118,37 @@ export function ClipChatbot({
     }
     return null
   }, [selectedClipKey])
+
+  // Save comparison state to localStorage
+  const saveComparisonState = useCallback((show: boolean, data: { original: any; regenerated: any | null } | null) => {
+    if (!isInitializedRef.current) return
+    try {
+      if (!show || !data) {
+        localStorage.removeItem(comparisonStateKey)
+      } else {
+        localStorage.setItem(comparisonStateKey, JSON.stringify({
+          show,
+          data,
+          clipIndex: selectedClipIndex
+        }))
+      }
+    } catch (err) {
+      console.error("Failed to save comparison state:", err)
+    }
+  }, [comparisonStateKey, selectedClipIndex])
+
+  // Restore comparison state from localStorage
+  const getPersistedComparisonState = useCallback((): { show: boolean; data: { original: any; regenerated: any | null } | null; clipIndex: number | null } | null => {
+    try {
+      const saved = localStorage.getItem(comparisonStateKey)
+      if (saved !== null) {
+        return JSON.parse(saved)
+      }
+    } catch (err) {
+      console.error("Failed to restore comparison state:", err)
+    }
+    return null
+  }, [comparisonStateKey])
 
   // Load clips on mount - always refetch (never cache thumbnails)
   useEffect(() => {
@@ -186,6 +220,11 @@ export function ClipChatbot({
         // Clear conversation history if no saved data
         conversationHistoryRef.current = []
       }
+
+      // Clear comparison state when jobId changes (new job = new state)
+      localStorage.removeItem(comparisonStateKey)
+      setShowComparison(false)
+      setComparisonData(null)
     } catch (err) {
       console.error("Failed to load chat history from localStorage:", err)
       // Silently fail - start with empty chat
@@ -194,7 +233,7 @@ export function ClipChatbot({
     }
     
     isInitializedRef.current = true
-  }, [jobId, storageKey, conversationHistoryKey])
+  }, [jobId, storageKey, conversationHistoryKey, comparisonStateKey])
 
   // Restore selected clip index on mount (if not already set by clip fetch)
   // This is handled in the clip fetch useEffect, but this is a fallback
@@ -216,6 +255,37 @@ export function ClipChatbot({
       saveSelectedClip(selectedClipIndex)
     }
   }, [selectedClipIndex, saveSelectedClip])
+
+  // Restore comparison state on mount (after clips are loaded) or when selected clip changes
+  useEffect(() => {
+    if (!isInitializedRef.current || clips.length === 0 || loadingClips) return
+    
+    const persisted = getPersistedComparisonState()
+    if (persisted && persisted.clipIndex !== null) {
+      // Verify the clip still exists
+      const clipExists = clips.some(c => c.clip_index === persisted.clipIndex)
+      if (clipExists && persisted.clipIndex === selectedClipIndex && persisted.show && persisted.data) {
+        // Restore comparison state if the selected clip matches
+        setComparisonData(persisted.data)
+        setShowComparison(true)
+      } else if (persisted.clipIndex !== selectedClipIndex) {
+        // Clear comparison state if clip doesn't match
+        setShowComparison(false)
+        setComparisonData(null)
+        saveComparisonState(false, null)
+      }
+    } else if (persisted === null && showComparison) {
+      // Clear comparison state if no persisted state but currently showing
+      setShowComparison(false)
+      setComparisonData(null)
+    }
+  }, [clips, loadingClips, selectedClipIndex, getPersistedComparisonState, saveComparisonState, showComparison])
+
+  // Save comparison state when it changes
+  useEffect(() => {
+    if (!isInitializedRef.current) return
+    saveComparisonState(showComparison, comparisonData)
+  }, [showComparison, comparisonData, saveComparisonState])
 
   // Save messages to localStorage whenever they change
   useEffect(() => {
@@ -596,9 +666,11 @@ export function ClipChatbot({
         <ClipComparison
           originalClip={comparisonData.original}
           regeneratedClip={comparisonData.regenerated}
+          audioUrl={audioUrl ?? undefined}
           onClose={() => {
             setShowComparison(false)
             setComparisonData(null)
+            saveComparisonState(false, null)
           }}
           clipIndex={selectedClipIndex}
         />
