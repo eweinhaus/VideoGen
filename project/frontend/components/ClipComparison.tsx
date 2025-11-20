@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect, useCallback } from "react"
+import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
@@ -19,10 +20,13 @@ interface ClipVersion {
 
 interface ClipComparisonProps {
   originalClip: ClipVersion
-  regeneratedClip: ClipVersion
+  regeneratedClip: ClipVersion | null
   mode?: "side-by-side"
   syncPlayback?: boolean
+  audioUrl?: string | null
   onClose: () => void
+  onRevert?: (clipIndex: number, versionNumber: number) => Promise<void>
+  clipIndex?: number
 }
 
 export function ClipComparison({
@@ -30,7 +34,10 @@ export function ClipComparison({
   regeneratedClip,
   mode = "side-by-side",
   syncPlayback = true,
+  audioUrl,
   onClose,
+  onRevert,
+  clipIndex,
 }: ClipComparisonProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -40,6 +47,7 @@ export function ClipComparison({
   
   const originalVideoRef = useRef<HTMLVideoElement>(null)
   const regeneratedVideoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   
   const [originalTime, setOriginalTime] = useState(0)
@@ -47,16 +55,16 @@ export function ClipComparison({
   
   // Calculate duration mismatch
   const originalDuration = originalClip.duration || 0
-  const regeneratedDuration = regeneratedClip.duration || 0
-  const durationMismatch = Math.abs(originalDuration - regeneratedDuration) > 0.1
-  const shorterDuration = Math.min(originalDuration, regeneratedDuration)
+  const regeneratedDuration = regeneratedClip?.duration || 0
+  const durationMismatch = regeneratedClip ? Math.abs(originalDuration - regeneratedDuration) > 0.1 : false
+  const shorterDuration = regeneratedClip ? Math.min(originalDuration, regeneratedDuration) : originalDuration
   
   // Handle video load
   useEffect(() => {
     let loadedCount = 0
     const checkLoaded = () => {
       loadedCount++
-      const totalVideos = (originalClip.video_url ? 1 : 0) + (regeneratedClip.video_url ? 1 : 0)
+      const totalVideos = (originalClip.video_url ? 1 : 0) + (regeneratedClip?.video_url ? 1 : 0)
       if (loadedCount >= totalVideos || totalVideos === 0) {
         setIsLoading(false)
       }
@@ -83,7 +91,7 @@ export function ClipComparison({
       checkLoaded() // No video URL, count as loaded
     }
     
-    if (regeneratedVideo && regeneratedClip.video_url) {
+    if (regeneratedClip && regeneratedVideo && regeneratedClip.video_url) {
       const handleLoaded = () => checkLoaded()
       const handleError = () => {
         setError("Failed to load regenerated video")
@@ -96,25 +104,27 @@ export function ClipComparison({
         regeneratedVideo.removeEventListener("error", handleError)
       })
     } else {
-      checkLoaded() // No video URL, count as loaded
+      checkLoaded() // No video URL or no regenerated clip, count as loaded
     }
     
     return () => {
       cleanup.forEach(fn => fn())
     }
-  }, [originalClip.video_url, regeneratedClip.video_url])
+  }, [originalClip.video_url, regeneratedClip])
   
   // Synchronized playback
   const handlePlay = useCallback(async () => {
     const originalVideo = originalVideoRef.current
     const regeneratedVideo = regeneratedVideoRef.current
+    const audio = audioRef.current
     
-    if (isSynced) {
-      // Sync both videos
+    if (isSynced && regeneratedClip) {
+      // Sync both videos and audio
       if (originalVideo && regeneratedVideo) {
         if (isPlaying) {
           originalVideo.pause()
           regeneratedVideo.pause()
+          if (audio) audio.pause()
         } else {
           // Sync to shorter duration if different
           if (durationMismatch) {
@@ -124,12 +134,27 @@ export function ClipComparison({
             )
             originalVideo.currentTime = syncTime
             regeneratedVideo.currentTime = syncTime
+            if (audio) audio.currentTime = syncTime
+          } else {
+            // Sync audio to video time
+            const syncTime = originalVideo.currentTime || 0
+            if (audio) audio.currentTime = syncTime
           }
           await Promise.all([originalVideo.play(), regeneratedVideo.play()])
+          if (audio) await audio.play()
         }
       }
     } else {
-      // Independent playback
+      // Independent playback - only play audio if exactly one video is playing
+      const originalPlaying = originalVideo && !originalVideo.paused
+      const regeneratedPlaying = regeneratedClip && regeneratedVideo && !regeneratedVideo.paused
+      const willBeOriginalPlaying = originalVideo && !isPlaying
+      const willBeRegeneratedPlaying = regeneratedClip && regeneratedVideo && !isPlaying
+      
+      // Determine if we should play audio (only if exactly one video will be playing)
+      const shouldPlayAudio = (willBeOriginalPlaying && !willBeRegeneratedPlaying) || 
+                              (!willBeOriginalPlaying && willBeRegeneratedPlaying)
+      
       if (originalVideo) {
         if (isPlaying) {
           originalVideo.pause()
@@ -137,24 +162,42 @@ export function ClipComparison({
           await originalVideo.play()
         }
       }
-      if (regeneratedVideo) {
+      if (regeneratedClip && regeneratedVideo) {
         if (isPlaying) {
           regeneratedVideo.pause()
         } else {
           await regeneratedVideo.play()
         }
       }
+      
+      // Handle audio for independent playback
+      if (audio) {
+        if (isPlaying) {
+          // Pausing - check if we should pause audio
+          if ((originalPlaying && !regeneratedPlaying) || (!originalPlaying && regeneratedPlaying)) {
+            audio.pause()
+          }
+        } else if (shouldPlayAudio) {
+          // Starting - sync audio to the playing video
+          const playingVideo = willBeOriginalPlaying ? originalVideo : regeneratedVideo
+          if (playingVideo) {
+            audio.currentTime = playingVideo.currentTime || 0
+            await audio.play()
+          }
+        }
+      }
     }
     
     setIsPlaying(!isPlaying)
-  }, [isSynced, isPlaying, durationMismatch])
+  }, [isSynced, isPlaying, durationMismatch, regeneratedClip])
   
   // Sync seek position (for synchronized mode)
   useEffect(() => {
-    if (!isSynced) return
+    if (!isSynced || !regeneratedClip) return
     
     const originalVideo = originalVideoRef.current
     const regeneratedVideo = regeneratedVideoRef.current
+    const audio = audioRef.current
     
     if (!originalVideo || !regeneratedVideo) return
     
@@ -167,11 +210,13 @@ export function ClipComparison({
         )
         originalVideo.currentTime = shorterTime
         regeneratedVideo.currentTime = shorterTime
+        if (audio) audio.currentTime = shorterTime
       } else {
         // Sync to same time
         const syncTime = originalVideo.currentTime || regeneratedVideo.currentTime || 0
         originalVideo.currentTime = syncTime
         regeneratedVideo.currentTime = syncTime
+        if (audio) audio.currentTime = syncTime
       }
     }
     
@@ -182,12 +227,49 @@ export function ClipComparison({
       originalVideo.removeEventListener("seeked", syncVideos)
       regeneratedVideo.removeEventListener("seeked", syncVideos)
     }
-  }, [isSynced, durationMismatch])
+  }, [isSynced, durationMismatch, regeneratedClip])
+  
+  // Sync audio with video during playback (for independent mode)
+  useEffect(() => {
+    if (isSynced || !audioUrl || !audioRef.current) return
+    
+    const originalVideo = originalVideoRef.current
+    const regeneratedVideo = regeneratedClip ? regeneratedVideoRef.current : null
+    const audio = audioRef.current
+    
+    const syncAudioToVideo = () => {
+      // Only sync if exactly one video is playing
+      const originalPlaying = originalVideo && !originalVideo.paused
+      const regeneratedPlaying = regeneratedVideo && !regeneratedVideo.paused
+      
+      if (originalPlaying && !regeneratedPlaying) {
+        audio.currentTime = originalVideo.currentTime || 0
+      } else if (regeneratedPlaying && !originalPlaying) {
+        audio.currentTime = regeneratedVideo.currentTime || 0
+      }
+    }
+    
+    if (originalVideo) {
+      originalVideo.addEventListener("timeupdate", syncAudioToVideo)
+    }
+    if (regeneratedVideo) {
+      regeneratedVideo.addEventListener("timeupdate", syncAudioToVideo)
+    }
+    
+    return () => {
+      if (originalVideo) {
+        originalVideo.removeEventListener("timeupdate", syncAudioToVideo)
+      }
+      if (regeneratedVideo) {
+        regeneratedVideo.removeEventListener("timeupdate", syncAudioToVideo)
+      }
+    }
+  }, [isSynced, audioUrl, regeneratedClip])
   
   // Update timestamps
   useEffect(() => {
     const originalVideo = originalVideoRef.current
-    const regeneratedVideo = regeneratedVideoRef.current
+    const regeneratedVideo = regeneratedClip ? regeneratedVideoRef.current : null
     
     const updateTimestamps = () => {
       if (originalVideo) {
@@ -216,7 +298,7 @@ export function ClipComparison({
         regeneratedVideo.removeEventListener("timeupdate", updateTimestamps)
       }
     }
-  }, [])
+  }, [regeneratedClip])
   
   // Fullscreen handling
   const enterFullscreen = useCallback(async () => {
@@ -269,13 +351,26 @@ export function ClipComparison({
     setIsSwapped(!isSwapped)
   }
   
-  const leftClip = isSwapped ? regeneratedClip : originalClip
-  const rightClip = isSwapped ? originalClip : regeneratedClip
-  const leftVideoRef = isSwapped ? regeneratedVideoRef : originalVideoRef
-  const rightVideoRef = isSwapped ? originalVideoRef : regeneratedVideoRef
+  const leftClip = isSwapped && regeneratedClip ? regeneratedClip : originalClip
+  const rightClip = isSwapped && regeneratedClip ? originalClip : regeneratedClip
+  const leftVideoRef = isSwapped && regeneratedClip ? regeneratedVideoRef : originalVideoRef
+  const rightVideoRef = isSwapped && regeneratedClip ? originalVideoRef : regeneratedVideoRef
   
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+      {/* Hidden audio element for synchronized playback */}
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          preload="metadata"
+          onError={(e) => {
+            console.warn("Failed to load audio:", e)
+            // Don't show error to user, just log it
+          }}
+          style={{ display: "none" }}
+        />
+      )}
       <div
         ref={containerRef}
         className="bg-white rounded-lg shadow-xl w-full max-w-7xl max-h-[90vh] overflow-auto"
@@ -338,10 +433,12 @@ export function ClipComparison({
               </div>
               <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
                 {leftClip.thumbnail_url && isLoading && (
-                  <img
+                  <Image
                     src={leftClip.thumbnail_url}
                     alt="Thumbnail"
-                    className="w-full h-full object-cover"
+                    fill
+                    className="object-cover"
+                    unoptimized
                   />
                 )}
                 {leftClip.video_url ? (
@@ -367,65 +464,105 @@ export function ClipComparison({
             
             {/* Right video (regenerated or swapped) */}
             <div className="space-y-2">
-              <div className="text-sm font-medium">
-                {isSwapped ? "Original" : "Regenerated"} (v{rightClip.version_number})
-                {rightClip.user_instruction && (
-                  <span className="text-xs text-gray-500 ml-2">
-                    &quot;{rightClip.user_instruction}&quot;
-                  </span>
-                )}
-              </div>
-              <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
-                {rightClip.thumbnail_url && isLoading && (
-                  <img
-                    src={rightClip.thumbnail_url}
-                    alt="Thumbnail"
-                    className="w-full h-full object-cover"
-                  />
-                )}
-                {rightClip.video_url ? (
-                  <video
-                    ref={rightVideoRef}
-                    src={rightClip.video_url}
-                    className="w-full h-full"
-                    controls
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full text-white">
-                    Video not available
+              {rightClip ? (
+                <>
+                  <div className="text-sm font-medium">
+                    {isSwapped ? "Original" : "Regenerated"} (v{rightClip.version_number})
+                    {rightClip.user_instruction && (
+                      <span className="text-xs text-gray-500 ml-2">
+                        &quot;{rightClip.user_instruction}&quot;
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="text-xs text-gray-600">
-                Time: {formatDuration(rightClip === regeneratedClip ? regeneratedTime : originalTime)}
-              </div>
-              <div className="text-xs text-gray-500 line-clamp-2">
-                {rightClip.prompt}
-              </div>
+                  <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                    {rightClip.thumbnail_url && isLoading && (
+                      <Image
+                        src={rightClip.thumbnail_url}
+                        alt="Thumbnail"
+                        fill
+                        className="object-cover"
+                        unoptimized
+                      />
+                    )}
+                    {rightClip.video_url ? (
+                      <video
+                        ref={rightVideoRef}
+                        src={rightClip.video_url}
+                        className="w-full h-full"
+                        controls
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-white">
+                        Video not available
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    Time: {formatDuration(rightClip === regeneratedClip ? regeneratedTime : originalTime)}
+                  </div>
+                  <div className="text-xs text-gray-500 line-clamp-2">
+                    {rightClip.prompt}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-sm font-medium text-gray-500">
+                    Regenerated (Not Available)
+                  </div>
+                  <div className="relative bg-gray-100 rounded-lg overflow-hidden aspect-video flex items-center justify-center">
+                    <div className="text-center text-gray-500 p-4">
+                      <p className="text-sm">No regenerated version available yet.</p>
+                      <p className="text-xs mt-2">Use the chat to modify this clip.</p>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
           
           {/* Controls */}
-          <div className="flex items-center justify-center gap-4">
-            <Button onClick={handlePlay} variant="default">
-              {isPlaying ? (
-                <>
-                  <Pause className="h-4 w-4 mr-2" />
-                  Pause
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4 mr-2" />
-                  Play
-                </>
-              )}
-            </Button>
-            <Button
-              variant={isSynced ? "default" : "outline"}
-              onClick={() => setIsSynced(!isSynced)}
-            >
-              {isSynced ? "Synchronized" : "Independent"}
-            </Button>
+          <div className="flex flex-col items-center gap-4">
+            <div className="flex items-center gap-4">
+              <Button onClick={handlePlay} variant="default">
+                {isPlaying ? (
+                  <>
+                    <Pause className="h-4 w-4 mr-2" />
+                    Pause
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    Play
+                  </>
+                )}
+              </Button>
+              <Button
+                variant={isSynced ? "default" : "outline"}
+                onClick={() => setIsSynced(!isSynced)}
+                disabled={!regeneratedClip}
+              >
+                {isSynced ? "Synchronized" : "Independent"}
+              </Button>
+            </div>
+            {/* Revert button - only show if regenerated clip exists and onRevert is provided */}
+            {regeneratedClip && onRevert && clipIndex !== undefined && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    await onRevert(clipIndex, 1) // Revert to version 1 (original)
+                    onClose() // Close modal after successful revert
+                  } catch (error) {
+                    console.error("Failed to revert clip:", error)
+                    setError(error instanceof Error ? error.message : "Failed to revert clip")
+                  }
+                }}
+                className="text-orange-600 border-orange-600 hover:bg-orange-50"
+              >
+                <RotateCcw className="h-4 w-4 mr-2" />
+                Revert to Original
+              </Button>
+            )}
           </div>
         </div>
       </div>

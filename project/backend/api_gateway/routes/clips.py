@@ -331,35 +331,89 @@ async def compare_clip_versions(
         HTTPException: 404 if versions not found, 403 if access denied
     """
     try:
-        from modules.clip_regenerator.data_loader import load_clip_version
+        from modules.clip_regenerator.data_loader import load_clips_from_job_stages, load_clip_prompts_from_job_stages
         
         # Verify job ownership
         job = await verify_job_ownership(job_id, current_user)
         
-        # Load original version
-        original_data = await load_clip_version(
-            UUID(job_id),
-            clip_index,
-            version_number=original_version
-        )
-        
-        if not original_data:
+        # Load original version (always from clips table, version 1)
+        # Bypass clip_versions table to ensure we get the true original
+        clips = await load_clips_from_job_stages(UUID(job_id))
+        if not clips:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Original version {original_version} not found for clip {clip_index}"
+                detail=f"Clips not found for job {job_id}"
             )
         
-        # Load regenerated version (current or specified version)
-        regenerated_data = await load_clip_version(
-            UUID(job_id),
-            clip_index,
-            version_number=regenerated_version
-        )
+        original_clip = None
+        for clip in clips.clips:
+            if clip.clip_index == clip_index:
+                original_clip = clip
+                break
         
-        # If regenerated_version not found, try to load current version from clip_versions
-        if not regenerated_data and regenerated_version is None:
+        if not original_clip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Clip {clip_index} not found for job {job_id}"
+            )
+        
+        # Get thumbnail and prompt for original
+        db = DatabaseClient()
+        thumbnail_url = None
+        try:
+            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).limit(1).execute()
+            if thumb_result.data and len(thumb_result.data) > 0:
+                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+        except Exception:
+            pass  # Table may not exist
+        
+        clip_prompts = await load_clip_prompts_from_job_stages(UUID(job_id))
+        prompt = ""
+        if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
+            prompt = clip_prompts.clip_prompts[clip_index].prompt
+        
+        original_data = {
+            "video_url": original_clip.video_url,
+            "thumbnail_url": thumbnail_url,
+            "prompt": prompt,
+            "version_number": 1,  # Original is always version 1
+            "duration": original_clip.actual_duration or original_clip.target_duration,
+            "user_instruction": None,  # Original has no instruction
+            "cost": float(original_clip.cost) if original_clip.cost else None,
+            "created_at": None
+        }
+        
+        # Load regenerated version (latest from clip_versions table)
+        regenerated_data = None
+        
+        # If specific version requested, load that version
+        if regenerated_version is not None and regenerated_version > 1:
             try:
-                db = DatabaseClient()
+                result = await db.table("clip_versions").select("*").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_index).eq("version_number", regenerated_version).limit(1).execute()
+                
+                if result.data and len(result.data) > 0:
+                    version_data = result.data[0]
+                    regenerated_data = {
+                        "video_url": version_data.get("video_url"),
+                        "thumbnail_url": version_data.get("thumbnail_url"),
+                        "prompt": version_data.get("prompt"),
+                        "version_number": version_data.get("version_number"),
+                        "duration": None,  # Duration not stored in clip_versions
+                        "user_instruction": version_data.get("user_instruction"),
+                        "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
+                        "created_at": version_data.get("created_at")
+                    }
+            except Exception:
+                pass  # Table may not exist
+        
+        # If no specific version requested, load latest (highest version_number or is_current=True)
+        if not regenerated_data:
+            try:
+                # Try to get current version first
                 result = await db.table("clip_versions").select("*").eq(
                     "job_id", str(job_id)
                 ).eq("clip_index", clip_index).eq("is_current", True).limit(1).execute()
@@ -376,23 +430,38 @@ async def compare_clip_versions(
                         "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
                         "created_at": version_data.get("created_at")
                     }
+                else:
+                    # Fallback: get highest version_number
+                    result = await db.table("clip_versions").select("*").eq(
+                        "job_id", str(job_id)
+                    ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+                    
+                    if result.data and len(result.data) > 0:
+                        version_data = result.data[0]
+                        regenerated_data = {
+                            "video_url": version_data.get("video_url"),
+                            "thumbnail_url": version_data.get("thumbnail_url"),
+                            "prompt": version_data.get("prompt"),
+                            "version_number": version_data.get("version_number"),
+                            "duration": None,
+                            "user_instruction": version_data.get("user_instruction"),
+                            "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
+                            "created_at": version_data.get("created_at")
+                        }
             except Exception:
                 pass  # Table may not exist
         
-        # If still no regenerated version, use original as both (no regeneration yet)
-        if not regenerated_data:
-            # No regenerated version exists - return original for both
-            regenerated_data = original_data.copy()
-            regenerated_data["version_number"] = original_data["version_number"]
+        # If no regenerated version found, that's okay - means no regeneration yet
+        # We'll return None for regenerated, and frontend can handle it
         
-        # Calculate duration mismatch
+        # Calculate duration mismatch (only if regenerated exists)
         original_duration = original_data.get("duration") or 0
-        regenerated_duration = regenerated_data.get("duration") or 0
-        duration_mismatch = abs(original_duration - regenerated_duration) > 0.1  # 100ms tolerance
-        duration_diff = abs(original_duration - regenerated_duration) if duration_mismatch else 0
+        regenerated_duration = regenerated_data.get("duration") or 0 if regenerated_data else 0
+        duration_mismatch = abs(original_duration - regenerated_duration) > 0.1 if regenerated_data else False  # 100ms tolerance
+        duration_diff = abs(original_duration - regenerated_duration) if (duration_mismatch and regenerated_data) else 0
         
         # Graceful degradation: if video URLs missing, return thumbnail-only comparison
-        if not original_data.get("video_url") or not regenerated_data.get("video_url"):
+        if not original_data.get("video_url") or (regenerated_data and not regenerated_data.get("video_url")):
             logger.warning(
                 f"Video URLs missing for comparison, returning thumbnail-only",
                 extra={"job_id": job_id, "clip_index": clip_index}
@@ -404,12 +473,14 @@ async def compare_clip_versions(
                 "job_id": job_id,
                 "clip_index": clip_index,
                 "original_version": original_data.get("version_number"),
-                "regenerated_version": regenerated_data.get("version_number"),
+                "regenerated_version": regenerated_data.get("version_number") if regenerated_data else None,
+                "has_regenerated": regenerated_data is not None,
                 "duration_mismatch": duration_mismatch
             }
         )
         
-        return {
+        # Build response
+        response = {
             "original": {
                 "video_url": original_data.get("video_url"),
                 "thumbnail_url": original_data.get("thumbnail_url"),
@@ -419,7 +490,13 @@ async def compare_clip_versions(
                 "user_instruction": original_data.get("user_instruction"),
                 "cost": original_data.get("cost")
             },
-            "regenerated": {
+            "duration_mismatch": duration_mismatch,
+            "duration_diff": duration_diff
+        }
+        
+        # Add regenerated data if it exists
+        if regenerated_data:
+            response["regenerated"] = {
                 "video_url": regenerated_data.get("video_url"),
                 "thumbnail_url": regenerated_data.get("thumbnail_url"),
                 "prompt": regenerated_data.get("prompt"),
@@ -427,10 +504,12 @@ async def compare_clip_versions(
                 "duration": regenerated_duration,
                 "user_instruction": regenerated_data.get("user_instruction"),
                 "cost": regenerated_data.get("cost")
-            },
-            "duration_mismatch": duration_mismatch,
-            "duration_diff": duration_diff
-        }
+            }
+        else:
+            # No regenerated version exists yet
+            response["regenerated"] = None
+        
+        return response
         
     except HTTPException:
         raise
@@ -443,6 +522,210 @@ async def compare_clip_versions(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load comparison data"
+        )
+
+
+class RevertClipRequest(BaseModel):
+    """Request to revert a clip to a specific version."""
+    version_number: int = 1  # Default to version 1 (original)
+
+
+@router.post("/jobs/{job_id}/clips/{clip_index}/revert")
+async def revert_clip_to_version(
+    job_id: str = Path(...),
+    clip_index: int = Path(...),
+    request: RevertClipRequest = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Revert a clip to a specific version and re-stitch the main video.
+    
+    Args:
+        job_id: Job ID
+        clip_index: Index of clip to revert
+        request: RevertClipRequest with version_number (default: 1 for original)
+        current_user: Current authenticated user
+        
+    Returns:
+        JSON response with revert status and new video URL
+        
+    Raises:
+        HTTPException: 404 if clip/version not found, 403 if access denied, 500 on composition error
+    """
+    try:
+        # Verify job ownership
+        job = await verify_job_ownership(job_id, current_user)
+        audio_url = job.get("audio_url")
+        if not audio_url:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Audio URL not found for job"
+            )
+        
+        # Load all clips from job_stages (original clips)
+        clips = await load_clips_from_job_stages(UUID(job_id))
+        if not clips:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Clips not found for job {job_id}"
+            )
+        
+        # Find the clip to revert
+        clip_to_revert = None
+        for clip in clips.clips:
+            if clip.clip_index == clip_index:
+                clip_to_revert = clip
+                break
+        
+        if not clip_to_revert:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Clip {clip_index} not found for job {job_id}"
+            )
+        
+        # If version_number is 1, use original clip (already in clips)
+        # If version_number > 1, load from clip_versions table
+        if request.version_number == 1:
+            # Already have original clip, no change needed
+            logger.info(
+                f"Reverting clip {clip_index} to original version (v1)",
+                extra={"job_id": job_id, "clip_index": clip_index}
+            )
+        else:
+            # Load specific version from clip_versions table
+            db = DatabaseClient()
+            try:
+                result = await db.table("clip_versions").select("*").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_index).eq("version_number", request.version_number).limit(1).execute()
+                
+                if not result.data or len(result.data) == 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Version {request.version_number} not found for clip {clip_index}"
+                    )
+                
+                version_data = result.data[0]
+                # Replace the clip with the specified version
+                clip_to_revert.video_url = version_data.get("video_url")
+                logger.info(
+                    f"Reverting clip {clip_index} to version {request.version_number}",
+                    extra={"job_id": job_id, "clip_index": clip_index, "version_number": request.version_number}
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to load clip version: {e}",
+                    extra={"job_id": job_id, "clip_index": clip_index, "version_number": request.version_number},
+                    exc_info=True
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to load clip version: {str(e)}"
+                )
+        
+        # Load required data for composition
+        from modules.clip_regenerator.data_loader import (
+            load_transitions_from_job_stages,
+            load_beat_timestamps_from_job_stages,
+            get_aspect_ratio
+        )
+        
+        transitions = await load_transitions_from_job_stages(UUID(job_id))
+        beat_timestamps = await load_beat_timestamps_from_job_stages(UUID(job_id))
+        aspect_ratio = await get_aspect_ratio(UUID(job_id))
+        
+        # Update job status to processing
+        await db_client.table("jobs").update({
+            "status": "processing",
+            "current_stage": "composer",
+            "updated_at": "now()"
+        }).eq("id", job_id).execute()
+        
+        # Publish event
+        await publish_event(job_id, "message", {
+            "text": f"Re-stitching video with reverted clip {clip_index}...",
+            "stage": "composer"
+        })
+        
+        # Call composer to re-stitch video
+        try:
+            from modules.composer.process import process as compose_video
+            video_output = await compose_video(
+                job_id,
+                clips,
+                audio_url,
+                transitions or [],
+                beat_timestamps or [],
+                aspect_ratio,
+                changed_clip_index=clip_index
+            )
+        except ImportError:
+            logger.error("Composer module not found", extra={"job_id": job_id})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Composer module not available"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to re-stitch video: {e}",
+                extra={"job_id": job_id, "clip_index": clip_index},
+                exc_info=True
+            )
+            # Update job status to failed
+            await db_client.table("jobs").update({
+                "status": "failed",
+                "error_message": f"Failed to re-stitch video: {str(e)}",
+                "updated_at": "now()"
+            }).eq("id", job_id).execute()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to re-stitch video: {str(e)}"
+            )
+        
+        # Update job with new video URL and mark as completed
+        await db_client.table("jobs").update({
+            "status": "completed",
+            "progress": 100,
+            "current_stage": "composer",
+            "video_url": video_output.video_url,
+            "updated_at": "now()"
+        }).eq("id", job_id).execute()
+        
+        # Publish completion event
+        await publish_event(job_id, "completed", {
+            "video_url": video_output.video_url,
+            "message": f"Video re-stitched with reverted clip {clip_index}"
+        })
+        
+        logger.info(
+            f"Successfully reverted clip {clip_index} to version {request.version_number} and re-stitched video",
+            extra={
+                "job_id": job_id,
+                "clip_index": clip_index,
+                "version_number": request.version_number,
+                "video_url": video_output.video_url
+            }
+        )
+        
+        return {
+            "job_id": job_id,
+            "clip_index": clip_index,
+            "reverted_to_version": request.version_number,
+            "video_url": video_output.video_url,
+            "status": "completed"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to revert clip: {e}",
+            extra={"job_id": job_id, "clip_index": clip_index},
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to revert clip: {str(e)}"
         )
 
 

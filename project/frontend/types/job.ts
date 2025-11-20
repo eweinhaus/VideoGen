@@ -4,6 +4,7 @@ export interface Job {
   currentStage: string | null
   progress: number
   videoUrl: string | null
+  audioUrl?: string | null
   errorMessage: string | null
   createdAt: string
   updatedAt: string

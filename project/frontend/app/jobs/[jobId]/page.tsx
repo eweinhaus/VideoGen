@@ -16,7 +16,7 @@ import { useAuth } from "@/hooks/useAuth"
 import { useJob } from "@/hooks/useJob"
 import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft, GitCompare } from "lucide-react"
-import { getClipComparison } from "@/lib/api"
+import { getClipComparison, revertClipToVersion } from "@/lib/api"
 import { jobStore } from "@/stores/jobStore"
 import type { StageUpdateEvent } from "@/types/sse"
 
@@ -46,6 +46,19 @@ export default function JobProgressPage() {
       // Error is logged, user can retry
     } finally {
       setLoadingComparison(false)
+    }
+  }
+
+  const handleRevert = async (clipIndex: number, versionNumber: number) => {
+    try {
+      await revertClipToVersion(jobId, clipIndex, versionNumber)
+      // Refresh job to get updated video URL
+      await fetchJob(jobId)
+      // Show success message (you could add a toast notification here)
+      console.log(`✅ Successfully reverted clip ${clipIndex} to version ${versionNumber}`)
+    } catch (error) {
+      console.error("Failed to revert clip:", error)
+      throw error // Re-throw to let ClipComparison handle the error
     }
   }
 
@@ -461,10 +474,13 @@ export default function JobProgressPage() {
                     {showComparison && comparisonData && selectedClipIndex !== undefined && (
                       <ClipComparison
                         originalClip={comparisonData.original}
-                        regeneratedClip={comparisonData.regenerated}
+                        regeneratedClip={comparisonData.regenerated ?? null}
                         mode="side-by-side"
                         syncPlayback={true}
+                        audioUrl={job?.audioUrl ?? undefined}
                         onClose={() => setShowComparison(false)}
+                        onRevert={handleRevert}
+                        clipIndex={selectedClipIndex}
                       />
                     )}
                   </div>
