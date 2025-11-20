@@ -603,8 +603,18 @@ async def regenerate_clip(
     temperature = 0.7  # Default temperature
     temperature_reasoning = "Template match - using default temperature"
     
-    if template_match:
-        # Step 3: Apply template transformation
+    # Templates that represent moderate visual changes should ALWAYS use LLM modification
+    # for better prompt rewriting. LLM can rewrite the prompt more effectively than just
+    # appending text, which is crucial for creating meaningful visual changes even with
+    # temperature control. This applies to all models, including Veo 3.1.
+    moderate_change_templates = {"nighttime", "daytime", "brighter", "darker"}
+    use_llm_for_template = (
+        template_match is not None 
+        and template_match.template_id in moderate_change_templates
+    )
+    
+    if template_match and not use_llm_for_template:
+        # Step 3: Apply template transformation (for simple changes or Veo 3.1)
         modified_prompt = apply_template(original_prompt.prompt, template_match)
         cost_estimate = estimate_clip_cost(original_clip.target_duration, environment)
         # Use default temperature for template matches
@@ -617,7 +627,8 @@ async def regenerate_clip(
                 "job_id": str(job_id),
                 "clip_index": clip_index,
                 "template_id": template_match.template_id,
-                "temperature": temperature
+                "temperature": temperature,
+                "video_model": video_model
             }
         )
         
@@ -1032,19 +1043,64 @@ async def regenerate_clip_with_recomposition(
             new_clip.clip_index = clip_index
     
     # Replace clip at found position with regenerated clip
-    logger.debug(
+    old_clip = clips.clips[clip_position]
+    old_clip_url = old_clip.video_url
+    new_clip_url = new_clip.video_url
+    
+    logger.info(
         f"Replacing clip at position {clip_position} (clip_index {clip_index})",
         extra={
             "job_id": str(job_id),
             "clip_index": clip_index,
             "clip_position": clip_position,
-            "old_clip_url": clips.clips[clip_position].video_url,
-            "new_clip_url": new_clip.video_url
+            "old_clip_url": old_clip_url,
+            "new_clip_url": new_clip_url,
+            "urls_different": old_clip_url != new_clip_url,
+            "template_used": regeneration_result.template_used
         }
     )
+    
+    # Verify that we have a new video URL (for debugging)
+    if old_clip_url == new_clip_url and regeneration_result.template_used != "lipsync":
+        logger.warning(
+            f"WARNING: New clip has same video_url as old clip! This might indicate an issue.",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "video_url": old_clip_url,
+                "template_used": regeneration_result.template_used
+            }
+        )
+    
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
     updated_clips[clip_position] = new_clip
+    
+    # Verify replacement worked
+    replaced_clip = updated_clips[clip_position]
+    if replaced_clip.video_url != new_clip_url:
+        logger.error(
+            f"CRITICAL: Clip replacement failed! Expected video_url {new_clip_url}, got {replaced_clip.video_url}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "expected_url": new_clip_url,
+                "actual_url": replaced_clip.video_url
+            }
+        )
+        raise ValidationError(
+            f"Clip replacement failed: video_url mismatch. "
+            f"Expected: {new_clip_url}, Got: {replaced_clip.video_url}"
+        )
+    
+    logger.info(
+        f"Clip replacement verified successfully",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "new_video_url": replaced_clip.video_url
+        }
+    )
     
     # Reconstruct Clips object with updated clip
     updated_clips_obj = Clips(
@@ -1118,18 +1174,29 @@ async def regenerate_clip_with_recomposition(
     
     # Call Composer with updated Clips
     try:
+        # Log the clip URLs that will be used for recomposition
+        clip_urls = [clip.video_url for clip in updated_clips_obj.clips]
         logger.info(
             f"Starting video recomposition",
-            extra={"job_id": str(job_id), "total_clips": updated_clips_obj.total_clips}
+            extra={
+                "job_id": str(job_id),
+                "total_clips": updated_clips_obj.total_clips,
+                "clip_urls": clip_urls,
+                "regenerated_clip_index": clip_index,
+                "regenerated_clip_url": updated_clips_obj.clips[clip_position].video_url if clip_position is not None else None
+            }
         )
         
+        # Pass changed_clip_index to composer for potential optimization
+        # (Currently composer doesn't use this, but it's available for future optimization)
         video_output = await composer_process(
             job_id=str(job_id),
             clips=updated_clips_obj,
             audio_url=audio_url,
             transitions=transitions,
             beat_timestamps=beat_timestamps,
-            aspect_ratio=aspect_ratio
+            aspect_ratio=aspect_ratio,
+            changed_clip_index=clip_index
         )
         
         logger.info(
@@ -1290,12 +1357,53 @@ async def regenerate_clip_with_recomposition(
             extra={"job_id": str(job_id), "clip_index": clip_index}
         )
     
-    # Step 9: Update job status
+    # Step 9: Update job status and video_url
+    logger.info(
+        f"Updating job status and video_url",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "new_video_url": video_output.video_url,
+            "template_used": regeneration_result.template_used
+        }
+    )
     await update_job_status(
         job_id=job_id,
         status="completed",
         video_url=video_output.video_url
     )
+    
+    # Verify the update worked
+    try:
+        from shared.database import DatabaseClient
+        db = DatabaseClient()
+        verify_result = await db.table("jobs").select("video_url").eq("id", str(job_id)).limit(1).execute()
+        if verify_result.data:
+            job_data = verify_result.data[0] if isinstance(verify_result.data, list) else verify_result.data
+            actual_video_url = job_data.get("video_url")
+            if actual_video_url != video_output.video_url:
+                logger.error(
+                    f"CRITICAL: Job video_url update failed! Expected {video_output.video_url}, got {actual_video_url}",
+                    extra={
+                        "job_id": str(job_id),
+                        "expected_url": video_output.video_url,
+                        "actual_url": actual_video_url
+                    }
+                )
+            else:
+                logger.info(
+                    f"Job video_url updated successfully",
+                    extra={
+                        "job_id": str(job_id),
+                        "video_url": actual_video_url
+                    }
+                )
+    except Exception as e:
+        logger.warning(
+            f"Failed to verify job video_url update: {e}",
+            extra={"job_id": str(job_id)},
+            exc_info=True
+        )
     
     logger.info(
         f"Clip regeneration with recomposition completed successfully",
@@ -1303,7 +1411,8 @@ async def regenerate_clip_with_recomposition(
             "job_id": str(job_id),
             "clip_index": clip_index,
             "video_url": video_output.video_url,
-            "cost": str(regeneration_result.cost)
+            "cost": str(regeneration_result.cost),
+            "template_used": regeneration_result.template_used
         }
     )
     

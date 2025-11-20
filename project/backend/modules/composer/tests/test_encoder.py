@@ -160,6 +160,6 @@ class TestEncodeFinalVideo:
         assert "aac" in cmd_str  # OUTPUT_AUDIO_CODEC
         assert "5000k" in cmd_str  # OUTPUT_VIDEO_BITRATE
         assert "192k" in cmd_str  # OUTPUT_AUDIO_BITRATE
-        assert "medium" in cmd_str  # FFMPEG_PRESET
+        assert "fast" in cmd_str  # FFMPEG_PRESET (default is now "fast")
         assert "+faststart" in cmd_str  # Web optimization
 

@@ -9,6 +9,7 @@ import re
 import asyncio
 from datetime import datetime
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from mutagen import File as MutagenFile
 from shared.storage import StorageClient
 from shared.database import DatabaseClient
@@ -239,8 +240,85 @@ async def upload_audio(
         raise
     except Exception as e:
         logger.error("Failed to create job", exc_info=e, extra={"job_id": job_id, "user_id": user_id})
-        raise HTTPException(
+        
+        # Extract detailed error information
+        error_type = type(e).__name__
+        error_message = str(e)
+        
+        # Determine error category and user-friendly message
+        error_category = "UNKNOWN_ERROR"
+        user_message = "Failed to create job"
+        suggestions = []
+        
+        # Check for specific error types
+        if "database" in error_message.lower() or "postgres" in error_message.lower() or "supabase" in error_message.lower():
+            error_category = "DATABASE_ERROR"
+            user_message = "Database connection error. Please try again."
+            suggestions = [
+                "Check your internet connection",
+                "Wait a moment and try again",
+                "If this persists, contact support"
+            ]
+        elif "storage" in error_message.lower() or "bucket" in error_message.lower() or "upload" in error_message.lower():
+            error_category = "STORAGE_ERROR"
+            user_message = "File upload error. Please try again."
+            suggestions = [
+                "Check your internet connection",
+                "Try uploading a smaller file",
+                "Wait a moment and try again"
+            ]
+        elif "timeout" in error_message.lower():
+            error_category = "TIMEOUT_ERROR"
+            user_message = "Request timed out. Please try again."
+            suggestions = [
+                "Check your internet connection",
+                "Try uploading a smaller file",
+                "Wait a moment and try again"
+            ]
+        elif "connection" in error_message.lower() or "network" in error_message.lower():
+            error_category = "NETWORK_ERROR"
+            user_message = "Network connection error. Please check your connection."
+            suggestions = [
+                "Check your internet connection",
+                "Try again in a moment",
+                "If this persists, contact support"
+            ]
+        elif "rate limit" in error_message.lower() or "too many" in error_message.lower():
+            error_category = "RATE_LIMIT_ERROR"
+            user_message = "Too many requests. Please wait before trying again."
+            suggestions = [
+                "Wait a few minutes before creating another job",
+                "You can check the status of existing jobs"
+            ]
+        else:
+            error_category = "SERVER_ERROR"
+            user_message = "An unexpected error occurred. Please try again."
+            suggestions = [
+                "Wait a moment and try again",
+                "If this persists, contact support with the error details below"
+            ]
+        
+        # Build detailed error response
+        error_details = {
+            "category": error_category,
+            "error_type": error_type,
+            "error_message": error_message,
+            "user_message": user_message,
+            "suggestions": suggestions,
+            "job_id": job_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Return JSONResponse with detailed error information
+        return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create job"
+            content={
+                "error": user_message,
+                "detail": user_message,
+                "message": user_message,
+                "code": error_category,
+                "retryable": error_category in ["NETWORK_ERROR", "TIMEOUT_ERROR", "STORAGE_ERROR"],
+                "error_details": error_details
+            }
         )
 

@@ -421,48 +421,51 @@ export default function JobProgressPage() {
                       </CardContent>
                     </Card>
                     
-                    {/* ClipChatbot appears when a clip is selected */}
-                    {selectedClipIndex !== undefined && (
-                      <>
-                        <Card>
-                          <CardContent className="pt-6">
-                            <div className="flex items-center justify-between mb-4">
-                              <h3 className="text-lg font-semibold">Clip {selectedClipIndex} - Regeneration</h3>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={handleCompare}
-                                disabled={loadingComparison}
-                              >
-                                <GitCompare className="h-4 w-4 mr-2" />
-                                {loadingComparison ? "Loading..." : "Compare Versions"}
-                              </Button>
-                            </div>
-                            <ClipChatbot
-                              jobId={jobId}
-                              clipIndex={selectedClipIndex}
-                              onRegenerationComplete={(newVideoUrl) => {
-                                // Refresh job to get updated video URL
-                                fetchJob(jobId).catch((error) => {
-                                  console.error("Failed to refresh job after regeneration:", error)
-                                })
-                                console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
-                              }}
-                            />
-                          </CardContent>
-                        </Card>
-                        
-                        {/* Comparison Modal */}
-                        {showComparison && comparisonData && (
-                          <ClipComparison
-                            originalClip={comparisonData.original}
-                            regeneratedClip={comparisonData.regenerated}
-                            mode="side-by-side"
-                            syncPlayback={true}
-                            onClose={() => setShowComparison(false)}
-                          />
-                        )}
-                      </>
+                    {/* Unified ClipChatbot for all clips */}
+                    <Card>
+                      <CardContent className="pt-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <h3 className="text-lg font-semibold">Modify Clips</h3>
+                          {selectedClipIndex !== undefined && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleCompare}
+                              disabled={loadingComparison}
+                            >
+                              <GitCompare className="h-4 w-4 mr-2" />
+                              {loadingComparison ? "Loading..." : "Compare Versions"}
+                            </Button>
+                          )}
+                        </div>
+                        <ClipChatbot
+                          jobId={jobId}
+                          onRegenerationComplete={async (newVideoUrl) => {
+                            // Refresh job to get updated video URL and trigger re-render
+                            try {
+                              await fetchJob(jobId)
+                              console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                              // Force a small delay to ensure state updates propagate
+                              setTimeout(() => {
+                                // Job store should have updated, triggering VideoPlayer re-render
+                              }, 100)
+                            } catch (error) {
+                              console.error("Failed to refresh job after regeneration:", error)
+                            }
+                          }}
+                        />
+                      </CardContent>
+                    </Card>
+                    
+                    {/* Comparison Modal */}
+                    {showComparison && comparisonData && selectedClipIndex !== undefined && (
+                      <ClipComparison
+                        originalClip={comparisonData.original}
+                        regeneratedClip={comparisonData.regenerated}
+                        mode="side-by-side"
+                        syncPlayback={true}
+                        onClose={() => setShowComparison(false)}
+                      />
                     )}
                   </div>
                 )}

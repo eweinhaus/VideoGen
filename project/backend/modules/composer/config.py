@@ -12,10 +12,13 @@ VIDEO_OUTPUTS_BUCKET = "video-outputs"
 AUDIO_UPLOADS_BUCKET = "audio-uploads"
 
 # FFmpeg settings
-FFMPEG_THREADS = 4
-FFMPEG_TIMEOUT = 300  # 5 minutes
-FFMPEG_PRESET = "medium"  # Balance speed/quality
-FFMPEG_CRF = 23  # High quality
+FFMPEG_THREADS = int(os.getenv("FFMPEG_THREADS", "4"))
+FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT", "300"))  # 5 minutes
+# Preset: "veryfast" (fastest, lower quality), "fast", "medium" (balanced), "slow" (best quality)
+# Default to "fast" for faster recomposition (15-25% faster than medium with minimal quality impact)
+# Can be overridden via FFMPEG_PRESET environment variable if needed
+FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "fast")  # Fast encoding for both dev and prod
+FFMPEG_CRF = int(os.getenv("FFMPEG_CRF", "23"))  # High quality
 
 # Video output settings
 OUTPUT_WIDTH = 1920

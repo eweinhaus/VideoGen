@@ -165,7 +165,8 @@ async function request<T>(
       errorMessage = errorData.detail || errorData.error || errorData.message || errorMessage
       
       // Extract detailed error information if available
-      const errorDetails = errorData.error_details
+      // error_details can be nested in the response or at the top level
+      const errorDetails = errorData.error_details || errorData.errorDetails
 
       if (response.status === 401) {
         console.error("❌ 401 Unauthorized error:", endpoint)

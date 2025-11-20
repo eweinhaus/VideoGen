@@ -315,7 +315,7 @@ Configuration constants are defined in `modules/composer/config.py`:
 - **FFmpeg Settings:**
   - `FFMPEG_THREADS = 4`
   - `FFMPEG_TIMEOUT = 300` (5 minutes)
-  - `FFMPEG_PRESET = "medium"`
+  - `FFMPEG_PRESET = "fast"` (default, can be overridden via environment variable)
   - `FFMPEG_CRF = 23`
 
 - **Output Settings:**
