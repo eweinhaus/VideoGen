@@ -1077,16 +1077,19 @@ async def regenerate_clip_with_recomposition(
     
     # Save original clip to clip_versions table BEFORE overwriting (if not already saved)
     # This preserves the original for comparison purposes
+    # IMPORTANT: Load the TRUE original from clip_versions v1 if it exists, not from job_stages
+    # (job_stages may already have a regenerated clip from a previous regeneration)
     original_clip = clips.clips[clip_position]
     try:
         db = DatabaseClient()
         # Check if version 1 already exists for this clip
-        existing_version = await db.table("clip_versions").select("version_number").eq(
+        existing_version = await db.table("clip_versions").select("*").eq(
             "job_id", str(job_id)
         ).eq("clip_index", clip_index).eq("version_number", 1).limit(1).execute()
         
         # Only save if version 1 doesn't exist yet
         if not existing_version.data or len(existing_version.data) == 0:
+            # This is the first regeneration - save the current clip as version 1 (original)
             # Get prompt for original clip
             clip_prompts = await load_clip_prompts_from_job_stages(job_id)
             original_prompt = ""
@@ -1125,6 +1128,17 @@ async def regenerate_clip_with_recomposition(
                     "job_id": str(job_id),
                     "clip_index": clip_index,
                     "video_url": original_clip.video_url
+                }
+            )
+        else:
+            # Version 1 already exists - this means we've regenerated before
+            # The original is already saved, so we don't need to save it again
+            logger.debug(
+                f"Original clip (version 1) already exists in clip_versions, skipping save",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "existing_v1_url": existing_version.data[0].get("video_url")
                 }
             )
     except Exception as e:

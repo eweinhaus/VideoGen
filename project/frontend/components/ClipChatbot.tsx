@@ -604,9 +604,9 @@ export function ClipChatbot({
         />
       )}
       <FloatingChat title="AI Assistant" jobId={jobId} defaultMinimized={true}>
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full" style={{ maxHeight: "calc(80vh - 60px)" }}>
         {/* Scrollable Messages Area */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-2" style={{ maxHeight: "calc(80vh - 250px)" }}>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-8">
               <p className="text-base font-medium">Start a conversation to modify a clip.</p>
@@ -662,7 +662,7 @@ export function ClipChatbot({
                     </div>
                   ) : (
                     <>
-                      <p className="text-sm font-medium leading-relaxed">{message.content}</p>
+                      <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
                       <p className="text-xs opacity-70 mt-1">
                         {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
@@ -787,24 +787,6 @@ export function ClipChatbot({
                        {timestampRange}
                      </div>
                    </button>
-                   {/* Compare button - only show when this clip is selected */}
-                   {selectedClipIndex === clip.clip_index && (
-                     <Button
-                       type="button"
-                       variant="outline"
-                       size="sm"
-                       onClick={(e) => {
-                         e.stopPropagation()
-                         handleCompareClip(clip.clip_index)
-                       }}
-                       disabled={loadingComparison || isProcessing}
-                       className="absolute -bottom-6 left-0 right-0 h-6 text-xs px-1 py-0 bg-background/95 backdrop-blur-sm font-medium"
-                       title="Compare with original"
-                     >
-                       <GitCompare className="h-3 w-3 mr-0.5" />
-                       Compare
-                     </Button>
-                   )}
                  </div>
                )
              })}
@@ -812,7 +794,7 @@ export function ClipChatbot({
            <p className="text-xs text-muted-foreground mt-2 font-medium">
               {selectedClipIndex !== null ? (
                 <>
-                  Clip {selectedClipIndex + 1} selected. Click &quot;Compare&quot; to view versions.
+                  Clip {selectedClipIndex + 1} selected
                 </>
               ) : (
                 "Select a clip to modify"
@@ -842,22 +824,39 @@ export function ClipChatbot({
           </div>
         )}
 
+        {/* Compare Button - Prominent placement */}
+        {selectedClipIndex !== null && (
+          <div className="border-t px-3 py-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleCompareClip(selectedClipIndex)}
+              disabled={loadingComparison || isProcessing}
+              className="w-full"
+            >
+              <GitCompare className="h-4 w-4 mr-2" />
+              {loadingComparison ? "Loading..." : "Compare Versions"}
+            </Button>
+          </div>
+        )}
+
         {/* Input Area */}
         <div className="border-t p-2">
           <form onSubmit={handleSubmit} className="flex gap-2">
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Enter your modification instruction..."
+              placeholder="Enter instruction..."
               disabled={isProcessing || selectedClipIndex === null}
-              rows={1}
-              className="resize-none text-base font-medium min-h-[36px] max-h-[100px]"
+              rows={2}
+              className="resize-none text-sm font-medium min-h-[60px] max-h-[120px]"
             />
             <Button
               type="submit"
               disabled={!input.trim() || isProcessing || selectedClipIndex === null}
               size="sm"
-              className="h-[36px] px-4"
+              className="h-[60px] px-4 self-end"
             >
               {isProcessing ? (
                 <LoadingSpinner className="h-4 w-4" />

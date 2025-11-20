@@ -102,7 +102,7 @@ export function FloatingChat({
         )}
         style={{
           maxHeight: isMinimized ? "0" : "calc(80vh - 60px)",
-          overflow: isMinimized ? "hidden" : "auto",
+          overflow: isMinimized ? "hidden" : "hidden",
         }}
       >
         <div className="flex flex-col h-full">

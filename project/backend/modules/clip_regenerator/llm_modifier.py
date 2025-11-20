@@ -468,7 +468,8 @@ async def modify_prompt_with_llm(
             
             # Always append the modification to the original prompt
             # This guarantees 100% reuse of the original prompt
-            modified_prompt = f"{original_prompt}, {modification_text}"
+            # Add clear separation with "Revisions to the above prompt:" header
+            modified_prompt = f"{original_prompt}\n\nRevisions to the above prompt:\n{modification_text}"
             
             logger.debug(
                 f"Appended modification to original prompt",
@@ -509,7 +510,8 @@ async def modify_prompt_with_llm(
             )
             modification_text = parse_llm_prompt_response(content)
             # Always append the modification to the original prompt
-            modified_prompt = f"{original_prompt}, {modification_text}"
+            # Add clear separation with "Revisions to the above prompt:" header
+            modified_prompt = f"{original_prompt}\n\nRevisions to the above prompt:\n{modification_text}"
             temperature = 0.7  # Default fallback temperature
             reasoning = "JSON parsing failed, using default temperature"
             
