@@ -1235,21 +1235,35 @@ async def process(
                             )
                             return None
                     
-                    # Non-content-moderation errors: use retry loop (similar to per-clip retry)
-                    # Give failed clips 2 more attempts in batch retry
-                    retry_model = selected_model_key
+                    # Non-content-moderation errors: use retry loop with Veo 3.1 (or selected model)
+                    # Only fallback to Kling Turbo for content moderation errors
+                    # Give failed clips 2 more attempts in batch retry using the original model
+                    retry_model = selected_model_key  # Use Veo 3.1 (or whatever was originally selected)
                     use_reference_images_retry = use_references
+                    
+                    logger.info(
+                        f"Batch retry for clip {clip_prompt.clip_index}: using {retry_model} "
+                        f"(non-content-moderation error, will NOT fallback to Kling Turbo)",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "retry_model": retry_model,
+                            "fallback_to_kling": False
+                        }
+                    )
                     
                     for batch_attempt in range(2):  # 2 additional attempts in batch retry
                         try:
                             logger.info(
                                 f"Batch retry attempt {batch_attempt + 1}/2 for clip {clip_prompt.clip_index} "
-                                f"(non-content-moderation error)",
+                                f"using {retry_model} (non-content-moderation error, keeping original model)",
                                 extra={
                                     "job_id": str(job_id),
                                     "clip_index": clip_prompt.clip_index,
                                     "attempt": batch_attempt + 1,
-                                    "error_type": "non-content-moderation"
+                                    "error_type": "non-content-moderation",
+                                    "model": retry_model,
+                                    "using_reference_images": use_reference_images_retry
                                 }
                             )
                             
