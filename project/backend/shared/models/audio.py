@@ -54,6 +54,15 @@ class Mood(BaseModel):
     confidence: float = Field(..., ge=0, le=1, description="Confidence score 0-1")
 
 
+class Breakpoint(BaseModel):
+    """Logical audio breakpoint for boundary placement."""
+    timestamp: float = Field(..., ge=0, description="Time in seconds (absolute or relative to segment)")
+    confidence: float = Field(..., ge=0, le=1, description="Confidence score 0-1")
+    source: str = Field(..., description="Breakpoint source: 'lyrics' | 'energy' | 'silence' | 'harmonic' | 'beat'")
+    type: str = Field(..., description="Breakpoint type (varies by source)")
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
+
+
 class ClipBoundary(BaseModel):
     """Clip boundary model for video segmentation."""
     start: float = Field(..., ge=0, description="Clip start time in seconds")

@@ -13,8 +13,19 @@ from shared.logging import get_logger
 from modules.audio_parser.beat_detection import detect_beats, detect_beat_subdivisions, classify_beat_strength
 from modules.audio_parser.structure_analysis import analyze_structure
 from modules.audio_parser.mood_classifier import classify_mood
-from modules.audio_parser.boundaries import generate_boundaries
+from modules.audio_parser.boundaries import (
+    generate_boundaries,
+    generate_boundaries_with_breakpoints,
+    validate_boundaries
+)
 from modules.audio_parser.lyrics_extraction import extract_lyrics
+from modules.audio_parser.breakpoint_detection import (
+    detect_lyrics_breakpoints,
+    detect_energy_breakpoints,
+    detect_silence_breakpoints,
+    detect_harmonic_breakpoints,
+    aggregate_breakpoints
+)
 
 logger = get_logger("audio_parser")
 
@@ -121,44 +132,7 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
 
         logger.info(f"Segment preprocessing: {len(song_structure)} original segments → {len(merged_segments)} merged segments")
 
-        # Generate boundaries for each merged structure segment
-        clip_boundaries = []
-        for segment in merged_segments:
-            # Extract beats within this segment and make them relative to segment start
-            segment_beats_absolute = [b for b in beat_timestamps if segment.start <= b <= segment.end]
-            segment_beats = [b - segment.start for b in segment_beats_absolute]  # Make relative
-            segment_duration = segment.end - segment.start
-
-            # Generate boundaries for this segment using its type and beat_intensity
-            segment_boundaries = generate_boundaries(
-                beat_timestamps=segment_beats,
-                bpm=bpm,
-                total_duration=segment_duration,
-                max_clips=None,  # Let it calculate based on duration
-                segment_type=segment.type,
-                beat_intensity=segment.beat_intensity or "medium"
-            )
-
-            # Offset boundaries to match segment start time and add to list
-            for boundary in segment_boundaries:
-                # Create new ClipBoundary with offset times (Pydantic models are immutable)
-                offset_boundary = ClipBoundary(
-                    start=boundary.start + segment.start,
-                    end=boundary.end + segment.start,
-                    duration=boundary.duration,  # Duration stays the same
-                    metadata=boundary.metadata
-                )
-                clip_boundaries.append(offset_boundary)
-
-        logger.info(f"Clip boundaries: {len(clip_boundaries)} clips generated from {len(song_structure)} structure segments")
-        
-        # 4. Mood Classification (uses BPM, structure energy, spectral features)
-        mood = classify_mood(audio, sr, bpm, song_structure)
-        if mood.confidence < 0.3:
-            fallbacks_used.append("mood_classification")
-        logger.info(f"Mood classification: {mood.primary}, confidence={mood.confidence:.2f}")
-        
-        # 5. Lyrics Extraction (independent, can run in parallel but sequential for simplicity)
+        # 4. Lyrics Extraction (needed for breakpoint detection)
         lyrics = await extract_lyrics(audio_bytes, job_id, duration)
         if len(lyrics) == 0:
             # Check if this was a fallback (instrumental) or actual failure
@@ -176,6 +150,137 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
             f"Lyrics extraction: {len(lyrics)} words, "
             f"avg confidence={lyrics_confidence:.2f}"
         )
+        
+        # 5. Breakpoint Detection and Boundary Generation
+        # Detect breakpoints for each merged structure segment
+        clip_boundaries = []
+        breakpoint_stats = {
+            "total_detected": 0,
+            "lyrics": 0,
+            "energy": 0,
+            "silence": 0,
+            "harmonic": 0
+        }
+        
+        for segment in merged_segments:
+            # Extract beats within this segment and make them relative to segment start
+            segment_beats_absolute = [b for b in beat_timestamps if segment.start <= b <= segment.end]
+            segment_beats = [b - segment.start for b in segment_beats_absolute]  # Make relative
+            segment_duration = segment.end - segment.start
+            
+            # Detect breakpoints for this segment
+            segment_breakpoints = []
+            
+            # Lyrics breakpoints
+            if lyrics:
+                lyrics_bps = detect_lyrics_breakpoints(lyrics, segment.start, segment.end)
+                segment_breakpoints.extend(lyrics_bps)
+                breakpoint_stats["lyrics"] += len(lyrics_bps)
+            
+            # Energy breakpoints
+            energy_bps = detect_energy_breakpoints(audio, sr, segment.start, segment.end)
+            segment_breakpoints.extend(energy_bps)
+            breakpoint_stats["energy"] += len(energy_bps)
+            
+            # Silence breakpoints
+            silence_bps = detect_silence_breakpoints(audio, sr, segment.start, segment.end)
+            segment_breakpoints.extend(silence_bps)
+            breakpoint_stats["silence"] += len(silence_bps)
+            
+            # Harmonic breakpoints
+            harmonic_bps = detect_harmonic_breakpoints(
+                audio, sr, segment.start, segment.end, song_structure
+            )
+            segment_breakpoints.extend(harmonic_bps)
+            breakpoint_stats["harmonic"] += len(harmonic_bps)
+            
+            # Aggregate breakpoints (merge nearby ones, weight by confidence)
+            aggregated_breakpoints = aggregate_breakpoints(
+                segment_breakpoints, segment.start, segment.end
+            )
+            breakpoint_stats["total_detected"] += len(aggregated_breakpoints)
+            
+            # Convert breakpoints to segment-relative coordinates
+            from shared.models.audio import Breakpoint
+            relative_breakpoints = [
+                Breakpoint(
+                    timestamp=bp.timestamp - segment.start,
+                    confidence=bp.confidence,
+                    source=bp.source,
+                    type=bp.type,
+                    metadata=bp.metadata
+                )
+                for bp in aggregated_breakpoints
+            ]
+            
+            # Generate boundaries with breakpoints (or fallback to beat-aligned if no breakpoints)
+            if relative_breakpoints:
+                segment_boundaries = generate_boundaries_with_breakpoints(
+                    beat_timestamps=segment_beats,
+                    bpm=bpm,
+                    total_duration=segment_duration,
+                    breakpoints=relative_breakpoints,
+                    max_clips=None,  # Let it calculate based on duration
+                    segment_type=segment.type.value if hasattr(segment.type, 'value') else segment.type,
+                    beat_intensity=segment.beat_intensity or "medium"
+                )
+            else:
+                # Fallback to beat-aligned generation if no breakpoints detected
+                logger.debug(
+                    f"No breakpoints detected for segment [{segment.start:.1f}s - {segment.end:.1f}s], "
+                    f"using beat-aligned generation"
+                )
+                segment_boundaries = generate_boundaries(
+                    beat_timestamps=segment_beats,
+                    bpm=bpm,
+                    total_duration=segment_duration,
+                    max_clips=None,
+                    segment_type=segment.type.value if hasattr(segment.type, 'value') else segment.type,
+                    beat_intensity=segment.beat_intensity or "medium"
+                )
+            
+            # Offset boundaries to match segment start time and add to list
+            for boundary in segment_boundaries:
+                # Create new ClipBoundary with offset times (Pydantic models are immutable)
+                offset_boundary = ClipBoundary(
+                    start=boundary.start + segment.start,
+                    end=boundary.end + segment.start,
+                    duration=boundary.duration,  # Duration stays the same
+                    metadata={
+                        **boundary.metadata,
+                        "segment_type": segment.type.value if hasattr(segment.type, 'value') else segment.type,
+                        "breakpoints_used": len([bp for bp in relative_breakpoints 
+                                               if boundary.start <= bp.timestamp <= boundary.end])
+                    }
+                )
+                clip_boundaries.append(offset_boundary)
+        
+        logger.info(
+            f"Clip boundaries: {len(clip_boundaries)} clips generated from {len(merged_segments)} structure segments. "
+            f"Breakpoints detected: {breakpoint_stats['total_detected']} total "
+            f"(lyrics={breakpoint_stats['lyrics']}, energy={breakpoint_stats['energy']}, "
+            f"silence={breakpoint_stats['silence']}, harmonic={breakpoint_stats['harmonic']})"
+        )
+        
+        # Validate all boundaries meet requirements (4-8s, full coverage, no gaps)
+        is_valid, validation_errors = validate_boundaries(clip_boundaries, duration)
+        if not is_valid:
+            logger.warning(
+                f"Boundary validation found {len(validation_errors)} issues: "
+                f"{'; '.join(validation_errors[:3])}" + 
+                (f" (and {len(validation_errors) - 3} more)" if len(validation_errors) > 3 else "")
+            )
+            # Log all errors for debugging
+            for error in validation_errors:
+                logger.debug(f"Validation error: {error}")
+        else:
+            logger.info("All boundaries validated successfully (4-8s range, full coverage, no gaps)")
+        
+        # 6. Mood Classification (uses BPM, structure energy, spectral features)
+        mood = classify_mood(audio, sr, bpm, song_structure)
+        if mood.confidence < 0.3:
+            fallbacks_used.append("mood_classification")
+        logger.info(f"Mood classification: {mood.primary}, confidence={mood.confidence:.2f}")
         
         # Create AudioAnalysis object
         analysis = AudioAnalysis(
@@ -202,7 +307,8 @@ async def parse_audio(audio_bytes: bytes, job_id: UUID) -> AudioAnalysis:
                     "high": sum(1 for s in song_structure if getattr(s, 'beat_intensity', None) == "high"),
                     "medium": sum(1 for s in song_structure if getattr(s, 'beat_intensity', None) == "medium"),
                     "low": sum(1 for s in song_structure if getattr(s, 'beat_intensity', None) == "low")
-                }
+                },
+                "breakpoint_stats": breakpoint_stats
             }
         )
         
