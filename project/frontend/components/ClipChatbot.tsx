@@ -331,12 +331,16 @@ export function ClipChatbot({
       setTemplateMatched(response.template_matched || null)
 
       // Add assistant response
-      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : "calculating..."
+      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : null
       const assistantMessage: Message = {
         role: "assistant",
         content: response.template_matched
-          ? `I'll apply the "${response.template_matched}" transformation to this clip. Estimated cost: ${costText}`
-          : `I'll modify this clip based on your instruction. Estimated cost: ${costText}`,
+          ? costText
+            ? `I'll apply the "${response.template_matched}" transformation to this clip. Estimated cost: ${costText}`
+            : `I'll apply the "${response.template_matched}" transformation to this clip.`
+          : costText
+            ? `I'll modify this clip based on your instruction. Estimated cost: ${costText}`
+            : `I'll modify this clip based on your instruction.`,
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, assistantMessage])
@@ -440,12 +444,16 @@ export function ClipChatbot({
       setTemplateMatched(response.template_matched || null)
 
       // Add assistant response
-      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : "calculating..."
+      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : null
       const assistantMessage: Message = {
         role: "assistant",
         content: response.template_matched
-          ? `Retrying with "${response.template_matched}" transformation. Estimated cost: ${costText}`
-          : `Retrying regeneration. Estimated cost: ${costText}`,
+          ? costText
+            ? `Retrying with "${response.template_matched}" transformation. Estimated cost: ${costText}`
+            : `Retrying with "${response.template_matched}" transformation.`
+          : costText
+            ? `Retrying regeneration. Estimated cost: ${costText}`
+            : `Retrying regeneration.`,
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, assistantMessage])
