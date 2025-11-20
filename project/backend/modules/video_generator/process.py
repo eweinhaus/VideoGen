@@ -1235,79 +1235,154 @@ async def process(
                             )
                             return None
                     
-                    # Non-content-moderation errors: use existing retry logic
-                    # Determine which model to use for retry
+                    # Non-content-moderation errors: use retry loop (similar to per-clip retry)
+                    # Give failed clips 2 more attempts in batch retry
                     retry_model = selected_model_key
                     use_reference_images_retry = use_references
                     
-                    # Re-download images if needed (only if not using fallback model)
-                    image_url = None  # Single image (backward compatibility)
-                    reference_image_urls = []  # Multiple images for Veo 3.1
-                    
-                    if use_reference_images_retry:
-                        # Detect if clip is face-heavy (same logic as main generation)
-                        prompt_lower = clip_prompt.prompt.lower()
-                        camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
-                        is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
-                        
-                        is_face_heavy = any(keyword in prompt_lower for keyword in [
-                            "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
-                            "facial", "head", "head and shoulders", "bust shot", "face fills",
-                            "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
-                            "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
-                            "from waist", "from chest", "from shoulders"
-                        ]) or is_medium_shot
-                        
-                        collected_urls = []
-                        max_reference_images = 3  # Veo 3.1 limit
-                        
-                        # Add character reference URLs
-                        if clip_prompt.character_reference_urls:
-                            max_char_refs = len(clip_prompt.character_reference_urls) if is_face_heavy else min(len(clip_prompt.character_reference_urls), 2)
-                            for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
-                                if len(collected_urls) >= max_reference_images:
-                                    break
-                                cached_url = image_cache.get(char_ref_url)
-                                if cached_url:
-                                    collected_urls.append(cached_url)
+                    for batch_attempt in range(2):  # 2 additional attempts in batch retry
+                        try:
+                            logger.info(
+                                f"Batch retry attempt {batch_attempt + 1}/2 for clip {clip_prompt.clip_index} "
+                                f"(non-content-moderation error)",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "attempt": batch_attempt + 1,
+                                    "error_type": "non-content-moderation"
+                                }
+                            )
+                            
+                            # Re-download images if needed (only if not using fallback model)
+                            image_url = None  # Single image (backward compatibility)
+                            reference_image_urls = []  # Multiple images for Veo 3.1
+                            
+                            if use_reference_images_retry:
+                                # Detect if clip is face-heavy (same logic as main generation)
+                                prompt_lower = clip_prompt.prompt.lower()
+                                camera_angle = clip_prompt.metadata.get("camera_angle", "").lower() if clip_prompt.metadata else ""
+                                is_medium_shot = any(term in camera_angle for term in ["medium", "mid", "waist", "bust", "chest", "shoulder", "torso"])
+                                
+                                is_face_heavy = any(keyword in prompt_lower for keyword in [
+                                    "close-up", "closeup", "portrait", "face", "headshot", "extreme close",
+                                    "facial", "head", "head and shoulders", "bust shot", "face fills",
+                                    "medium shot", "mid shot", "waist-up", "waist up", "chest-up", "chest up",
+                                    "shoulder-up", "shoulder up", "torso shot", "upper body", "half body",
+                                    "from waist", "from chest", "from shoulders"
+                                ]) or is_medium_shot
+                                
+                                collected_urls = []
+                                max_reference_images = 3  # Veo 3.1 limit
+                                
+                                # Add character reference URLs
+                                if clip_prompt.character_reference_urls:
+                                    max_char_refs = len(clip_prompt.character_reference_urls) if is_face_heavy else min(len(clip_prompt.character_reference_urls), 2)
+                                    for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                                        if len(collected_urls) >= max_reference_images:
+                                            break
+                                        cached_url = image_cache.get(char_ref_url)
+                                        if cached_url:
+                                            collected_urls.append(cached_url)
+                                        else:
+                                            downloaded_url = await download_and_upload_image(char_ref_url, job_id)
+                                            if downloaded_url:
+                                                collected_urls.append(downloaded_url)
+                                
+                                # Add scene reference URL if available
+                                if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
+                                    cached_url = image_cache.get(clip_prompt.scene_reference_url)
+                                    if cached_url:
+                                        collected_urls.append(cached_url)
+                                    else:
+                                        downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
+                                        if downloaded_url:
+                                            collected_urls.append(downloaded_url)
+                                
+                                if collected_urls:
+                                    reference_image_urls = collected_urls
+                                    image_url = collected_urls[0]
+                            
+                            # Generate with retry model
+                            clip = await generate_video_clip(
+                                clip_prompt=clip_prompt,
+                                image_url=image_url,
+                                reference_image_urls=reference_image_urls,
+                                settings=settings_dict,
+                                job_id=job_id,
+                                environment=environment,
+                                extra_context=None,
+                                progress_callback=None,  # Skip progress updates for retries
+                                video_model=retry_model,
+                                aspect_ratio=aspect_ratio,
+                            )
+                            
+                            logger.info(
+                                f"Batch retry successful for clip {clip_prompt.clip_index} on attempt {batch_attempt + 1}",
+                                extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index, "attempt": batch_attempt + 1}
+                            )
+                            return clip
+                            
+                        except RetryableError as e:
+                            if batch_attempt < 1:  # Still have attempts left
+                                error_msg = str(e)
+                                
+                                # Parse Retry-After from error message if present
+                                retry_after = None
+                                retry_after_match = re.search(r'retry after ([\d.]+)s', error_msg, re.IGNORECASE)
+                                if retry_after_match:
+                                    try:
+                                        retry_after = float(retry_after_match.group(1))
+                                    except (ValueError, AttributeError):
+                                        pass
+                                
+                                # Use Retry-After if available, otherwise exponential backoff
+                                if retry_after is not None:
+                                    jitter = random.uniform(0.1, 0.2) * retry_after
+                                    delay = retry_after + jitter
                                 else:
-                                    downloaded_url = await download_and_upload_image(char_ref_url, job_id)
-                                    if downloaded_url:
-                                        collected_urls.append(downloaded_url)
-                        
-                        # Add scene reference URL if available
-                        if clip_prompt.scene_reference_url and len(collected_urls) < max_reference_images:
-                            cached_url = image_cache.get(clip_prompt.scene_reference_url)
-                            if cached_url:
-                                collected_urls.append(cached_url)
+                                    base_delay = 2 * (2 ** batch_attempt)
+                                    jitter = random.uniform(0, 2)
+                                    delay = base_delay + jitter
+                                
+                                logger.warning(
+                                    f"Batch retry attempt {batch_attempt + 1} failed for clip {clip_prompt.clip_index}, "
+                                    f"retrying in {delay:.1f}s",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "attempt": batch_attempt + 1,
+                                        "error": str(e),
+                                        "delay": delay
+                                    }
+                                )
+                                await asyncio.sleep(delay)
+                                continue
                             else:
-                                downloaded_url = await download_and_upload_image(clip_prompt.scene_reference_url, job_id)
-                                if downloaded_url:
-                                    collected_urls.append(downloaded_url)
-                        
-                        if collected_urls:
-                            reference_image_urls = collected_urls
-                            image_url = collected_urls[0]
+                                # Last attempt failed
+                                logger.warning(
+                                    f"Batch retry exhausted all 2 attempts for clip {clip_prompt.clip_index}",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "error": str(e)
+                                    }
+                                )
+                                raise
+                        except Exception as e:
+                            # Non-retryable error - don't retry
+                            logger.warning(
+                                f"Batch retry failed for clip {clip_prompt.clip_index} with non-retryable error: {e}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "attempt": batch_attempt + 1,
+                                    "error": str(e)
+                                }
+                            )
+                            raise
                     
-                    # Generate with retry model
-                    clip = await generate_video_clip(
-                        clip_prompt=clip_prompt,
-                        image_url=image_url,
-                        reference_image_urls=reference_image_urls,
-                        settings=settings_dict,
-                        job_id=job_id,
-                        environment=environment,
-                        extra_context=None,
-                        progress_callback=None,  # Skip progress updates for retries
-                        video_model=retry_model,
-                        aspect_ratio=aspect_ratio,
-                    )
-                    
-                    logger.info(
-                        f"Batch retry successful for clip {clip_prompt.clip_index}",
-                        extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
-                    )
-                    return clip
+                    # All attempts exhausted
+                    return None
                 except Exception as e:
                     logger.warning(
                         f"Batch retry failed for clip {clip_prompt.clip_index}: {e}",
