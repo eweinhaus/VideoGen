@@ -52,10 +52,12 @@ export function ClipComparison({
   
   const [originalTime, setOriginalTime] = useState(0)
   const [regeneratedTime, setRegeneratedTime] = useState(0)
+  const [originalVideoDuration, setOriginalVideoDuration] = useState<number | null>(null)
+  const [regeneratedVideoDuration, setRegeneratedVideoDuration] = useState<number | null>(null)
   
-  // Calculate duration mismatch
-  const originalDuration = originalClip.duration || 0
-  const regeneratedDuration = regeneratedClip?.duration || 0
+  // Calculate duration mismatch - use video element duration if available, otherwise use clip duration
+  const originalDuration = (originalVideoDuration ?? originalClip.duration) || 0
+  const regeneratedDuration = (regeneratedVideoDuration ?? regeneratedClip?.duration) || 0
   const durationMismatch = regeneratedClip ? Math.abs(originalDuration - regeneratedDuration) > 0.1 : false
   const shorterDuration = regeneratedClip ? Math.min(originalDuration, regeneratedDuration) : originalDuration
   
@@ -76,15 +78,25 @@ export function ClipComparison({
     const cleanup: (() => void)[] = []
     
     if (originalVideo && originalClip.video_url) {
-      const handleLoaded = () => checkLoaded()
+      const handleLoaded = () => {
+        // Extract duration from video element if available
+        if (originalVideo.duration && isFinite(originalVideo.duration)) {
+          setOriginalVideoDuration(originalVideo.duration)
+        }
+        checkLoaded()
+      }
       const handleError = () => {
         setError("Failed to load original video")
         checkLoaded()
       }
       originalVideo.addEventListener("loadeddata", handleLoaded)
+      originalVideo.addEventListener("loadedmetadata", handleLoaded) // Also listen for metadata
+      originalVideo.addEventListener("durationchange", handleLoaded) // Duration might change
       originalVideo.addEventListener("error", handleError)
       cleanup.push(() => {
         originalVideo.removeEventListener("loadeddata", handleLoaded)
+        originalVideo.removeEventListener("loadedmetadata", handleLoaded)
+        originalVideo.removeEventListener("durationchange", handleLoaded)
         originalVideo.removeEventListener("error", handleError)
       })
     } else {
@@ -92,15 +104,25 @@ export function ClipComparison({
     }
     
     if (regeneratedClip && regeneratedVideo && regeneratedClip.video_url) {
-      const handleLoaded = () => checkLoaded()
+      const handleLoaded = () => {
+        // Extract duration from video element if available
+        if (regeneratedVideo.duration && isFinite(regeneratedVideo.duration)) {
+          setRegeneratedVideoDuration(regeneratedVideo.duration)
+        }
+        checkLoaded()
+      }
       const handleError = () => {
         setError("Failed to load regenerated video")
         checkLoaded()
       }
       regeneratedVideo.addEventListener("loadeddata", handleLoaded)
+      regeneratedVideo.addEventListener("loadedmetadata", handleLoaded) // Also listen for metadata
+      regeneratedVideo.addEventListener("durationchange", handleLoaded) // Duration might change
       regeneratedVideo.addEventListener("error", handleError)
       cleanup.push(() => {
         regeneratedVideo.removeEventListener("loadeddata", handleLoaded)
+        regeneratedVideo.removeEventListener("loadedmetadata", handleLoaded)
+        regeneratedVideo.removeEventListener("durationchange", handleLoaded)
         regeneratedVideo.removeEventListener("error", handleError)
       })
     } else {
