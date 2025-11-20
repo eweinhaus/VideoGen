@@ -42,14 +42,15 @@ def get_system_prompt() -> str:
     Returns:
         System prompt string
     """
-    return """You are a video editing assistant. Append modifications to video generation prompts based on user instructions while preserving style consistency.
+    return """You are a video editing assistant. Generate modification text to append to video generation prompts based on user instructions while preserving style consistency.
 
 Your task:
 1. Understand the user's instruction and determine the level of change requested
-2. APPEND the user's instruction to the original prompt (do NOT rewrite the entire prompt)
-   - Format: "{original_prompt}, {modification based on user instruction}"
+2. Generate ONLY the modification text to append (do NOT include the original prompt)
+   - The modification text will be appended to the original prompt as: "{original_prompt}, {your modification text}"
    - The appended text should override any conflicting features mentioned in the original prompt
-   - Example: If original says "red jacket" and user says "change to white", append ", white jacket" (the appended instruction overrides)
+   - Example: If original says "red jacket" and user says "change to white", return "white jacket" (not the full prompt)
+   - The modification can be 100-200 words if needed to fully capture the user's instruction
 3. Determine appropriate temperature (0.0-1.0) based on the instruction:
    - Very low temperature (0.2-0.3): For "almost exactly the same" requests with minor fixes (e.g., "regenerate almost exactly the same, avoid weird right arm", "keep everything identical except fix X", "same scene just fix Y", "almost identical but correct Z")
    - Low temperature (0.3-0.4): For precise, minimal changes (e.g., "keep scene same, change hair color", "keep everything the same but...", "only change...")
@@ -58,16 +59,15 @@ Your task:
    - Medium-high temperature (0.7-0.8): For significant visual changes that require substantial variation (e.g., "make it nighttime", "make it daytime", "change the time of day", "completely different lighting")
    - High temperature (0.8-1.0): For complete regeneration (e.g., "completely regenerate", "start over", "completely change", "redo this scene")
 4. Preserve visual style, character consistency, and scene coherence
-5. Keep the appended modification concise (under 50 words typically)
-6. Maintain reference image compatibility
+5. Maintain reference image compatibility
 
-CRITICAL: Always APPEND to the original prompt. Do NOT rewrite it. The appended text will override any conflicting features listed in the original prompt above.
+CRITICAL: Return ONLY the modification text to append. Do NOT include the original prompt. The modification text will be automatically appended to the original prompt. The appended text will override any conflicting features listed in the original prompt.
 
 IMPORTANT: When user says "almost exactly the same", "almost identical", "keep everything the same", or similar phrases indicating minimal change, use temperature 0.2-0.3 to maximize consistency.
 
 Output JSON format:
 {
-  "prompt": "original prompt text, appended modification",
+  "modification": "modification text to append (100-200 words if needed)",
   "temperature": 0.3,
   "reasoning": "brief explanation of temperature choice"
 }
@@ -138,9 +138,9 @@ Recent Conversation (last 3 messages):
 
     user_prompt += """
 
-APPEND the user's instruction to the original prompt. Do NOT rewrite the entire prompt. 
-The appended text should override any conflicting features mentioned in the original prompt above.
-Format: "{original_prompt}, {your appended modification based on user instruction}"."""
+Generate ONLY the modification text to append. Do NOT include the original prompt.
+The modification text will be automatically appended to the original prompt as: "{original_prompt}, {your modification}".
+The appended text should override any conflicting features mentioned in the original prompt above."""
 
     return user_prompt
 
@@ -438,7 +438,12 @@ async def modify_prompt_with_llm(
         # Parse JSON response
         try:
             result = json.loads(content)
-            modified_prompt = result.get("prompt", "").strip()
+            # LLM returns "modification" field (not "prompt")
+            modification_text = result.get("modification", "").strip()
+            # Fallback to "prompt" field for backward compatibility
+            if not modification_text:
+                modification_text = result.get("prompt", "").strip()
+            
             temperature = result.get("temperature", 0.7)  # Default to 0.7 if missing
             reasoning = result.get("reasoning", "")
             
@@ -453,43 +458,27 @@ async def modify_prompt_with_llm(
                 )
                 temperature = 0.7
             
-            # If prompt is empty, try to extract from text fallback
-            if not modified_prompt:
+            # If modification is empty, try to extract from text fallback
+            if not modification_text:
                 logger.warning(
-                    f"Empty prompt in JSON response, attempting text parsing fallback",
+                    f"Empty modification in JSON response, attempting text parsing fallback",
                     extra={"job_id": str(job_id) if job_id else None}
                 )
-                modified_prompt = parse_llm_prompt_response(content)
+                modification_text = parse_llm_prompt_response(content)
             
-            # Safety check: Ensure we're appending, not rewriting
-            # Check if the original prompt is contained in the modified prompt
-            # If not, the LLM likely returned just the modification, so we append it
-            original_prompt_lower = original_prompt.lower().strip()
-            modified_prompt_lower = modified_prompt.lower().strip()
+            # Always append the modification to the original prompt
+            # This guarantees 100% reuse of the original prompt
+            modified_prompt = f"{original_prompt}, {modification_text}"
             
-            # Check if original prompt appears in modified (allowing for some variation)
-            # We check if first 30 chars of original appear in modified, or if modified is much shorter
-            original_start = original_prompt_lower[:30]
-            contains_original = original_start in modified_prompt_lower
-            
-            # If modified prompt is much shorter than original and doesn't contain original, it's likely just the modification
-            is_just_modification = (
-                not contains_original and 
-                len(modified_prompt) < len(original_prompt) * 0.7 and
-                len(modified_prompt) < 200  # Reasonable modification length
+            logger.debug(
+                f"Appended modification to original prompt",
+                extra={
+                    "job_id": str(job_id) if job_id else None,
+                    "original_length": len(original_prompt),
+                    "modification_length": len(modification_text),
+                    "final_length": len(modified_prompt)
+                }
             )
-            
-            if is_just_modification:
-                logger.info(
-                    f"LLM returned modification only (not full prompt), appending to original",
-                    extra={
-                        "job_id": str(job_id) if job_id else None,
-                        "original_length": len(original_prompt),
-                        "modification_length": len(modified_prompt)
-                    }
-                )
-                # Append the modification to the original prompt
-                modified_prompt = f"{original_prompt}, {modified_prompt}"
             
             logger.info(
                 f"Successfully parsed JSON response from LLM",
@@ -513,12 +502,14 @@ async def modify_prompt_with_llm(
             )
             
         except json.JSONDecodeError as e:
-            # Fallback: Try to extract prompt from text response
+            # Fallback: Try to extract modification from text response
             logger.warning(
                 f"Failed to parse JSON response, falling back to text parsing: {e}",
                 extra={"job_id": str(job_id) if job_id else None, "response_preview": content[:200]}
             )
-            modified_prompt = parse_llm_prompt_response(content)
+            modification_text = parse_llm_prompt_response(content)
+            # Always append the modification to the original prompt
+            modified_prompt = f"{original_prompt}, {modification_text}"
             temperature = 0.7  # Default fallback temperature
             reasoning = "JSON parsing failed, using default temperature"
             
