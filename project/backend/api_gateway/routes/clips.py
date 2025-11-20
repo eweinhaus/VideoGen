@@ -20,6 +20,7 @@ from shared.logging import get_logger
 from shared.errors import ValidationError, GenerationError
 from api_gateway.dependencies import get_current_user, verify_job_ownership
 from api_gateway.services.event_publisher import publish_event
+from api_gateway.services.queue_service import enqueue_regeneration_job
 from modules.clip_regenerator.data_loader import (
     load_clips_from_job_stages,
     load_clip_prompts_from_job_stages,
@@ -852,6 +853,7 @@ class RegenerationRequest(BaseModel):
     
     instruction: str
     conversation_history: List[Dict[str, str]] = []
+    clip_indices: Optional[List[int]] = None  # For multi-clip regeneration
 
 
 def _create_event_publisher(job_id: str):
@@ -871,34 +873,45 @@ def _create_event_publisher(job_id: str):
     return publish
 
 
-@router.post("/jobs/{job_id}/clips/{clip_index}/regenerate")
+@router.post("/jobs/{job_id}/clips/regenerate")
 async def regenerate_clip_endpoint(
     job_id: str = Path(...),
-    clip_index: int = Path(...),
     request: RegenerationRequest = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Regenerate a single clip based on user instruction.
+    Regenerate clips based on user instruction.
+    
+    Supports multi-clip regeneration by processing clips in parallel via the worker queue.
     
     Args:
         job_id: Job ID
-        clip_index: Index of clip to regenerate (0-based)
-        request: Regeneration request with instruction and conversation history
+        request: Regeneration request with instruction, conversation history, and clip_indices
         current_user: Current authenticated user
         
     Returns:
-        JSON response with regeneration_id, estimated_cost, estimated_time, status, template_matched
+        JSON response with regeneration_id, status, clip_indices, estimated_time
         
     Raises:
         HTTPException: 404 if job/clip not found, 403 if access denied, 400 if invalid, 409 if concurrent regeneration
     """
     try:
+        # Determine which clip index(es) to use
+        # clip_indices must be provided in request body
+        if not request.clip_indices or len(request.clip_indices) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No clip indices provided for regeneration."
+            )
+        
+        target_clip_indices = request.clip_indices
+        
         logger.info(
             f"Regeneration request received",
             extra={
                 "job_id": job_id,
-                "clip_index": clip_index,
+                "clip_indices": target_clip_indices,
+                "total_clips_requested": len(target_clip_indices),
                 "instruction_length": len(request.instruction) if request.instruction else 0,
                 "conversation_history_length": len(request.conversation_history) if request.conversation_history else 0,
                 "user_id": current_user.get("user_id")
@@ -938,7 +951,7 @@ async def regenerate_clip_endpoint(
                 f"Validation error during lock acquisition: {error_msg}",
                 extra={
                     "job_id": job_id,
-                    "clip_index": clip_index,
+                    "clip_index": primary_clip_index,
                     "error_message": error_msg,
                     "error_type": type(e).__name__
                 }
@@ -960,7 +973,7 @@ async def regenerate_clip_endpoint(
                 f"EXCEPTION_DURING_LOCK_ACQUISITION: Failed to acquire lock for regeneration",
                 extra={
                     "job_id": job_id,
-                    "clip_index": clip_index,
+                    "clip_index": primary_clip_index,
                     "error_type": error_type,
                     "error_message": error_str,
                     "error_args": e.args if hasattr(e, 'args') else None,
@@ -1007,264 +1020,48 @@ async def regenerate_clip_endpoint(
                 detail=error_detail
             )
         
-        # 4. Validate instruction (quick validation before background task)
+        # 4. Validate instruction (quick validation before enqueueing)
         if not request.instruction or not request.instruction.strip():
-            # Restore job status on error
-            await update_job_status(UUID(job_id), "completed")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Instruction cannot be empty"
             )
         
-        # 5. Create event publisher wrapper
-        event_pub = _create_event_publisher(job_id)
-        
-        # Note: Clip validation, budget check, and data loading moved to background task
-        # to avoid HTTP timeout. Only critical validations (ownership, lock, instruction)
-        # are done in the initial request.
-        
-        # Extract user_id for analytics tracking
-        user_id = UUID(current_user["user_id"]) if current_user.get("user_id") else None
-        
-        # Generate regeneration ID
+        # 5. Generate regeneration ID
         regeneration_id = str(uuid.uuid4())
         
-        # Start regeneration in background task to avoid HTTP timeout
-        # The regeneration can take several minutes (video generation alone can take 240s)
-        async def background_regeneration():
-            """Background task to run regeneration without blocking HTTP response."""
-            try:
-                # Validate clip_index bounds (moved here to avoid timeout)
-                logger.debug(
-                    f"Loading clips from job_stages",
-                    extra={"job_id": job_id, "clip_index": clip_index}
-                )
-                clips = await load_clips_from_job_stages(UUID(job_id))
-                if not clips:
-                    logger.error(
-                        f"Clips not found for job",
-                        extra={
-                            "job_id": job_id,
-                            "clip_index": clip_index
-                        }
-                    )
-                    # Restore job status on error
-                    await update_job_status(UUID(job_id), "completed")
-                    await event_pub("regeneration_failed", {
-                        "regeneration_id": regeneration_id,
-                        "error": "Clips not found for this job. The job may not have completed video generation yet, or the clips data is incomplete.",
-                        "error_type": "validation"
-                    })
-                    return
-                
-                logger.debug(
-                    f"Clips loaded successfully",
-                    extra={
-                        "job_id": job_id,
-                        "total_clips": clips.total_clips,
-                        "successful_clips": clips.successful_clips,
-                        "failed_clips": clips.failed_clips,
-                        "requested_clip_index": clip_index,
-                        "available_clip_indices": [c.clip_index for c in clips.clips]
-                    }
-                )
-                
-                # Check if the specific clip_index exists in the loaded clips
-                clip_exists = any(c.clip_index == clip_index for c in clips.clips)
-                if not clip_exists:
-                    available_indices = [c.clip_index for c in clips.clips]
-                    # Restore job status on error
-                    await update_job_status(UUID(job_id), "completed")
-                    await event_pub("regeneration_failed", {
-                        "regeneration_id": regeneration_id,
-                        "error": f"Clip with index {clip_index} not found. Available clip indices: {available_indices if available_indices else 'none'}.",
-                        "error_type": "validation"
-                    })
-                    return
-                
-                # Budget enforcement (moved here to avoid timeout)
-                try:
-                    cost_tracker = CostTracker()
-                    # Estimate regeneration cost (LLM + video generation)
-                    estimated_cost = Decimal("0.15")
-                    budget_limit = Decimal("2000.00")
-                    
-                    budget_ok = await cost_tracker.check_budget(
-                        job_id=UUID(job_id),
-                        new_cost=estimated_cost,
-                        limit=budget_limit
-                    )
-                    
-                    if not budget_ok:
-                        # Restore job status on budget exceeded
-                        await update_job_status(UUID(job_id), "completed")
-                        await event_pub("regeneration_failed", {
-                            "regeneration_id": regeneration_id,
-                            "error": f"Budget limit exceeded. Estimated cost: ${estimated_cost}, limit: ${budget_limit}",
-                            "error_type": "budget"
-                        })
-                        return
-                except BudgetExceededError as e:
-                    # Restore job status on budget exceeded
-                    await update_job_status(UUID(job_id), "completed")
-                    await event_pub("regeneration_failed", {
-                        "regeneration_id": regeneration_id,
-                        "error": str(e),
-                        "error_type": "budget"
-                    })
-                    return
-                except Exception as e:
-                    # Don't block regeneration if budget check fails (log and continue)
-                    logger.warning(
-                        f"Budget check failed: {e}, proceeding anyway",
-                        extra={"job_id": job_id}
-                    )
-                
-                logger.info(
-                    f"Starting regeneration process",
-                    extra={
-                        "job_id": job_id,
-                        "clip_index": clip_index,
-                        "instruction": request.instruction.strip(),
-                        "total_clips": clips.total_clips
-                    }
-                )
-                
-                result = await regenerate_clip_with_recomposition(
-                    job_id=UUID(job_id),
-                    clip_index=clip_index,
-                    user_instruction=request.instruction.strip(),
-                    user_id=user_id,
-                    conversation_history=request.conversation_history,
-                    event_publisher=event_pub
-                )
-                
-                # Status is already updated to "completed" by regenerate_clip_with_recomposition
-                logger.info(
-                    f"Clip regeneration with recomposition completed successfully",
-                    extra={
-                        "job_id": job_id,
-                        "clip_index": clip_index,
-                        "template_used": result.template_used,
-                        "cost": str(result.cost),
-                        "video_url": result.video_output.video_url if result.video_output else None
-                    }
-                )
-                
-                # Save regenerated clip to clip_versions table
-                if result.clip:
-                    try:
-                        db = DatabaseClient()
-                        # Get the next version number (highest existing + 1, or 2 if none exist)
-                        version_result = await db.table("clip_versions").select("version_number").eq(
-                            "job_id", str(job_id)
-                        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
-                        
-                        next_version = 2  # Default to version 2 if no versions exist
-                        if version_result.data and len(version_result.data) > 0:
-                            next_version = version_result.data[0].get("version_number", 1) + 1
-                        
-                        # Mark all previous versions as not current
-                        await db.table("clip_versions").update({"is_current": False}).eq(
-                            "job_id", str(job_id)
-                        ).eq("clip_index", clip_index).execute()
-                        
-                        # Get thumbnail if available
-                        thumbnail_url = None
-                        try:
-                            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
-                                "job_id", str(job_id)
-                            ).eq("clip_index", clip_index).limit(1).execute()
-                            if thumb_result.data and len(thumb_result.data) > 0:
-                                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
-                        except Exception:
-                            pass  # Table may not exist
-                        
-                        # Save regenerated clip as new version
-                        version_data = {
-                            "job_id": str(job_id),
-                            "clip_index": clip_index,
-                            "version_number": next_version,
-                            "video_url": result.clip.video_url,
-                            "thumbnail_url": thumbnail_url,
-                            "prompt": result.modified_prompt,
-                            "user_instruction": request.instruction.strip(),
-                            "cost": float(result.cost) if result.cost else 0.0,
-                            "duration": float(result.clip.actual_duration) if result.clip.actual_duration else None,
-                            "is_current": True,  # This is the current version
-                            "created_at": "now()"
-                        }
-                        
-                        await db.table("clip_versions").insert(version_data).execute()
-                        logger.info(
-                            f"Saved regenerated clip to clip_versions as version {next_version}",
-                            extra={
-                                "job_id": job_id,
-                                "clip_index": clip_index,
-                                "version_number": next_version,
-                                "video_url": result.clip.video_url
-                            }
-                        )
-                    except Exception as e:
-                        # Don't fail regeneration if clip_versions save fails, but log the warning
-                        logger.warning(
-                            f"Failed to save regenerated clip to clip_versions: {e}",
-                            extra={"job_id": job_id, "clip_index": clip_index},
-                            exc_info=True
-                        )
-                
-                # Publish completion event (event name matches frontend expectation: "regeneration_complete")
-                await event_pub("regeneration_complete", {
-                    "sequence": 1000,
-                    "clip_index": clip_index,
-                    "new_clip_url": result.clip.video_url if result.clip else None,
-                    "cost": float(result.cost),
-                    "video_url": result.video_output.video_url if result.video_output else None,
-                    "temperature": result.temperature,
-                    "seed": result.seed
-                })
-                
-            except ValidationError as e:
-                # Restore job status on validation error
-                await update_job_status(UUID(job_id), "completed")
-                logger.warning(
-                    f"Validation error during regeneration: {e}",
-                    extra={"job_id": job_id, "clip_index": clip_index}
-                )
-                await event_pub("regeneration_failed", {
+        # 6. Enqueue regeneration job to worker (instead of background task)
+        # Worker will process regeneration with proper queue management and resilience
+        try:
+            await enqueue_regeneration_job(
+                job_id=job_id,
+                user_id=current_user["user_id"],
+                clip_indices=target_clip_indices,
+                user_instruction=request.instruction.strip(),
+                conversation_history=request.conversation_history or [],
+                regeneration_id=regeneration_id
+            )
+            
+            logger.info(
+                f"Regeneration job enqueued successfully",
+                extra={
+                    "job_id": job_id,
                     "regeneration_id": regeneration_id,
-                    "error": str(e),
-                    "error_type": "validation"
-                })
-            except GenerationError as e:
-                # Restore job status on generation error
-                await update_job_status(UUID(job_id), "completed")
-                logger.error(
-                    f"Generation error during regeneration: {e}",
-                    extra={"job_id": job_id, "clip_index": clip_index},
-                    exc_info=True
-                )
-                await event_pub("regeneration_failed", {
-                    "regeneration_id": regeneration_id,
-                    "error": str(e),
-                    "error_type": "generation"
-                })
-            except Exception as e:
-                # Restore job status on unexpected error
-                await update_job_status(UUID(job_id), "completed")
-                logger.error(
-                    f"Unexpected error during regeneration: {e}",
-                    extra={"job_id": job_id, "clip_index": clip_index},
-                    exc_info=True
-                )
-                await event_pub("regeneration_failed", {
-                    "regeneration_id": regeneration_id,
-                    "error": str(e),
-                    "error_type": "unexpected"
-                })
-        
-        # Start background task
-        asyncio.create_task(background_regeneration())
+                    "clip_indices": target_clip_indices
+                }
+            )
+        except Exception as e:
+            # Release lock if enqueue fails
+            await update_job_status(UUID(job_id), "completed")
+            logger.error(
+                f"Failed to enqueue regeneration job: {e}",
+                extra={"job_id": job_id, "regeneration_id": regeneration_id},
+                exc_info=True
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start regeneration: {str(e)}"
+            )
         
         # Return immediately with 202 Accepted status
         # Client should listen to SSE stream for progress updates
@@ -1272,9 +1069,10 @@ async def regenerate_clip_endpoint(
             status_code=status.HTTP_202_ACCEPTED,
             content={
                 "regeneration_id": regeneration_id,
-                "status": "processing",
-                "message": "Regeneration started. Listen to SSE stream for progress updates.",
-                "estimated_time": 240,  # ~4 minutes for clip regeneration + recomposition
+                "status": "queued",
+                "message": "Regeneration queued. Listen to SSE stream for progress updates.",
+                "clip_indices": target_clip_indices,
+                "estimated_time": 240 * len(target_clip_indices),  # ~4 minutes per clip
                 "stream_url": f"/api/v1/jobs/{job_id}/stream"
             }
         )

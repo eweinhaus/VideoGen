@@ -676,25 +676,26 @@ export function ClipComparison({
             
             {/* Version management buttons */}
             {regeneratedClip && onRevert && clipIndex !== undefined && (
-              <div className="flex items-center gap-3 w-full justify-center">
+              <div className="flex flex-col items-center gap-3 w-full">
                 <Button
                   variant="outline"
                   onClick={async () => {
                     try {
-                      await onRevert(clipIndex, 1) // Revert to version 1 (original)
+                      await onRevert(clipIndex, leftClip.version_number) // Revert to the original version being shown
                       onClose() // Close modal after successful revert
                     } catch (error) {
                       console.error("Failed to revert clip:", error)
                       setError(error instanceof Error ? error.message : "Failed to revert clip")
                     }
                   }}
-                  className="text-orange-600 border-orange-600 hover:bg-orange-50 flex-1"
+                  className="text-orange-600 border-orange-600 hover:bg-orange-50 min-w-[200px]"
                 >
                   <RotateCcw className="h-4 w-4 mr-2" />
-                  Keep Old Video
+                  Use Original Version (v{leftClip.version_number})
                 </Button>
-                <div className="text-xs text-muted-foreground text-center max-w-xs">
-                  Use this to revert to the previous version if you prefer the old video
+                <div className="text-xs text-muted-foreground text-center max-w-md">
+                  This will re-stitch the full video using the original clip version (v{leftClip.version_number}) 
+                  instead of the regenerated version (v{rightClip?.version_number}).
                 </div>
               </div>
             )}

@@ -70,6 +70,7 @@ export interface ClipListResponse {
 export interface RegenerationRequest {
   instruction: string
   conversation_history?: Array<{ role: string; content: string }>
+  clip_indices?: number[]  // For multi-clip regeneration
 }
 
 export interface RegenerationResponse {
