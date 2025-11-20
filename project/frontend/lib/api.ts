@@ -287,14 +287,13 @@ export async function getJobClips(jobId: string): Promise<import("@/types/api").
 
 export async function regenerateClip(
   jobId: string,
-  clipIndex: number,
   regenerationRequest: RegenerationRequest
 ): Promise<RegenerationResponse> {
   // Use 15 second timeout for regeneration requests (initial response)
   // Only critical validations happen in initial request, rest moved to background task
   // Actual regeneration happens async with SSE events
   return request<RegenerationResponse>(
-    `/api/v1/jobs/${jobId}/clips/${clipIndex}/regenerate`,
+    `/api/v1/jobs/${jobId}/clips/regenerate`,
     {
       method: "POST",
       body: JSON.stringify(regenerationRequest),

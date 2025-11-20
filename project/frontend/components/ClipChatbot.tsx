@@ -78,7 +78,7 @@ export function ClipChatbot({
   const [progress, setProgress] = useState<number | null>(null)
   const [templateMatched, setTemplateMatched] = useState<string | null>(null)
   const [lastInstruction, setLastInstruction] = useState<string | null>(null)
-  const [lastClipIndex, setLastClipIndex] = useState<number | null>(null)
+  const [lastClipIndices, setLastClipIndices] = useState<number[]>([])
   const [clips, setClips] = useState<ClipData[]>([])
   const [selectedClipIndices, setSelectedClipIndices] = useState<number[]>([])
   const [loadingClips, setLoadingClips] = useState(true)
@@ -594,7 +594,7 @@ export function ClipChatbot({
     setCostEstimate(null)
     setTemplateMatched(null)
     setLastInstruction(userMessage) // Store for retry
-    setLastClipIndex(clipIndices[0]) // Store first clip for retry
+    setLastClipIndices(clipIndices) // Store all clip indices for retry
 
     // Add user message to conversation
     const newUserMessage: Message = {
@@ -627,10 +627,8 @@ export function ClipChatbot({
     saveConversationHistory()
 
     try {
-      // Call regeneration API for each selected clip
-      // Send all selected clip indices in the request
-      const firstClipIndex = clipIndices[0]
-      const response = await regenerateClip(jobId, firstClipIndex, {
+      // Call regeneration API with all selected clip indices
+      const response = await regenerateClip(jobId, {
         instruction: userMessage,
         conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 messages
         clip_indices: clipIndices, // Send all selected clips
@@ -752,7 +750,7 @@ export function ClipChatbot({
   }
 
   const handleRetry = async () => {
-    if (!lastInstruction || !lastClipIndex || isProcessing) {
+    if (!lastInstruction || !lastClipIndices || lastClipIndices.length === 0 || isProcessing) {
       return
     }
 
@@ -769,10 +767,11 @@ export function ClipChatbot({
     addSystemMessage("Retrying regeneration...", "info")
 
     try {
-      // Call regeneration API directly with last instruction
-      const response = await regenerateClip(jobId, lastClipIndex, {
+      // Call regeneration API directly with last instruction and clip indices
+      const response = await regenerateClip(jobId, {
         instruction: lastInstruction,
         conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 messages
+        clip_indices: lastClipIndices, // Send all previously selected clips
       })
 
       // Update cost estimate
