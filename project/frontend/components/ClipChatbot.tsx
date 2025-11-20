@@ -729,15 +729,15 @@ export function ClipChatbot({
 
         {/* Clip Thumbnails Row */}
         {!loadingClips && clips.length > 0 && (
-          <div className="border-t px-3 py-2">
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
+          <div className="border-t px-3 py-3">
+            <div className="flex gap-2 overflow-x-auto overflow-y-hidden pb-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent" style={{ minHeight: "100px" }}>
               {clips.map((clip) => {
                 const timestampRange = `${formatTimestamp(clip.timestamp_start)} - ${formatTimestamp(clip.timestamp_end)}`
                 return (
                   <div
                     key={clip.clip_index}
                     className="relative flex-shrink-0"
-                    style={{ width: "72px" }}
+                    style={{ width: "120px" }}
                   >
                     <button
                       type="button"
@@ -748,7 +748,7 @@ export function ClipChatbot({
                       disabled={isProcessing}
                       className={cn(
                         "relative w-full rounded overflow-hidden border-2 transition-all",
-                        "flex flex-col",
+                        "flex flex-col h-full",
                         selectedClipIndex === clip.clip_index
                           ? "border-primary ring-2 ring-primary/20"
                           : "border-muted hover:border-primary/50",
@@ -756,14 +756,14 @@ export function ClipChatbot({
                       )}
                     >
                       {/* Thumbnail */}
-                      <div className="relative w-full h-10 bg-muted">
+                      <div className="relative w-full h-16 bg-muted">
                         {clip.thumbnail_url ? (
                           <Image
                             src={clip.thumbnail_url}
                             alt={`Clip ${clip.clip_index + 1}`}
                             fill
                             className="object-cover"
-                            sizes="72px"
+                            sizes="120px"
                             onError={(e) => {
                               console.warn(`Failed to load thumbnail for clip ${clip.clip_index + 1}`)
                               e.currentTarget.style.display = 'none'
@@ -782,8 +782,8 @@ export function ClipChatbot({
                          {clip.clip_index + 1}
                        </div>
                      </div>
-                     {/* Timestamp info */}
-                     <div className="bg-muted/50 px-1 py-0.5 text-xs text-muted-foreground leading-tight text-center font-medium">
+                     {/* Timestamp info - single line */}
+                     <div className="bg-muted/50 px-1 py-1.5 text-xs text-muted-foreground leading-none text-center font-medium whitespace-nowrap">
                        {timestampRange}
                      </div>
                    </button>
@@ -809,7 +809,7 @@ export function ClipChatbot({
                )
              })}
            </div>
-           <p className="text-xs text-muted-foreground mt-1 font-medium">
+           <p className="text-xs text-muted-foreground mt-2 font-medium">
               {selectedClipIndex !== null ? (
                 <>
                   Clip {selectedClipIndex + 1} selected. Click &quot;Compare&quot; to view versions.

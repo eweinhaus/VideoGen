@@ -320,6 +320,18 @@ export default function JobProgressPage() {
               jobId={jobId} 
               seekTo={selectedClipTimestamp}
             />
+            {/* Clip Selector - right below video player */}
+            <div className="w-full">
+              <ClipSelector
+                jobId={jobId}
+                onClipSelect={(clipIndex, timestampStart) => {
+                  setSelectedClipIndex(clipIndex)
+                  setSelectedClipTimestamp(timestampStart)
+                }}
+                selectedClipIndex={selectedClipIndex}
+                totalClips={undefined}
+              />
+            </div>
             <ProgressTracker
               jobId={jobId}
               onComplete={handleComplete}
@@ -449,35 +461,6 @@ export default function JobProgressPage() {
               <div className="space-y-6">
                 {isCompleted && job.videoUrl ? (
                   <>
-                    {/* Scrollable content below - clip selector */}
-                    <Card>
-                      <CardContent className="pt-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold">Select a Clip to Modify</h3>
-                          {selectedClipIndex !== undefined && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={handleCompare}
-                              disabled={loadingComparison}
-                            >
-                              <GitCompare className="h-4 w-4 mr-2" />
-                              {loadingComparison ? "Loading..." : "Compare Versions"}
-                            </Button>
-                          )}
-                        </div>
-                        <ClipSelector
-                          jobId={jobId}
-                          onClipSelect={(clipIndex, timestampStart) => {
-                            setSelectedClipIndex(clipIndex)
-                            setSelectedClipTimestamp(timestampStart)
-                          }}
-                          selectedClipIndex={selectedClipIndex}
-                          totalClips={undefined}
-                        />
-                      </CardContent>
-                    </Card>
-                    
                     {/* Floating ClipChatbot - positioned fixed at bottom-left */}
                     <ClipChatbot
                       jobId={jobId}
