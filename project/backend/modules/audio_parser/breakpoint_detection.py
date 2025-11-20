@@ -387,7 +387,7 @@ def detect_harmonic_breakpoints(
         return breakpoints
     
     # Extract chroma features
-    chroma = librosa.feature.chroma(y=segment_audio, sr=sr, hop_length=hop_length)
+    chroma = librosa.feature.chroma_stft(y=segment_audio, sr=sr, hop_length=hop_length)
     times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sr, hop_length=hop_length)
     times = times + segment_start  # Convert to absolute time
     
