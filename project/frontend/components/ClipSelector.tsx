@@ -61,6 +61,7 @@ export function ClipSelector({
   const [styleTransferSource, setStyleTransferSource] = useState<number | null>(null)
   const [showStyleTransfer, setShowStyleTransfer] = useState(false)
   const [showMultiClip, setShowMultiClip] = useState(false)
+  const [failedThumbnails, setFailedThumbnails] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     let mounted = true
@@ -215,7 +216,7 @@ export function ClipSelector({
               <CardContent className="p-0">
                 {/* Thumbnail */}
                 <div className="relative aspect-video w-full overflow-hidden rounded-t-lg bg-muted">
-                  {clip.thumbnail_url ? (
+                  {clip.thumbnail_url && !failedThumbnails.has(clip.clip_index) ? (
                     <Image
                       src={clip.thumbnail_url}
                       alt={`Clip ${clip.clip_index + 1} thumbnail`}
@@ -223,6 +224,10 @@ export function ClipSelector({
                       className="object-cover"
                       loading="lazy"
                       sizes="(max-width: 768px) 50vw, (max-width: 1024px) 33vw, 25vw"
+                      onError={() => {
+                        console.warn(`Failed to load thumbnail for clip ${clip.clip_index + 1}`)
+                        setFailedThumbnails(prev => new Set(prev).add(clip.clip_index))
+                      }}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center bg-muted">

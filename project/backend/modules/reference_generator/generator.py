@@ -223,6 +223,15 @@ async def generate_image(
             "asymmetric face, face distortion, face blur, low detail face, "
             "unclear face, hazy face, soft focus face, out of focus face"
         )
+    elif image_type == "object":
+        # Enhanced negative prompt for objects to prevent multiple objects
+        negative_prompt = (
+            "blurry, static, low quality, distorted, watermark, text overlay, "
+            "cartoon, illustration, painting, drawing, "
+            "multiple objects, two objects, three objects, many objects, "
+            "several items, group of objects, pattern of objects, "
+            "scattered objects, multiple items, array of objects"
+        )
     else:
         negative_prompt = (
             "blurry, static, low quality, distorted, watermark, text overlay, "

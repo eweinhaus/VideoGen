@@ -434,6 +434,9 @@ def synthesize_object_prompt(
     # Start with product photography keywords
     fragments.append("professional product photography")
 
+    # CRITICAL: Specify single object to prevent multiple objects in the same image
+    fragments.append("single object, one object only")
+
     # Add object description with all features
     object_desc = (
         f"{obj.name}, "

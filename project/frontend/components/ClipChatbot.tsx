@@ -528,13 +528,18 @@ export function ClipChatbot({
                   {message.attachedClipIndex !== undefined ? (
                     <div className="flex items-center gap-2">
                       {message.thumbnailUrl && (
-                        <div className="relative w-12 h-8 rounded overflow-hidden flex-shrink-0">
+                        <div className="relative w-12 h-8 rounded overflow-hidden flex-shrink-0 bg-muted">
                           <Image
                             src={message.thumbnailUrl}
                             alt={`Clip ${message.attachedClipIndex + 1} thumbnail`}
                             fill
                             className="object-cover"
                             sizes="48px"
+                            onError={(e) => {
+                              console.warn(`Failed to load message thumbnail for clip ${message.attachedClipIndex + 1}`)
+                              // Hide thumbnail on error
+                              e.currentTarget.style.display = 'none'
+                            }}
                           />
                         </div>
                       )}
@@ -620,13 +625,18 @@ export function ClipChatbot({
                     className="flex items-center gap-2"
                   >
                     {clip.thumbnail_url && (
-                      <div className="relative w-8 h-5 rounded overflow-hidden">
+                      <div className="relative w-8 h-5 rounded overflow-hidden bg-muted">
                         <Image
                           src={clip.thumbnail_url}
                           alt={`Clip ${clip.clip_index + 1}`}
                           fill
                           className="object-cover"
                           sizes="32px"
+                          onError={(e) => {
+                            console.warn(`Failed to load thumbnail for clip ${clip.clip_index + 1}`)
+                            // Hide thumbnail on error
+                            e.currentTarget.style.display = 'none'
+                          }}
                         />
                       </div>
                     )}

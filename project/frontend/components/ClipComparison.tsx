@@ -439,6 +439,11 @@ export function ClipComparison({
                     fill
                     className="object-cover"
                     unoptimized
+                    onError={(e) => {
+                      console.warn("Failed to load left clip thumbnail")
+                      // Hide thumbnail on error - video will show instead
+                      e.currentTarget.style.display = 'none'
+                    }}
                   />
                 )}
                 {leftClip.video_url ? (
@@ -482,6 +487,11 @@ export function ClipComparison({
                         fill
                         className="object-cover"
                         unoptimized
+                        onError={(e) => {
+                          console.warn("Failed to load right clip thumbnail")
+                          // Hide thumbnail on error - video will show instead
+                          e.currentTarget.style.display = 'none'
+                        }}
                       />
                     )}
                     {rightClip.video_url ? (
