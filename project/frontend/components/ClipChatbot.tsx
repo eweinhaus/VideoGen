@@ -886,7 +886,7 @@ export function ClipChatbot({
 
   const handleRevert = async (clipIndex: number, versionNumber: number) => {
     try {
-      await revertClipToVersion(jobId, clipIndex, versionNumber)
+      const response = await revertClipToVersion(jobId, clipIndex, versionNumber)
       
       // Show success message in chat
       addSystemMessage(
@@ -894,24 +894,23 @@ export function ClipChatbot({
         "success"
       )
       
-      // Refresh clips to update thumbnails after revert
-      // Wait a bit for thumbnail to regenerate
+      // Wait for thumbnail to regenerate, then refresh EVERYTHING
       setTimeout(async () => {
         try {
-          const response = await getJobClips(jobId)
-          setClips(response.clips)
-          console.log(`✅ Refreshed clips after revert - thumbnails updated`)
+          // 1. Refresh chatbot's clips/thumbnails
+          const clipsResponse = await getJobClips(jobId)
+          setClips(clipsResponse.clips)
+          console.log(`✅ Refreshed chatbot clips after revert`)
+          
+          // 2. Trigger parent refresh for main ClipSelector thumbnails and video
+          if (onRegenerationComplete && response.video_url) {
+            onRegenerationComplete(response.video_url)
+            console.log(`✅ Triggered parent refresh after revert to v${versionNumber}`)
+          }
         } catch (err) {
-          console.error("Failed to refresh clips after revert:", err)
+          console.error("Failed to refresh after revert:", err)
         }
       }, 2000) // 2 second delay for thumbnail generation
-      
-      // Trigger regeneration complete callback if provided to update main video
-      if (onRegenerationComplete) {
-        // The backend will return the new video URL, but we need to refresh the job to get it
-        // For now, just notify that a revert happened
-        console.log(`✅ Reverted clip ${clipIndex} to version ${versionNumber}`)
-      }
       
       // DON'T close comparison modal - let user toggle back and forth between versions
       // The button text will update automatically based on activeVersion state in ClipComparison
