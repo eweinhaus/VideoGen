@@ -587,6 +587,11 @@ async def compare_clip_versions(
             
             if result.data and len(result.data) > 0:
                 metadata = result.data[0].get("metadata", {})
+                # Parse metadata if it's a string (JSON serialized)
+                if isinstance(metadata, str):
+                    import json
+                    metadata = json.loads(metadata)
+                
                 clips_wrapper = metadata.get("clips", {})
                 
                 # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
@@ -953,6 +958,11 @@ async def revert_clip_to_version(
             
             if metadata_result.data and len(metadata_result.data) > 0:
                 metadata = metadata_result.data[0].get("metadata", {})
+                # Parse metadata if it's a string (JSON serialized)
+                if isinstance(metadata, str):
+                    import json
+                    metadata = json.loads(metadata)
+                
                 clips_wrapper = metadata.get("clips", {})
                 
                 # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
