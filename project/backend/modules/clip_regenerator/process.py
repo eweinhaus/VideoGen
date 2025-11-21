@@ -445,7 +445,8 @@ async def regenerate_clip(
     user_instruction: str,
     user_id: Optional[UUID] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    event_publisher: Optional[callable] = None
+    event_publisher: Optional[callable] = None,
+    suppress_prompt_modified_event: bool = False
 ) -> RegenerationResult:
     """
     Regenerate a single clip based on user instruction.
@@ -952,10 +953,11 @@ async def regenerate_clip(
             }
         )
     
-    # Publish prompt_modified event
-    if event_publisher:
+    # Publish prompt_modified event (unless suppressed for batch sending in multi-clip mode)
+    if event_publisher and not suppress_prompt_modified_event:
         await event_publisher("prompt_modified", {
             "sequence": 3,
+            "clip_index": clip_index,  # Add clip_index so frontend can distinguish clips
             "modified_prompt": modified_prompt,
             "template_used": template_match.template_id if template_match else None,
             "temperature": temperature,
@@ -2129,4 +2131,275 @@ async def regenerate_clip_with_recomposition(
         temperature_reasoning=regeneration_result.temperature_reasoning,
         seed=regeneration_result.seed
     )
+
+
+async def recompose_after_regenerations(
+    job_id: UUID,
+    regenerated_clip_indices: List[int],
+    event_publisher: Optional[callable] = None
+) -> str:
+    """
+    Recompose video after multiple clips have been regenerated.
+    
+    This function is called ONCE after all clips finish regenerating in multi-clip mode.
+    It loads the latest version of all clips and recomposes the video.
+    
+    Args:
+        job_id: Job ID
+        regenerated_clip_indices: List of clip indices that were regenerated
+        event_publisher: Optional async callback(event_type, data) to publish events
+        
+    Returns:
+        Final video URL
+        
+    Raises:
+        ValidationError: If data loading fails
+        CompositionError: If recomposition fails permanently
+        RetryableError: If recomposition fails but is retryable
+    """
+    logger.info(
+        f"Starting recomposition after multiple clips regenerated",
+        extra={
+            "job_id": str(job_id),
+            "regenerated_clip_indices": regenerated_clip_indices,
+            "clip_count": len(regenerated_clip_indices)
+        }
+    )
+    
+    # Load latest clips (including all regenerated versions)
+    clips = await load_clips_from_job_stages(job_id)
+    if not clips:
+        logger.error(
+            f"Failed to load clips for recomposition",
+            extra={"job_id": str(job_id), "stage": "recomposition"}
+        )
+        raise ValidationError(f"Failed to load clips for job {job_id}")
+    
+    # CRITICAL: Replace regenerated clips with their latest versions from clip_versions
+    db = DatabaseClient()
+    for clip_index in regenerated_clip_indices:
+        # Find the clip position in the clips list
+        clip_position = None
+        for i, clip in enumerate(clips.clips):
+            if clip.clip_index == clip_index:
+                clip_position = i
+                break
+        
+        if clip_position is None:
+            logger.warning(
+                f"Regenerated clip {clip_index} not found in clips list, skipping",
+                extra={"job_id": str(job_id), "clip_index": clip_index}
+            )
+            continue
+        
+        # Get the latest version from clip_versions table
+        version_result = await db.table("clip_versions").select("*").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).eq("is_current", True).limit(1).execute()
+        
+        if version_result.data and len(version_result.data) > 0:
+            latest_version = version_result.data[0]
+            old_url = clips.clips[clip_position].video_url
+            new_url = latest_version["video_url"]
+            
+            # Update the clip URL to use the latest regenerated version
+            clips.clips[clip_position].video_url = new_url
+            
+            logger.info(
+                f"Replaced clip {clip_index} with latest version for recomposition",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "old_url": old_url,
+                    "new_url": new_url,
+                    "version_number": latest_version["version_number"]
+                }
+            )
+        else:
+            logger.warning(
+                f"No current version found for regenerated clip {clip_index}, using original",
+                extra={"job_id": str(job_id), "clip_index": clip_index}
+            )
+    
+    logger.debug(
+        f"Loaded clips for recomposition (with regenerated versions replaced)",
+        extra={
+            "job_id": str(job_id),
+            "total_clips": len(clips.clips),
+            "regenerated_clip_indices": regenerated_clip_indices,
+            "clip_urls": [clip.video_url for clip in clips.clips]
+        }
+    )
+    
+    # Load required data for Composer
+    try:
+        audio_url = await get_audio_url(job_id)
+        transitions = await load_transitions_from_job_stages(job_id)
+        beat_timestamps = await load_beat_timestamps_from_job_stages(job_id)
+        aspect_ratio = await get_aspect_ratio(job_id)
+        
+        logger.info(
+            f"Loaded Composer inputs for multi-clip recomposition",
+            extra={
+                "job_id": str(job_id),
+                "transitions_count": len(transitions),
+                "beat_timestamps_count": len(beat_timestamps) if beat_timestamps else 0,
+                "aspect_ratio": aspect_ratio,
+                "total_clips": clips.total_clips,
+                "has_audio_url": bool(audio_url)
+            }
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to load Composer inputs: {e}",
+            extra={
+                "job_id": str(job_id),
+                "error_type": type(e).__name__,
+                "stage": "composer_input_loading"
+            },
+            exc_info=True
+        )
+        raise ValidationError(f"Failed to load Composer inputs: {str(e)}") from e
+    
+    # Call Composer with updated Clips
+    try:
+        clip_urls = [clip.video_url for clip in clips.clips]
+        logger.info(
+            f"Starting video recomposition for {len(regenerated_clip_indices)} regenerated clips",
+            extra={
+                "job_id": str(job_id),
+                "total_clips": clips.total_clips,
+                "clip_urls": clip_urls,
+                "regenerated_clip_indices": regenerated_clip_indices
+            }
+        )
+        
+        video_output = await composer_process(
+            job_id=str(job_id),
+            clips=clips,
+            audio_url=audio_url,
+            transitions=transitions,
+            beat_timestamps=beat_timestamps,
+            aspect_ratio=aspect_ratio,
+            changed_clip_index=None  # Multiple clips changed
+        )
+        
+        logger.info(
+            f"Multi-clip recomposition completed successfully",
+            extra={
+                "job_id": str(job_id),
+                "video_url": video_output.video_url,
+                "duration": video_output.duration,
+                "composition_time": video_output.composition_time
+            }
+        )
+        
+        # Publish recomposition_complete event
+        if event_publisher:
+            await event_publisher("recomposition_complete", {
+                "sequence": 999,
+                "progress": 100,
+                "video_url": video_output.video_url,
+                "duration": video_output.duration,
+                "regenerated_clips": regenerated_clip_indices
+            })
+        
+        logger.info(
+            f"Skipping job_stages update to preserve original clip URLs for comparison",
+            extra={
+                "job_id": str(job_id),
+                "regenerated_clip_indices": regenerated_clip_indices,
+                "total_clips": clips.total_clips,
+                "note": "job_stages preserves original clips, clip_versions tracks regenerated versions"
+            }
+        )
+        
+    except CompositionError as e:
+        logger.error(
+            f"Composition failed permanently: {e}",
+            extra={
+                "job_id": str(job_id),
+                "regenerated_clip_indices": regenerated_clip_indices
+            },
+            exc_info=True
+        )
+        raise
+    except Exception as e:
+        if "retryable" in str(e).lower() or isinstance(e, RetryableError):
+            logger.warning(
+                f"Retryable composition error: {e}",
+                extra={
+                    "job_id": str(job_id),
+                    "regenerated_clip_indices": regenerated_clip_indices,
+                    "error_type": type(e).__name__
+                },
+                exc_info=True
+            )
+            raise RetryableError(f"Recomposition failed (retryable): {str(e)}") from e
+        else:
+            logger.error(
+                f"Unexpected recomposition error: {e}",
+                extra={
+                    "job_id": str(job_id),
+                    "regenerated_clip_indices": regenerated_clip_indices,
+                    "error_type": type(e).__name__
+                },
+                exc_info=True
+            )
+            raise CompositionError(f"Recomposition failed: {str(e)}") from e
+    
+    # Track regeneration cost and update job
+    from modules.clip_regenerator.cost_tracker import track_regeneration_cost
+    for clip_index in regenerated_clip_indices:
+        try:
+            await track_regeneration_cost(
+                job_id=job_id,
+                clip_index=clip_index,
+                cost=Decimal("0"),  # Cost already tracked during regeneration
+                status="completed"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to track cost for clip {clip_index}",
+                extra={"job_id": str(job_id), "clip_index": clip_index, "error": str(e)}
+            )
+    
+    # Update job status and video URL
+    from modules.clip_regenerator.status_manager import update_job_status_and_video_url
+    try:
+        logger.info(
+            f"Updating job status and video_url",
+            extra={
+                "job_id": str(job_id),
+                "regenerated_clip_indices": regenerated_clip_indices,
+                "new_video_url": video_output.video_url
+            }
+        )
+        await update_job_status_and_video_url(
+            job_id=job_id,
+            status="completed",
+            video_url=video_output.video_url
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to update job status/URL: {e}",
+            extra={
+                "job_id": str(job_id),
+                "video_url": video_output.video_url,
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        raise
+    
+    logger.info(
+        f"Recomposition after multiple clips completed successfully",
+        extra={
+            "job_id": str(job_id),
+            "regenerated_clip_indices": regenerated_clip_indices,
+            "video_url": video_output.video_url
+        }
+    )
+    
+    return video_output.video_url
 
