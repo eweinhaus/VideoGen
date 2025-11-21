@@ -584,9 +584,20 @@ async def compare_clip_versions(
             
             if result.data and len(result.data) > 0:
                 metadata = result.data[0].get("metadata", {})
-                clips_data = metadata.get("clips", [])
-                if clip_index < len(clips_data):
-                    current_clip_url = clips_data[clip_index].get("video_url", "")
+                clips_wrapper = metadata.get("clips", {})
+                
+                # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
+                # We need to access the nested "clips" array
+                if isinstance(clips_wrapper, dict):
+                    clips_list = clips_wrapper.get("clips", [])
+                elif isinstance(clips_wrapper, list):
+                    # Backward compatibility: if clips is a list directly
+                    clips_list = clips_wrapper
+                else:
+                    clips_list = []
+                
+                if clip_index < len(clips_list):
+                    current_clip_url = clips_list[clip_index].get("video_url", "")
                     
                     # Check if this URL matches any clip_version
                     if current_clip_url:
@@ -599,13 +610,25 @@ async def compare_clip_versions(
                             if version_match:
                                 active_version_number = int(version_match.group(1))
                                 logger.info(
-                                    f"Detected active version from URL: v{active_version_number}",
+                                    f"✅ Detected active version from URL: v{active_version_number}",
                                     extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
                                 )
+                        else:
+                            # URL doesn't have _v pattern, it's likely v1 (original)
+                            logger.info(
+                                f"✅ No version pattern in URL, defaulting to v1 (original)",
+                                extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                            )
+                else:
+                    logger.warning(
+                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
+                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
+                    )
         except Exception as e:
             logger.warning(
                 f"Failed to determine active version, defaulting to v1: {e}",
-                extra={"job_id": job_id, "clip_index": clip_index}
+                extra={"job_id": job_id, "clip_index": clip_index},
+                exc_info=True
             )
         
         # Build response
@@ -842,11 +865,28 @@ async def revert_clip_to_version(
             
             if metadata_result.data and len(metadata_result.data) > 0:
                 metadata = metadata_result.data[0].get("metadata", {})
-                clips_data = metadata.get("clips", [])
+                clips_wrapper = metadata.get("clips", {})
+                
+                # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
+                # We need to access the nested "clips" array
+                if isinstance(clips_wrapper, dict):
+                    clips_list = clips_wrapper.get("clips", [])
+                elif isinstance(clips_wrapper, list):
+                    # Backward compatibility: if clips is a list directly
+                    clips_list = clips_wrapper
+                else:
+                    clips_list = []
                 
                 # Update the specific clip's video_url in metadata
-                if clip_index < len(clips_data):
-                    clips_data[clip_index]["video_url"] = clip_to_revert.video_url
+                if clip_index < len(clips_list):
+                    clips_list[clip_index]["video_url"] = clip_to_revert.video_url
+                    
+                    # Update the metadata structure
+                    if isinstance(clips_wrapper, dict):
+                        clips_wrapper["clips"] = clips_list
+                        metadata["clips"] = clips_wrapper
+                    else:
+                        metadata["clips"] = clips_list
                     
                     # Save updated metadata back to job_stages
                     await db_client.table("job_stages").update({
@@ -854,12 +894,17 @@ async def revert_clip_to_version(
                     }).eq("job_id", job_id).eq("stage_name", "video_generator").execute()
                     
                     logger.info(
-                        f"Updated job_stages.metadata with reverted clip URL",
+                        f"✅ Updated job_stages.metadata with reverted clip URL",
                         extra={
                             "job_id": job_id,
                             "clip_index": clip_index,
                             "new_url": clip_to_revert.video_url
                         }
+                    )
+                else:
+                    logger.warning(
+                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
+                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
                     )
         except Exception as e:
             # Non-critical error - log but don't fail the revert
