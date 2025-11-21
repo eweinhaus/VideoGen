@@ -909,29 +909,31 @@ export function ClipChatbot({
         "success"
       )
       
-      // Refresh immediately - no delay needed
-      // Parent will handle triggering ClipSelector refresh via SSE or callback
-      getJobClips(jobId).then((clipsResponse) => {
-        // Add cache-busting to force immediate thumbnail refresh
-        const clipsWithCacheBusting = clipsResponse.clips.map(clip => ({
-          ...clip,
-          thumbnail_url: clip.thumbnail_url 
-            ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}t=${Date.now()}` 
-            : null
-        }))
-        
-        setClips(clipsWithCacheBusting)
-        console.log(`✅ Refreshed chatbot clips after revert, clip ${clipIndex} thumbnail:`, 
-          clipsWithCacheBusting.find(c => c.clip_index === clipIndex)?.thumbnail_url)
-        
-        // Trigger parent refresh for main ClipSelector thumbnails and video
-        if (onRegenerationComplete && response.video_url) {
-          onRegenerationComplete(response.video_url)
-          console.log(`✅ Triggered parent refresh after revert to v${versionNumber}`)
-        }
-      }).catch((err) => {
-        console.error("Failed to refresh after revert:", err)
-      })
+      // Wait briefly for backend thumbnail generation (500ms), then refresh
+      // This is much faster than the old 3s delay, but ensures thumbnail is ready
+      setTimeout(() => {
+        getJobClips(jobId).then((clipsResponse) => {
+          // Add cache-busting to force immediate thumbnail refresh
+          const clipsWithCacheBusting = clipsResponse.clips.map(clip => ({
+            ...clip,
+            thumbnail_url: clip.thumbnail_url 
+              ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}t=${Date.now()}` 
+              : null
+          }))
+          
+          setClips(clipsWithCacheBusting)
+          console.log(`✅ Refreshed chatbot clips after revert (with 500ms for thumbnail), clip ${clipIndex} thumbnail:`, 
+            clipsWithCacheBusting.find(c => c.clip_index === clipIndex)?.thumbnail_url)
+          
+          // Trigger parent refresh for main ClipSelector thumbnails and video
+          if (onRegenerationComplete && response.video_url) {
+            onRegenerationComplete(response.video_url)
+            console.log(`✅ Triggered parent refresh after revert to v${versionNumber}`)
+          }
+        }).catch((err) => {
+          console.error("Failed to refresh after revert:", err)
+        })
+      }, 500)
       
       // DON'T close comparison modal - let user toggle back and forth between versions
       // The button text will update automatically based on activeVersion state in ClipComparison

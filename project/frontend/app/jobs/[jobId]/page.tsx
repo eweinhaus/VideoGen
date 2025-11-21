@@ -135,9 +135,12 @@ export default function JobProgressPage() {
       // Refresh job to get updated video URL
       await fetchJob(jobId)
       
-      // Trigger ClipSelector refresh to update thumbnails immediately (no delay)
-      setClipRefreshTrigger(prev => prev + 1)
-      console.log("✅ ClipSelector refresh triggered immediately after revert")
+      // Wait briefly for backend thumbnail generation to complete (500ms)
+      // This is much faster than the old 2-3s delays, but ensures thumbnail is ready
+      setTimeout(() => {
+        setClipRefreshTrigger(prev => prev + 1)
+        console.log("✅ ClipSelector refresh triggered after revert (with 500ms for thumbnail generation)")
+      }, 500)
       
       // Show success message (you could add a toast notification here)
       console.log(`✅ Successfully reverted clip ${clipIndex} to version ${versionNumber}`)
