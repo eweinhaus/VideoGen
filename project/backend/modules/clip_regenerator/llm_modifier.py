@@ -100,6 +100,14 @@ def build_user_prompt(
     # Build conversation context
     conversation_text = ""
     if conversation_history:
+        # DEBUG: Log full conversation history to understand what we're getting
+        logger.debug(
+            f"Building conversation context from {len(conversation_history)} messages",
+            extra={
+                "total_messages": len(conversation_history),
+                "conversation_history": conversation_history
+            }
+        )
         recent_messages = conversation_history[-3:]  # Last 3 messages only
         conversation_lines = []
         for msg in recent_messages:
@@ -110,6 +118,10 @@ def build_user_prompt(
             elif role == "assistant":
                 conversation_lines.append(f"Assistant: {content}")
         conversation_text = "\n".join(conversation_lines)
+        logger.debug(
+            f"Built conversation context with {len(recent_messages)} recent messages",
+            extra={"conversation_text": conversation_text}
+        )
     
     # Build scene plan summary
     style_info = context.get("style_info", "Not specified")

@@ -1003,15 +1003,65 @@ async def generate_video_clip(
             
             # Use versioned filename for regenerations to preserve original
             if version_number and version_number > 1:
+                # Regeneration: Check the LATEST version number right before upload
+                # to avoid race conditions when multiple clips regenerate in parallel
+                from shared.database import DatabaseClient
+                db_for_version = DatabaseClient()
+                version_result = await db_for_version.table("clip_versions").select("version_number").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_prompt.clip_index).order("version_number", desc=True).limit(1).execute()
+                
+                # Calculate actual next version based on what's in DB right now
+                actual_next_version = 2  # Default to version 2 if no versions exist
+                if version_result.data and len(version_result.data) > 0:
+                    actual_next_version = version_result.data[0].get("version_number", 1) + 1
+                
+                # CRITICAL: Keep incrementing until we find a version that doesn't exist in storage
+                # This handles cases where DB and storage are out of sync (e.g., failed uploads)
+                max_attempts = 10  # Prevent infinite loop
+                for attempt in range(max_attempts):
+                    test_path = f"{job_id}/clip_{clip_prompt.clip_index}_v{actual_next_version}.mp4"
+                    
+                    # Check if file exists in storage
+                    try:
+                        # Try to get file info - if it exists, this won't error
+                        await storage.download_file("video-clips", test_path)
+                        # File exists, increment and try next version
+                        logger.info(
+                            f"Version {actual_next_version} already exists in storage, trying v{actual_next_version + 1}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "existing_version": actual_next_version,
+                                "next_version": actual_next_version + 1
+                            }
+                        )
+                        actual_next_version += 1
+                    except Exception:
+                        # File doesn't exist - we can use this version
+                        break
+                
+                # Use the actual next version (may be different from the one calculated earlier)
+                if actual_next_version != version_number:
+                    logger.warning(
+                        f"Version number changed during generation (race condition prevented)",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "originally_calculated": version_number,
+                            "actual_next_version": actual_next_version
+                        }
+                    )
+                
                 # Regeneration: use versioned filename (e.g., clip_4_v2.mp4, clip_4_v3.mp4)
-                clip_path = f"{job_id}/clip_{clip_prompt.clip_index}_v{version_number}.mp4"
+                clip_path = f"{job_id}/clip_{clip_prompt.clip_index}_v{actual_next_version}.mp4"
                 # Don't delete existing file - preserve original and previous versions
                 logger.info(
                     f"Using versioned filename for regeneration (preserving original)",
                     extra={
                         "job_id": str(job_id),
                         "clip_index": clip_prompt.clip_index,
-                        "version_number": version_number,
+                        "version_number": actual_next_version,
                         "clip_path": clip_path
                     }
                 )
