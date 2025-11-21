@@ -51,6 +51,36 @@ export interface ModelAspectRatiosResponse {
   default: string
 }
 
+export type CharacterAnalysis = {
+  age_range: string
+  gender_presentation: string
+  hair_color: string
+  hair_style: string
+  eye_color: string
+  build: string
+  height_bucket: string
+  skin_tone: string
+  style: string
+  distinctive_features: string[]
+  clothing?: string[]
+  confidence: number
+  confidence_binned: "low" | "medium" | "high"
+  confidence_per_attribute: Record<string, number>
+  analysis_version: string
+}
+
+export interface CharacterAnalysisResult {
+  image_url: string
+  analysis: CharacterAnalysis
+  warnings: string[]
+  used_cache: boolean
+}
+
+export interface CharacterAnalysisStartResponse {
+  job_id: string
+  status: "queued"
+}
+
 export interface ClipData {
   clip_index: number
   thumbnail_url: string | null

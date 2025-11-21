@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AudioUploader } from "@/components/AudioUploader"
 import { PromptInput } from "@/components/PromptInput"
 import { CharacterImageUploader } from "@/components/CharacterImageUploader"
+import { CharacterAnalysisReview } from "@/components/CharacterAnalysisReview"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { StepSelector, type PipelineStage } from "@/components/StepSelector"
 import { AspectRatioSelector } from "@/components/AspectRatioSelector"
@@ -25,6 +26,7 @@ export default function UploadPage() {
     videoModel,
     aspectRatio,
     characterImage,
+    characterAnalysisStatus,
     isSubmitting,
     errors,
     errorDetails,
@@ -162,6 +164,13 @@ export default function UploadPage() {
                 disabled={isSubmitting}
               />
             </div>
+
+            {/* Analysis review appears automatically after analysis completes */}
+            {characterAnalysisStatus !== "idle" && (
+              <div className="space-y-2">
+                <CharacterAnalysisReview />
+              </div>
+            )}
 
             {errors.audio || errors.prompt ? (
               <Alert variant="destructive">

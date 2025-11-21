@@ -7,6 +7,7 @@ import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
+from typing import Any
 
 # Use pytest_configure to patch before test collection
 def pytest_configure(config):
@@ -41,6 +42,9 @@ def pytest_configure(config):
     mock_redis.pubsub = MagicMock(return_value=mock_pubsub)
     
     # Create a mock RedisClient class that doesn't connect
+    # Store JSON data in memory for testing
+    _mock_json_store = {}
+    
     class MockRedisClient:
         def __init__(self):
             self.client = mock_redis
@@ -57,6 +61,21 @@ def pytest_configure(config):
         
         async def delete(self, key: str) -> int:
             return await mock_redis.delete(self._prefix_key(key))
+        
+        async def set_json(self, key: str, data: Any, ttl: Optional[int] = None) -> bool:
+            """Store JSON data in memory for testing."""
+            import json
+            prefixed_key = self._prefix_key(key)
+            _mock_json_store[prefixed_key] = json.dumps(data)
+            return True
+        
+        async def get_json(self, key: str) -> Optional[Any]:
+            """Retrieve JSON data from memory for testing."""
+            import json
+            prefixed_key = self._prefix_key(key)
+            if prefixed_key in _mock_json_store:
+                return json.loads(_mock_json_store[prefixed_key])
+            return None
         
         async def health_check(self) -> bool:
             return True

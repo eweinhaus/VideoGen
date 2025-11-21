@@ -4,6 +4,7 @@ Core scene planning orchestration.
 Coordinates all planning steps and assembles final ScenePlan result.
 """
 
+from typing import Optional, Dict, Any
 from uuid import UUID
 from shared.models.audio import AudioAnalysis
 from shared.models.scene import ScenePlan
@@ -37,7 +38,8 @@ logger = get_logger("scene_planner")
 async def plan_scenes(
     job_id: UUID,
     user_prompt: str,
-    audio_data: AudioAnalysis
+    audio_data: AudioAnalysis,
+    character_analysis: Optional[Dict[str, Any]] = None
 ) -> ScenePlan:
     """
     Coordinate all planning steps and assemble final ScenePlan.
@@ -95,7 +97,8 @@ async def plan_scenes(
             user_prompt=user_prompt,
             audio_data=audio_data,
             director_knowledge=director_knowledge,
-            user_input_objects=user_input_objects  # Pass extracted objects as hints
+            user_input_objects=user_input_objects,  # Pass extracted objects as hints
+            character_analysis=character_analysis
         )
         logger.debug("Generated scene plan from LLM")
         

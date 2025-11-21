@@ -1,5 +1,7 @@
 import { create } from "zustand"
-import { uploadAudio } from "@/lib/api"
+import { uploadAudio, analyzeCharacterImage, getCharacterAnalysis } from "@/lib/api"
+import { supabase } from "@/lib/supabase"
+import { authStore } from "@/stores/authStore"
 import type { PipelineStage } from "@/components/StepSelector"
 import type { VideoModel } from "@/components/ModelSelector"
 import type { Template } from "@/components/TemplateSelector"
@@ -23,6 +25,11 @@ interface UploadState {
   aspectRatio: string
   template: Template
   characterImage: CharacterImage | null
+  // Character analysis
+  characterAnalysisStatus: "idle" | "processing" | "ready" | "failed"
+  characterAnalysisJobId: string | null
+  characterAnalysisResult: import("@/types/api").CharacterAnalysisResult | null
+  characterAnalysisEdited: import("@/types/api").CharacterAnalysis | null
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   errorDetails: ErrorDetails | null
@@ -33,6 +40,7 @@ interface UploadState {
   setAspectRatio: (aspectRatio: string) => void
   setTemplate: (template: Template) => void
   setCharacterImage: (image: CharacterImage | null) => void
+  setCharacterAnalysisEdited: (analysis: import("@/types/api").CharacterAnalysis | null) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -84,6 +92,10 @@ export const uploadStore = create<UploadState>((set, get) => ({
   aspectRatio: "16:9", // Default aspect ratio
   template: "standard", // Default template
   characterImage: null,
+  characterAnalysisStatus: "idle",
+  characterAnalysisJobId: null,
+  characterAnalysisResult: null,
+  characterAnalysisEdited: null,
   isSubmitting: false,
   errors: {},
   errorDetails: null,
@@ -151,6 +163,82 @@ export const uploadStore = create<UploadState>((set, get) => ({
 
   setCharacterImage: (image: CharacterImage | null) => {
     set({ characterImage: image })
+    // Auto-trigger analysis when image is set
+    if (image?.file) {
+      // Fire and forget
+      void (async () => {
+        try {
+          set({ characterAnalysisStatus: "processing", characterAnalysisJobId: null, characterAnalysisResult: null, characterAnalysisEdited: null })
+          // Upload to Supabase Storage to get a signed URL
+          const user = authStore.getState().user
+          const userId = user?.id || "anonymous"
+          const filename = image.file.name || "character.png"
+          const ts = Date.now()
+          const path = `temp-analysis/${userId}/${ts}_${filename}`
+          const { error: upErr } = await supabase.storage.from("reference-images").upload(path, image.file, {
+            cacheControl: "3600",
+            upsert: false,
+            contentType: image.file.type || "image/png",
+          })
+          if (upErr) {
+            console.error("Supabase upload error:", upErr)
+            set({ characterAnalysisStatus: "failed" })
+            return
+          }
+          // Signed URL for 14 days (1209600 seconds)
+          const { data: signed, error: signErr } = await supabase.storage.from("reference-images").createSignedUrl(path, 1209600)
+          if (signErr || !signed?.signedUrl) {
+            console.error("Supabase signed URL error:", signErr)
+            set({ characterAnalysisStatus: "failed" })
+            return
+          }
+          // Start analysis job
+          const start = await analyzeCharacterImage(signed.signedUrl)
+          set({ characterAnalysisJobId: start.job_id })
+          // Poll until ready or timeout (~30s)
+          const startedAt = Date.now()
+          const poll = async (): Promise<void> => {
+            const elapsed = Date.now() - startedAt
+            if (elapsed > 32000) {
+              set({ characterAnalysisStatus: "failed" })
+              return
+            }
+            try {
+              const res = await getCharacterAnalysis(start.job_id)
+              if ((res as any).status === "processing") {
+                setTimeout(poll, 2000)
+              } else {
+                const result = res as import("@/types/api").CharacterAnalysisResult
+                set({
+                  characterAnalysisStatus: "ready",
+                  characterAnalysisResult: result,
+                  characterAnalysisEdited: result.analysis,
+                })
+              }
+            } catch (err) {
+              // Retry on transient errors
+              setTimeout(poll, 2000)
+            }
+          }
+          setTimeout(poll, 1500)
+        } catch (e) {
+          console.error("Auto-analysis failed:", e)
+          set({ characterAnalysisStatus: "failed" })
+        }
+      })()
+    } else {
+      // Clear analysis state if image removed
+      set({
+        characterAnalysisStatus: "idle",
+        characterAnalysisJobId: null,
+        characterAnalysisResult: null,
+        characterAnalysisEdited: null,
+      })
+    }
+  },
+
+  setCharacterAnalysisEdited: (analysis) => {
+    set({ characterAnalysisEdited: analysis })
   },
 
   validate: () => {
@@ -200,8 +288,9 @@ export const uploadStore = create<UploadState>((set, get) => ({
         ? "composer" 
         : get().stopAtStage || "composer"
       
-      const { aspectRatio, template, characterImage } = get()
-      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio, template, characterImage)
+      const { aspectRatio, template, characterImage, characterAnalysisEdited, characterAnalysisResult } = get()
+      const chosenAnalysis = characterAnalysisEdited || characterAnalysisResult?.analysis || null
+      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio, template, characterImage, chosenAnalysis)
       // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
       // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id

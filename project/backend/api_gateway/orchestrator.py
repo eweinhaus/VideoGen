@@ -8,7 +8,7 @@ import json
 import time
 from datetime import datetime
 from uuid import UUID
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from decimal import Decimal
 from shared.database import DatabaseClient
 from shared.redis_client import RedisClient
@@ -292,7 +292,7 @@ async def handle_pipeline_error(job_id: str, error: Exception) -> None:
         logger.error("Failed to handle pipeline error", exc_info=e, extra={"job_id": job_id})
 
 
-async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21", aspect_ratio: str = "16:9", template: str = "standard", uploaded_character_images: Optional[List[Dict]] = None) -> None:
+async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21", aspect_ratio: str = "16:9", template: str = "standard", uploaded_character_images: Optional[List[Dict]] = None, character_analysis: Optional[Dict[str, Any]] = None) -> None:
     """
     Execute the video generation pipeline (modules 3-8).
     
@@ -321,7 +321,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "template": template,
             "has_uploaded_character_images": bool(uploaded_character_images),
             "uploaded_character_images_count": len(uploaded_character_images) if uploaded_character_images else 0,
-            "uploaded_character_images": uploaded_character_images if uploaded_character_images else None
+                "uploaded_character_images": uploaded_character_images if uploaded_character_images else None,
+                "has_character_analysis": bool(character_analysis),
         }
     )
     try:
@@ -669,7 +670,8 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             plan = await process_scene_planning(
                 job_id=job_uuid,
                 user_prompt=user_prompt,
-                audio_data=audio_data
+                audio_data=audio_data,
+                character_analysis=character_analysis
             )
             await publish_event(job_id, "message", {
                 "text": "Scene planning complete!",

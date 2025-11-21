@@ -39,6 +39,7 @@ async def process_job(job_data: dict) -> None:
     aspect_ratio = job_data.get("aspect_ratio", "16:9")  # Default to 16:9 if not provided
     template = job_data.get("template", "standard")  # Default to standard if not provided
     uploaded_character_images = job_data.get("uploaded_character_images")  # Optional: user-uploaded character images
+    character_analysis = job_data.get("character_analysis")  # Optional: normalized character analysis dict
     
     if not all([job_id, user_id, audio_url, user_prompt]):
         logger.error("Invalid job data", extra={"job_data": job_data})
@@ -77,7 +78,17 @@ async def process_job(job_data: dict) -> None:
             return
         
         # Execute pipeline (pass stop_at_stage, video_model, aspect_ratio, template, and uploaded_character_images)
-        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template, uploaded_character_images)
+        await execute_pipeline(
+            job_id,
+            audio_url,
+            user_prompt,
+            stop_at_stage,
+            video_model,
+            aspect_ratio,
+            template,
+            uploaded_character_images,
+            character_analysis,
+        )
         
         logger.info("Job processed successfully", extra={"job_id": job_id})
         

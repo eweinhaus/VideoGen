@@ -262,7 +262,8 @@ export async function uploadAudio(
   videoModel: string = "kling_v21",
   aspectRatio: string = "16:9",
   template: string = "standard",
-  characterImage: { file: File; preview?: string } | null = null
+  characterImage: { file: File; preview?: string } | null = null,
+  characterAnalysis: any | null = null
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -277,6 +278,13 @@ export async function uploadAudio(
   // Add main character image if provided
   if (characterImage) {
     formData.append("character_image", characterImage.file)
+  }
+  if (characterAnalysis) {
+    try {
+      formData.append("character_analysis", JSON.stringify(characterAnalysis))
+    } catch {
+      // ignore JSON errors; backend treats missing as optional
+    }
   }
 
   // Use longer timeout for upload (180 seconds = 3 minutes)
@@ -522,6 +530,30 @@ export async function revertClipToVersion(
       body: JSON.stringify({ version_number: versionNumber }),
     },
     300000 // 5 minute timeout for composition
+  )
+}
+
+// Character Analysis API helpers
+export async function analyzeCharacterImage(
+  imageUrl: string
+): Promise<import("@/types/api").CharacterAnalysisStartResponse> {
+  return request<import("@/types/api").CharacterAnalysisStartResponse>(
+    `/api/v1/upload/character/analyze`,
+    {
+      method: "POST",
+      body: JSON.stringify({ image_url: imageUrl, analysis_version: "v1" }),
+    },
+    10000
+  )
+}
+
+export async function getCharacterAnalysis(
+  jobId: string
+): Promise<import("@/types/api").CharacterAnalysisResult | { status: "processing" }> {
+  return request<import("@/types/api").CharacterAnalysisResult | { status: "processing" }>(
+    `/api/v1/upload/character/analyze/${jobId}`,
+    { method: "GET" },
+    15000
   )
 }
 

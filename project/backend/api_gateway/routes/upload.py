@@ -38,6 +38,7 @@ async def upload_audio(
     video_model: str = Form("kling_v21"),
     aspect_ratio: str = Form("16:9"),
     template: str = Form("standard"),
+    character_analysis: Optional[str] = Form(None),
     character_image: Optional[UploadFile] = File(None),
     current_user: dict = Depends(get_current_user)
 ):
@@ -324,6 +325,16 @@ async def upload_audio(
         # Enqueue job to queue (pass stop_at_stage, video_model, aspect_ratio, template, and uploaded_character_image to orchestrator)
         # Convert single image to list format for compatibility with existing code
         uploaded_character_images = [uploaded_character_image] if uploaded_character_image else None
+        # Parse optional character_analysis JSON
+        parsed_character_analysis: Optional[Dict] = None
+        if character_analysis:
+            try:
+                import json as _json
+                parsed_character_analysis = _json.loads(character_analysis)
+            except Exception:
+                # Ignore invalid JSON, proceed without analysis
+                parsed_character_analysis = None
+        
         await enqueue_job(
             job_id, 
             user_id, 
@@ -333,7 +344,8 @@ async def upload_audio(
             video_model, 
             aspect_ratio, 
             template,
-            uploaded_character_images
+            uploaded_character_images,
+            parsed_character_analysis
         )
         
         logger.info(

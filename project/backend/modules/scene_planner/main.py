@@ -4,6 +4,7 @@ FastAPI router integration and job processing entry point.
 Main entry point called by API Gateway orchestrator.
 """
 
+from typing import Optional, Dict, Any
 from uuid import UUID
 from shared.models.audio import AudioAnalysis
 from shared.models.scene import ScenePlan
@@ -19,7 +20,8 @@ logger = get_logger("scene_planner")
 async def process_scene_planning(
     job_id: UUID,
     user_prompt: str,
-    audio_data: AudioAnalysis
+    audio_data: AudioAnalysis,
+    character_analysis: Optional[Dict[str, Any]] = None
 ) -> ScenePlan:
     """
     Main entry point for scene planning processing.
@@ -80,7 +82,8 @@ async def process_scene_planning(
         scene_plan = await plan_scenes(
             job_id=job_id,
             user_prompt=user_prompt,
-            audio_data=audio_data
+            audio_data=audio_data,
+            character_analysis=character_analysis
         )
         
         logger.info(

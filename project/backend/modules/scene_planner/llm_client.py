@@ -20,6 +20,7 @@ from shared.errors import GenerationError, RetryableError
 from shared.logging import get_logger
 from shared.retry import retry_with_backoff
 from shared.models.audio import AudioAnalysis
+from modules.character_analyzer.config import is_use_character_analysis_enabled
 
 logger = get_logger("scene_planner")
 
@@ -242,7 +243,8 @@ def _calculate_llm_cost(
 
 def _build_system_prompt(
     director_knowledge: str,
-    audio_data: AudioAnalysis
+    audio_data: AudioAnalysis,
+    character_analysis: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Build comprehensive system prompt with director knowledge and audio context.
@@ -279,6 +281,28 @@ The audio has the following characteristics:
 
 {mood_instructions}
 
+"""
+    # Inject user-uploaded character reference if feature flag ON and analysis provided
+    if is_use_character_analysis_enabled() and character_analysis:
+        try:
+            a = character_analysis.get("analysis", character_analysis)
+            identity_lines = [
+                f"- Age: {a.get('age_range')}; Hair: {a.get('hair_color')} {a.get('hair_style')}; Eyes: {a.get('eye_color')}; Skin: {a.get('skin_tone')}; Build: {a.get('build')}"
+            ]
+            system_prompt += f"""
+## USER-UPLOADED CHARACTER REFERENCE
+
+Identity features to maintain consistently across scenes:
+{chr(10).join(identity_lines)}
+
+Flexible features (may vary unless user-locked): clothing, accessories, background details
+Do not introduce conflicting identity attributes.
+"""
+        except Exception:
+            # Non-fatal: if formatting fails, proceed without injection
+            pass
+
+    system_prompt += f"""
 ## Your Task
 
 Generate a complete scene plan that:
@@ -742,7 +766,8 @@ async def generate_scene_plan(
     user_prompt: str,
     audio_data: AudioAnalysis,
     director_knowledge: str,
-    user_input_objects: Optional[List[Any]] = None
+    user_input_objects: Optional[List[Any]] = None,
+    character_analysis: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Generate scene plan using LLM API.
@@ -772,7 +797,7 @@ async def generate_scene_plan(
     
     try:
         # Build prompts
-        system_prompt = _build_system_prompt(director_knowledge, audio_data)
+        system_prompt = _build_system_prompt(director_knowledge, audio_data, character_analysis)
         user_prompt_formatted = _build_user_prompt(user_prompt, audio_data, user_input_objects)
         
         logger.info(

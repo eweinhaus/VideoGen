@@ -29,7 +29,8 @@ async def enqueue_job(
     video_model: str = "kling_v21",
     aspect_ratio: str = "16:9",
     template: str = "standard",
-    uploaded_character_images: Optional[List[Dict[str, Any]]] = None
+    uploaded_character_images: Optional[List[Dict[str, Any]]] = None,
+    character_analysis: Optional[Dict[str, Any]] = None
 ) -> None:
     """
     Enqueue a job to the processing queue.
@@ -56,6 +57,8 @@ async def enqueue_job(
         "template": template,
         "created_at": datetime.utcnow().isoformat()
     }
+    if character_analysis:
+        job_data["character_analysis"] = character_analysis
     
     # Add uploaded character images if provided
     if uploaded_character_images:
