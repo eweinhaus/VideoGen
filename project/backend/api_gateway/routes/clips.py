@@ -386,6 +386,9 @@ async def compare_clip_versions(
                 detail=f"Clips not found for job {job_id}"
             )
         
+        # CRITICAL: Sort clips by clip_index to ensure correct ordering
+        clips.clips.sort(key=lambda c: c.clip_index)
+        
         original_clip = None
         for clip in clips.clips:
             if clip.clip_index == clip_index:
@@ -588,49 +591,51 @@ async def compare_clip_versions(
                 
                 # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
                 # We need to access the nested "clips" array
-                # ALSO: Use list_position to match clips by their position in the array,
-                # not by clip_index, as they might differ!
+                # After sorting in load_clips_from_job_stages, clip_index should match array position
                 if isinstance(clips_wrapper, dict):
                     clips_list = clips_wrapper.get("clips", [])
                 elif isinstance(clips_wrapper, list):
                     # Backward compatibility: if clips is a list directly
-                    clips_list = clips_wrapper
+                    clips_wrapper = clips_list
                 else:
                     clips_list = []
                 
-                # Find the list position for this clip_index
-                list_pos = None
-                for idx, c in enumerate(clips_list):
-                    if isinstance(c, dict) and c.get("clip_index") == clip_index:
-                        list_pos = idx
-                        break
-                
-                if list_pos is not None and list_pos < len(clips_list):
-                    current_clip_url = clips_list[list_pos].get("video_url", "")
-                    
-                    # Check if this URL matches any clip_version
-                    if current_clip_url:
-                        # Extract the file path from the URL for comparison
-                        # URLs look like: https://.../video-clips/.../clip_1_v6.mp4?token=...
-                        if "_v" in current_clip_url:
-                            # Extract version from filename (e.g., clip_1_v6.mp4 → 6)
-                            import re
-                            version_match = re.search(r'clip_\d+_v(\d+)\.mp4', current_clip_url)
-                            if version_match:
-                                active_version_number = int(version_match.group(1))
+                # Since clips should be sorted by clip_index, we can directly access by index
+                # But we still need to verify the clip_index matches
+                if clip_index < len(clips_list):
+                    current_clip_data = clips_list[clip_index]
+                    # Verify this is the right clip
+                    if isinstance(current_clip_data, dict) and current_clip_data.get("clip_index") == clip_index:
+                        current_clip_url = current_clip_data.get("video_url", "")
+                        
+                        # Check if this URL matches any clip_version
+                        if current_clip_url:
+                            # Extract the file path from the URL for comparison
+                            # URLs look like: https://.../video-clips/.../clip_1_v6.mp4?token=...
+                            if "_v" in current_clip_url:
+                                # Extract version from filename (e.g., clip_1_v6.mp4 → 6)
+                                import re
+                                version_match = re.search(r'clip_\d+_v(\d+)\.mp4', current_clip_url)
+                                if version_match:
+                                    active_version_number = int(version_match.group(1))
+                                    logger.info(
+                                        f"✅ Detected active version from URL: v{active_version_number}",
+                                        extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                                    )
+                            else:
+                                # URL doesn't have _v pattern, it's likely v1 (original)
                                 logger.info(
-                                    f"✅ Detected active version from URL: v{active_version_number}",
-                                    extra={"job_id": job_id, "clip_index": clip_index, "list_pos": list_pos, "url": current_clip_url}
+                                    f"✅ No version pattern in URL, defaulting to v1 (original)",
+                                    extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
                                 )
-                        else:
-                            # URL doesn't have _v pattern, it's likely v1 (original)
-                            logger.info(
-                                f"✅ No version pattern in URL, defaulting to v1 (original)",
-                                extra={"job_id": job_id, "clip_index": clip_index, "list_pos": list_pos, "url": current_clip_url}
-                            )
+                    else:
+                        logger.warning(
+                            f"Clip index mismatch at position {clip_index}: expected {clip_index}, got {current_clip_data.get('clip_index') if isinstance(current_clip_data, dict) else 'unknown'}",
+                            extra={"job_id": job_id, "clip_index": clip_index}
+                        )
                 else:
                     logger.warning(
-                        f"Could not find clip {clip_index} in clips list (total clips: {len(clips_list)})",
+                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
                         extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
                     )
         except Exception as e:
@@ -735,9 +740,20 @@ async def revert_clip_to_version(
                 detail=f"Clips not found for job {job_id}"
             )
         
+        # CRITICAL: Sort clips by clip_index to ensure correct ordering
+        # The composer expects clips in sequential order (0, 1, 2, ...)
+        clips.clips.sort(key=lambda c: c.clip_index)
+        logger.info(
+            f"Sorted {len(clips.clips)} clips by clip_index",
+            extra={
+                "job_id": job_id,
+                "clip_indices": [c.clip_index for c in clips.clips]
+            }
+        )
+        
         # Find the clip to revert
-        # CRITICAL: We need to find the clip BY ITS clip_index property, not by list position
-        # The clips.clips list might not be sorted by clip_index!
+        # After sorting, the list position should match clip_index
+        # But we still need to verify this
         clip_to_revert = None
         list_position = None
         for idx, clip in enumerate(clips.clips):
@@ -753,8 +769,13 @@ async def revert_clip_to_version(
             )
         
         logger.info(
-            f"Found clip {clip_index} at list position {list_position}",
-            extra={"job_id": job_id, "clip_index": clip_index, "list_position": list_position}
+            f"Found clip {clip_index} at list position {list_position} (after sorting)",
+            extra={
+                "job_id": job_id,
+                "clip_index": clip_index,
+                "list_position": list_position,
+                "matches": list_position == clip_index
+            }
         )
         
         # If version_number is 1, use original clip (already in clips)
