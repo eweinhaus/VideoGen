@@ -917,11 +917,26 @@ async def revert_clip_to_version(
                     clips_list = []
                 
                 # Update the specific clip's video_url in metadata
-                # CRITICAL: Use list_position (the actual index in the clips array)
-                # not clip_index (the logical clip number), as they might differ!
-                if list_position < len(clips_list):
-                    clips_list[list_position]["video_url"] = clip_to_revert.video_url
-                    
+                # CRITICAL: The metadata's clips array might NOT be sorted by clip_index!
+                # We need to find the clip by its clip_index property, not by array position
+                clip_found = False
+                for idx, clip_data in enumerate(clips_list):
+                    if isinstance(clip_data, dict) and clip_data.get("clip_index") == clip_index:
+                        # Found the clip! Update its URL
+                        clips_list[idx]["video_url"] = clip_to_revert.video_url
+                        clip_found = True
+                        logger.info(
+                            f"✅ Updated metadata clip at position {idx} (clip_index={clip_index})",
+                            extra={
+                                "job_id": job_id,
+                                "clip_index": clip_index,
+                                "metadata_position": idx,
+                                "new_url": clip_to_revert.video_url
+                            }
+                        )
+                        break
+                
+                if clip_found:
                     # Update the metadata structure
                     if isinstance(clips_wrapper, dict):
                         clips_wrapper["clips"] = clips_list
@@ -939,14 +954,13 @@ async def revert_clip_to_version(
                         extra={
                             "job_id": job_id,
                             "clip_index": clip_index,
-                            "list_position": list_position,
                             "new_url": clip_to_revert.video_url
                         }
                     )
                 else:
                     logger.warning(
-                        f"List position {list_position} out of range (total clips: {len(clips_list)})",
-                        extra={"job_id": job_id, "clip_index": clip_index, "list_position": list_position, "total_clips": len(clips_list)}
+                        f"Could not find clip {clip_index} in metadata clips array",
+                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
                     )
         except Exception as e:
             # Non-critical error - log but don't fail the revert
