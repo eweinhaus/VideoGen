@@ -1075,6 +1075,27 @@ async def regenerate_clip(
             "seed": seed
         }
     )
+    
+    # CRITICAL: Determine next version number BEFORE generating clip
+    # This allows us to use versioned filenames (e.g., clip_4_v2.mp4) to preserve original
+    db_for_version = DatabaseClient()
+    version_result = await db_for_version.table("clip_versions").select("version_number").eq(
+        "job_id", str(job_id)
+    ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+    
+    next_version = 2  # Default to version 2 if no versions exist
+    if version_result.data and len(version_result.data) > 0:
+        next_version = version_result.data[0].get("version_number", 1) + 1
+    
+    logger.info(
+        f"Regenerating clip as version {next_version} (preserves original in storage)",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "next_version": next_version
+        }
+    )
+    
     try:
         new_clip = await generate_video_clip(
             clip_prompt=new_clip_prompt,
@@ -1086,7 +1107,8 @@ async def regenerate_clip(
             video_model=video_model,
             aspect_ratio=aspect_ratio,
             temperature=temperature if video_model == "veo_31" else None,  # Only pass temperature for Veo 3.1
-            seed=seed if video_model == "veo_31" else None  # Only pass seed for Veo 3.1
+            seed=seed if video_model == "veo_31" else None,  # Only pass seed for Veo 3.1
+            version_number=next_version  # ✅ NEW: Pass version number for versioned filename
         )
         
         logger.info(
@@ -1641,14 +1663,8 @@ async def regenerate_clip_with_recomposition(
         ) from e
     
     # Save the regenerated clip as a new version WITH RETRY LOGIC
-    # Get the next version number
-    version_result = await db.table("clip_versions").select("version_number").eq(
-        "job_id", str(job_id)
-    ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
-    
-    next_version = 2  # Default to version 2 if no versions exist
-    if version_result.data and len(version_result.data) > 0:
-        next_version = version_result.data[0].get("version_number", 1) + 1
+    # Note: next_version was already calculated before generation (see above)
+    # This ensures the version number matches the filename (clip_X_vN.mp4)
     
     # Mark all previous versions as not current
     await db.table("clip_versions").update({"is_current": False}).eq(
