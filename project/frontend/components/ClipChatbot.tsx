@@ -88,27 +88,52 @@ export function ClipChatbot({
   const [selectedClipIndices, setSelectedClipIndices] = useState<number[]>([])
   const [loadingClips, setLoadingClips] = useState(true)
   
+  // Track the last synced clip index to prevent infinite loops
+  const lastSyncedClipRef = useRef<number | undefined>(undefined)
+  
   // Sync external selection with internal selection
-  // When parent changes selection (e.g., from main ClipSelector), update internal state
+  // Sync selection state from parent if:
+  // - Chatbot has 0 clips selected (empty state), OR
+  // - Chatbot has exactly 1 clip selected (single selection mode)
+  // Do NOT sync if chatbot has 2+ clips (multi-select mode - user is bulk editing)
   useEffect(() => {
-    if (externalSelectedClipIndex !== undefined) {
-      // Check if this clip is already selected in our array
-      if (!selectedClipIndices.includes(externalSelectedClipIndex)) {
-        // Replace selection with just this clip (single selection from parent)
-        setSelectedClipIndices([externalSelectedClipIndex])
-        saveSelectedClips([externalSelectedClipIndex])
+    if (externalSelectedClipIndex !== undefined && 
+        externalSelectedClipIndex !== lastSyncedClipRef.current &&
+        selectedClipIndices.length <= 1) { // Allow sync when 0 or 1 clip selected
+      // Replace selection with this clip (single selection from parent)
+      setSelectedClipIndices([externalSelectedClipIndex])
+      // Save to localStorage
+      try {
+        localStorage.setItem(selectedClipsKey, JSON.stringify([externalSelectedClipIndex]))
+      } catch (err) {
+        console.error("Failed to save selected clips:", err)
       }
+      lastSyncedClipRef.current = externalSelectedClipIndex
     }
-  }, [externalSelectedClipIndex])
+  }, [externalSelectedClipIndex, selectedClipIndices, selectedClipsKey])
   
   // Sync internal selection with parent
-  // When internal selection changes, notify parent of the first selected clip
+  // When internal selection changes, notify parent of the LAST selected clip
+  // (the one the user just clicked, which is at the end of the array)
   useEffect(() => {
-    if (onClipSelect && selectedClipIndices.length > 0) {
-      const firstSelectedClip = clips.find(c => c.clip_index === selectedClipIndices[0])
-      if (firstSelectedClip) {
-        // Notify parent of selection change with timestamp for video seeking
-        onClipSelect(firstSelectedClip.clip_index, firstSelectedClip.timestamp_start)
+    if (onClipSelect && clips.length > 0) {
+      if (selectedClipIndices.length > 0) {
+        // Use the LAST selected clip (most recently clicked)
+        const lastSelectedIndex = selectedClipIndices[selectedClipIndices.length - 1]
+        
+        // Only sync if this is a new clip (different from last synced)
+        if (lastSelectedIndex !== lastSyncedClipRef.current) {
+          const lastSelectedClip = clips.find(c => c.clip_index === lastSelectedIndex)
+          if (lastSelectedClip) {
+            // Notify parent of selection change with timestamp for video seeking
+            onClipSelect(lastSelectedClip.clip_index, lastSelectedClip.timestamp_start)
+            lastSyncedClipRef.current = lastSelectedIndex
+          }
+        }
+      } else if (selectedClipIndices.length === 0 && lastSyncedClipRef.current !== undefined) {
+        // When all clips are deselected, clear the parent's selection too
+        onClipSelect(undefined as any, undefined)
+        lastSyncedClipRef.current = undefined
       }
     }
   }, [selectedClipIndices, clips, onClipSelect])

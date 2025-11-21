@@ -626,9 +626,6 @@ export function ClipComparison({
               <div className="text-xs text-gray-600 mt-2">
                 Time: {formatDuration(leftClip === originalClip ? originalTime : regeneratedTime)}
               </div>
-              <div className="text-xs text-gray-500 line-clamp-2 mt-1">
-                {leftClip.prompt}
-              </div>
             </div>
             
             {/* Right video (regenerated or swapped) */}
@@ -678,9 +675,6 @@ export function ClipComparison({
                   </div>
                   <div className="text-xs text-gray-600 mt-2">
                     Time: {formatDuration(rightClip === regeneratedClip ? regeneratedTime : originalTime)}
-                  </div>
-                  <div className="text-xs text-gray-500 line-clamp-2 mt-1">
-                    {rightClip.prompt}
                   </div>
                 </>
               ) : (

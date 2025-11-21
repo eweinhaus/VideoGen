@@ -538,7 +538,8 @@ export default function JobProgressPage() {
                       audioUrl={job?.audioUrl ?? undefined}
                       selectedClipIndex={selectedClipIndex}
                       onClipSelect={(clipIndex, timestamp) => {
-                        setSelectedClipIndex(clipIndex)
+                        // Allow undefined to clear selection
+                        setSelectedClipIndex(clipIndex === undefined ? undefined : clipIndex)
                         setSelectedClipTimestamp(timestamp)
                       }}
                       onRegenerationComplete={async (newVideoUrl) => {
