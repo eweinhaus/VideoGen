@@ -219,7 +219,15 @@ export function ClipChatbot({
         setLoadingClips(true)
         const response = await getJobClips(jobId)
         if (mounted) {
-          setClips(response.clips)
+          // Add cache-busting timestamp to thumbnail URLs to force immediate refresh
+          const clipsWithCacheBusting = response.clips.map(clip => ({
+            ...clip,
+            thumbnail_url: clip.thumbnail_url 
+              ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}t=${Date.now()}` 
+              : null
+          }))
+          
+          setClips(clipsWithCacheBusting)
           setLoadingClips(false)
           
           // Restore persisted selected clip indices if they exist
@@ -584,23 +592,29 @@ export function ClipChatbot({
       // CRITICAL FIX: Refresh clips to update thumbnails after regeneration
       // Thumbnails are generated during regeneration, but UI needs to refetch them
       if (data.clip_index !== undefined && data.clip_index !== null) {
-        // Delay slightly to ensure backend has saved the new thumbnail
-        setTimeout(async () => {
-          try {
-            const response = await getJobClips(jobId)
-            setClips(response.clips)
-            console.log("✅ Clips refreshed after regeneration, thumbnails updated")
-            
-            // Automatically refresh comparison for this clip if it's shown
-            if (showComparison && selectedClipIndices.includes(data.clip_index)) {
-              handleCompareClip(data.clip_index).catch((err) => {
-                console.warn("Failed to auto-refresh comparison after regeneration:", err)
-              })
-            }
-          } catch (err) {
-            console.warn("Failed to refresh clips after regeneration:", err)
+        // Refresh immediately - parent will handle triggering ClipSelector refresh
+        // No delay needed - parent SSE listener triggers refresh immediately
+        getJobClips(jobId).then((response) => {
+          // Add cache-busting to force immediate thumbnail refresh
+          const clipsWithCacheBusting = response.clips.map(clip => ({
+            ...clip,
+            thumbnail_url: clip.thumbnail_url 
+              ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}t=${Date.now()}` 
+              : null
+          }))
+          
+          setClips(clipsWithCacheBusting)
+          console.log("✅ Clips refreshed after regeneration, thumbnails updated")
+          
+          // Automatically refresh comparison for this clip if it's shown
+          if (showComparison && selectedClipIndices.includes(data.clip_index)) {
+            handleCompareClip(data.clip_index).catch((err) => {
+              console.warn("Failed to auto-refresh comparison after regeneration:", err)
+            })
           }
-        }, 1000) // Wait 1 second for thumbnail generation
+        }).catch((err) => {
+          console.warn("Failed to refresh clips after regeneration:", err)
+        })
       }
       
       // Reset state after a delay
@@ -887,6 +901,7 @@ export function ClipChatbot({
   const handleRevert = async (clipIndex: number, versionNumber: number) => {
     try {
       const response = await revertClipToVersion(jobId, clipIndex, versionNumber)
+      console.log(`🔄 Revert API response:`, response)
       
       // Show success message in chat
       addSystemMessage(
@@ -894,23 +909,29 @@ export function ClipChatbot({
         "success"
       )
       
-      // Wait for thumbnail to regenerate, then refresh EVERYTHING
-      setTimeout(async () => {
-        try {
-          // 1. Refresh chatbot's clips/thumbnails
-          const clipsResponse = await getJobClips(jobId)
-          setClips(clipsResponse.clips)
-          console.log(`✅ Refreshed chatbot clips after revert`)
-          
-          // 2. Trigger parent refresh for main ClipSelector thumbnails and video
-          if (onRegenerationComplete && response.video_url) {
-            onRegenerationComplete(response.video_url)
-            console.log(`✅ Triggered parent refresh after revert to v${versionNumber}`)
-          }
-        } catch (err) {
-          console.error("Failed to refresh after revert:", err)
+      // Refresh immediately - no delay needed
+      // Parent will handle triggering ClipSelector refresh via SSE or callback
+      getJobClips(jobId).then((clipsResponse) => {
+        // Add cache-busting to force immediate thumbnail refresh
+        const clipsWithCacheBusting = clipsResponse.clips.map(clip => ({
+          ...clip,
+          thumbnail_url: clip.thumbnail_url 
+            ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}t=${Date.now()}` 
+            : null
+        }))
+        
+        setClips(clipsWithCacheBusting)
+        console.log(`✅ Refreshed chatbot clips after revert, clip ${clipIndex} thumbnail:`, 
+          clipsWithCacheBusting.find(c => c.clip_index === clipIndex)?.thumbnail_url)
+        
+        // Trigger parent refresh for main ClipSelector thumbnails and video
+        if (onRegenerationComplete && response.video_url) {
+          onRegenerationComplete(response.video_url)
+          console.log(`✅ Triggered parent refresh after revert to v${versionNumber}`)
         }
-      }, 2000) // 2 second delay for thumbnail generation
+      }).catch((err) => {
+        console.error("Failed to refresh after revert:", err)
+      })
       
       // DON'T close comparison modal - let user toggle back and forth between versions
       // The button text will update automatically based on activeVersion state in ClipComparison

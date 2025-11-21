@@ -18,7 +18,7 @@ import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft, GitCompare } from "lucide-react"
 import { getClipComparison, revertClipToVersion } from "@/lib/api"
 import { jobStore } from "@/stores/jobStore"
-import type { StageUpdateEvent } from "@/types/sse"
+import type { StageUpdateEvent, RegenerationCompleteEvent } from "@/types/sse"
 
 export default function JobProgressPage() {
   const params = useParams()
@@ -34,6 +34,29 @@ export default function JobProgressPage() {
   const [comparisonData, setComparisonData] = useState<any>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
   const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0) // Add refresh trigger
+  
+  // SSE connection for regeneration events (separate from main job progress)
+  useSSE(jobId, {
+    onRegenerationComplete: (data: RegenerationCompleteEvent) => {
+      console.log("🎯 JobProgressPage: Regeneration complete SSE event received for clip", data.clip_index)
+      
+      // Immediately trigger ClipSelector refresh with NO delay
+      setClipRefreshTrigger(prev => prev + 1)
+      console.log("✅ ClipSelector refresh triggered immediately (no delay)")
+      
+      // Refresh job to get updated video URL
+      fetchJob(jobId).catch((err) => {
+        console.error("Failed to refresh job after regeneration:", err)
+      })
+      
+      // If comparison view is open for the regenerated clip, refresh it
+      if (showComparison && selectedClipIndex === data.clip_index) {
+        handleCompare(data.clip_index).catch((err) => {
+          console.warn("Failed to refresh comparison after regeneration:", err)
+        })
+      }
+    },
+  })
   
   // Restore comparison state from localStorage on mount or when selectedClipIndex changes
   useEffect(() => {
@@ -112,11 +135,9 @@ export default function JobProgressPage() {
       // Refresh job to get updated video URL
       await fetchJob(jobId)
       
-      // Trigger ClipSelector refresh to update thumbnails (after 2s delay for backend thumbnail generation)
-      setTimeout(() => {
-        setClipRefreshTrigger(prev => prev + 1)
-        console.log("✅ ClipSelector refresh triggered after revert")
-      }, 2000)
+      // Trigger ClipSelector refresh to update thumbnails immediately (no delay)
+      setClipRefreshTrigger(prev => prev + 1)
+      console.log("✅ ClipSelector refresh triggered immediately after revert")
       
       // Show success message (you could add a toast notification here)
       console.log(`✅ Successfully reverted clip ${clipIndex} to version ${versionNumber}`)
