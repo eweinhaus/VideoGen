@@ -135,6 +135,12 @@ export default function JobProgressPage() {
       // Refresh job to get updated video URL
       await fetchJob(jobId)
       
+      // Immediately refresh comparison data to update button text
+      // The button needs to know the new active version
+      if (showComparison && selectedClipIndex === clipIndex) {
+        await handleCompare(clipIndex)
+      }
+      
       // Wait for backend thumbnail generation to complete (2 seconds)
       // Backend generates thumbnails asynchronously after recomposition
       // We need to wait longer since it's a background task
