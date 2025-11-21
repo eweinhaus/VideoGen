@@ -596,7 +596,7 @@ async def compare_clip_versions(
                     clips_list = clips_wrapper.get("clips", [])
                 elif isinstance(clips_wrapper, list):
                     # Backward compatibility: if clips is a list directly
-                    clips_wrapper = clips_list
+                    clips_list = clips_wrapper  # FIX: was incorrectly: clips_wrapper = clips_list
                 else:
                     clips_list = []
                 

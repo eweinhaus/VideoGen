@@ -55,6 +55,25 @@ export function ClipComparison({
     activeVersionNumber ?? (regeneratedClip?.version_number ?? 1)
   )
   
+  // Debug logging for active version
+  useEffect(() => {
+    console.log("🔍 ClipComparison Active Version Debug:", {
+      activeVersionNumber,
+      regeneratedClipVersion: regeneratedClip?.version_number,
+      originalClipVersion: originalClip.version_number,
+      initializedActiveVersion: activeVersion,
+      buttonShouldSay: activeVersion === regeneratedClip?.version_number ? "Revert to Prior Version" : "Change clip to latest version"
+    })
+  }, [activeVersionNumber, regeneratedClip?.version_number, originalClip.version_number, activeVersion])
+  
+  // Update activeVersion when activeVersionNumber prop changes
+  useEffect(() => {
+    if (activeVersionNumber !== undefined && activeVersionNumber !== null) {
+      console.log(`🔄 Updating activeVersion from prop: ${activeVersionNumber}`)
+      setActiveVersion(activeVersionNumber)
+    }
+  }, [activeVersionNumber])
+  
   const originalVideoRef = useRef<HTMLVideoElement>(null)
   const regeneratedVideoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
