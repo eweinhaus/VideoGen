@@ -5,6 +5,8 @@ graph TB
     %% Frontend Layer
     subgraph Frontend["🌐 Frontend (Next.js 14 + TypeScript)"]
         UI[Upload UI]
+        CharacterUploader[Character Uploader]
+        AnalysisReview[Character Review & Edit]
         Progress[Progress Tracker]
         Player[Video Player]
         SSE_Client[SSE Client]
@@ -20,6 +22,9 @@ graph TB
         Orchestrator[Pipeline Orchestrator]
         Budget_Guard[Budget Guard<br/>$20 limit]
         Rate_Limit[Rate Limiter<br/>5 jobs/hour]
+        Content_Guard[Content Guard<br/>NSFW/CSAM]
+        Feature_Flags[Feature Flags<br/>Per-user/Cohort/Global]
+        Experiment_Assignor[Experiment Assignor<br/>A/B]
     end
     
     %% Queue System
@@ -27,10 +32,13 @@ graph TB
         Job_Queue[Job Queue]
         Worker1[Worker 1]
         Worker2[Worker 2]
+        Analysis_Queue[Analysis Queue]
+        WorkerA[Analysis Worker]
     end
     
     %% Processing Pipeline Modules
     subgraph Pipeline["🔄 Processing Pipeline"]
+        CharacterAnalyzer["[2] Character Analyzer<br/>Vision (GPT-4V)<br/>Normalization + Cache"]
         Module3["[3] Audio Parser<br/>Librosa + Aubio<br/>OpenAI Whisper"]
         Module4["[4] Scene Planner<br/>GPT-4o / Claude 3.5"]
         Module5["[5] Reference Generator<br/>SDXL via Replicate"]
@@ -53,17 +61,25 @@ graph TB
     
     %% User Flow
     User -->|Upload Audio + Prompt| UI
+    User -->|Upload Character Image| CharacterUploader
     UI -->|POST /upload-audio| REST
+    CharacterUploader -->|Upload Image| Supabase_Storage
+    CharacterUploader -->|POST /upload/character/analyze| REST
     REST -->|Create Job| Rate_Limit
     Rate_Limit -->|Check Limit| Queue_Manager
     Queue_Manager -->|Budget Check| Budget_Guard
     Budget_Guard -->|Enqueue| Job_Queue
+    REST -->|Content Check| Content_Guard
+    Content_Guard -->|Enqueue Analysis| Queue_Manager
+    Queue_Manager -->|Enqueue| Analysis_Queue
     
     %% Queue Processing
     Job_Queue -->|Process| Worker1
     Job_Queue -->|Process| Worker2
+    Analysis_Queue -->|Process| WorkerA
     Worker1 -->|Execute| Orchestrator
     Worker2 -->|Execute| Orchestrator
+    WorkerA -->|Execute| CharacterAnalyzer
     
     %% Pipeline Flow
     Orchestrator -->|Step 1: 10%| Module3
@@ -83,6 +99,15 @@ graph TB
     Orchestrator -->|Step 6: 100%| Module8
     Module8 -->|final_video| Supabase_Storage
     
+    %% Character Analysis Flow
+    CharacterAnalyzer -->|Vision Inference| OpenAI
+    CharacterAnalyzer -->|Store Analysis| Supabase_DB
+    REST -->|GET /upload/character/analyze/{job_id}| AnalysisReview
+    AnalysisReview -->|Confirm & Continue<br/>POST /generate| REST
+    Feature_Flags -->|Evaluate| Orchestrator
+    REST -->|character_analysis (optional)| Orchestrator
+    Orchestrator -->|Character Features (if enabled)| Module4
+    
     %% External Service Connections
     Module3 -->|Audio Analysis| Supabase_Storage
     Module3 -->|Lyrics Extraction| OpenAI
@@ -101,6 +126,9 @@ graph TB
     Orchestrator -->|Update Status| Supabase_DB
     Module3 -->|Cache Analysis| Supabase_DB
     Module3 -->|Store Results| Supabase_DB
+    REST -->|Store Plan Flags/Assignment| Supabase_DB
+    UI -->|Upload Character Image| Supabase_Storage
+    Supabase_DB -->|Character Analysis| Module4
     Module4 -->|Store Plan| Supabase_DB
     Module5 -->|Store Images| Supabase_Storage
     Module7 -->|Store Clips| Supabase_Storage
@@ -144,9 +172,9 @@ graph TB
     classDef external fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     classDef queue fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     
-    class UI,Progress,Player,SSE_Client,ClipSelector,ClipChatbot frontend
-    class REST,SSE_Server,Queue_Manager,Orchestrator,Budget_Guard,Rate_Limit api
-    class Module3,Module4,Module5,Module6,Module7,Module8,LoRA_Trainer,ClipRegenerator pipeline
+    class UI,CharacterUploader,AnalysisReview,Progress,Player,SSE_Client,ClipSelector,ClipChatbot frontend
+    class REST,SSE_Server,Queue_Manager,Orchestrator,Budget_Guard,Rate_Limit,Content_Guard,Feature_Flags,Experiment_Assignor api
+    class CharacterAnalyzer,Module3,Module4,Module5,Module6,Module7,Module8,LoRA_Trainer,ClipRegenerator pipeline
     class Supabase_Auth,Supabase_DB,Supabase_Storage,OpenAI,Replicate,RunPod external
-    class Job_Queue,Worker1,Worker2 queue
+    class Job_Queue,Worker1,Worker2,Analysis_Queue,WorkerA queue
 

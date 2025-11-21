@@ -590,6 +590,31 @@ async def process(
                 collected_urls = []
                 max_reference_images = 3  # Veo 3.1 limit, other models will limit further in generator
                 
+                # SOLUTION 2 LOGGING: Check if this clip has character references (especially uploaded ones)
+                has_uploaded_character = False
+                if clip_prompt.character_reference_urls:
+                    logger.info(
+                        f"Clip {clip_prompt.clip_index}: Starting reference collection with {len(clip_prompt.character_reference_urls)} character reference(s)",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "character_reference_urls_count": len(clip_prompt.character_reference_urls),
+                            "character_reference_urls_preview": [url[:100] for url in clip_prompt.character_reference_urls[:3]],
+                            "has_scene_reference": bool(clip_prompt.scene_reference_url),
+                            "checkpoint": "reference_collection_start"
+                        }
+                    )
+                    # Check metadata to see if first character is uploaded
+                    if clip_prompt.metadata and "reference_mode" in clip_prompt.metadata:
+                        logger.debug(
+                            f"Clip {clip_prompt.clip_index}: Reference mode = {clip_prompt.metadata.get('reference_mode')}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "reference_mode": clip_prompt.metadata.get('reference_mode')
+                            }
+                        )
+                
                 # Add character reference URLs
                 # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
                 # OTHER CLIPS: Limit to 2 to leave room for scene/objects
@@ -709,25 +734,66 @@ async def process(
                 # Set both single image (backward compatibility) and multiple images
                 if collected_urls:
                     reference_image_urls = collected_urls
-                    # For backward compatibility: image_url should be scene reference if available,
-                    # otherwise use first character reference
-                    # This is important because generator.py uses image_url as scene reference
-                    # when combining with character references for face-heavy clips
-                    # collected_urls order: [character_refs..., scene_ref, object_refs...]
-                    if clip_prompt.scene_reference_url:
-                        # Find scene reference's cached URL (it's added after character refs)
+                    
+                    # SOLUTION 3 FIX: Always prioritize uploaded character reference as primary image_url
+                    # This ensures uploaded character images appear in ALL clips, not just face-heavy ones
+                    # OLD BEHAVIOR: image_url was set to scene reference, which caused character refs to be ignored
+                    # NEW BEHAVIOR: image_url is ALWAYS the first character reference (main/uploaded character)
+                    
+                    # Check if first character reference exists (it should be the uploaded/main character)
+                    if clip_prompt.character_reference_urls and len(clip_prompt.character_reference_urls) > 0:
+                        # CRITICAL FIX: Always use first character ref (uploaded main character) as primary image_url
+                        # This ensures visual consistency across ALL clips when user uploads a character image
+                        image_url = collected_urls[0]  # First in collected_urls is always main character
+                        
+                        logger.info(
+                            f"SOLUTION 3 FIX: Using main character (first character reference) as primary image_url for clip {clip_prompt.clip_index}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "image_url_preview": image_url[:100],
+                                "reason": "Always prioritize uploaded/main character for visual consistency",
+                                "has_scene_reference": bool(clip_prompt.scene_reference_url),
+                                "checkpoint": "image_url_prioritization"
+                            }
+                        )
+                    elif clip_prompt.scene_reference_url:
+                        # Fallback to scene if no character references exist
                         scene_cached = image_cache_param.get(clip_prompt.scene_reference_url)
                         if scene_cached:
-                            # Scene reference was added to collected_urls, use it as image_url
                             image_url = scene_cached
+                            logger.debug(
+                                f"No character references, using scene reference as image_url for clip {clip_prompt.clip_index}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "checkpoint": "scene_fallback"
+                                }
+                            )
                         else:
                             # Scene reference wasn't cached/added (shouldn't happen), fall back
                             image_url = collected_urls[0]
+                            logger.warning(
+                                f"Scene reference not cached, using first collected URL for clip {clip_prompt.clip_index}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "checkpoint": "emergency_fallback"
+                                }
+                            )
                     else:
-                        # No scene reference, use first image (character reference)
+                        # Ultimate fallback - use first collected URL
                         image_url = collected_urls[0]
+                        logger.debug(
+                            f"Using first collected URL as image_url for clip {clip_prompt.clip_index}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "checkpoint": "ultimate_fallback"
+                            }
+                        )
                     logger.info(
-                        f"Collected {len(reference_image_urls)} reference image(s) for clip {clip_prompt.clip_index} "
+                        f"SOLUTION 2 CHECKPOINT: Collected {len(reference_image_urls)} reference image(s) for clip {clip_prompt.clip_index} "
                         f"(face_heavy={is_face_heavy}, {character_refs_added}/{len(clip_prompt.character_reference_urls)} character refs used, "
                         f"shot_type={'mid-shot' if is_medium_shot else 'close-up' if is_face_heavy else 'wide'})",
                         extra={
@@ -741,21 +807,24 @@ async def process(
                             "has_object_refs": bool(clip_prompt.object_reference_urls),
                             "face_heavy": is_face_heavy,
                             "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide"),
-                            "camera_angle": camera_angle if camera_angle else None
+                            "camera_angle": camera_angle if camera_angle else None,
+                            "checkpoint": "reference_collection_complete"
                         }
                     )
                     
-                    # CRITICAL LOGGING: Log final reference URLs before generation
+                    # SOLUTION 2 CRITICAL CHECKPOINT: Log final reference URLs before generation
                     logger.info(
-                        f"Final reference URLs for clip {clip_prompt.clip_index} before generation",
+                        f"SOLUTION 2 CHECKPOINT: Final reference URLs for clip {clip_prompt.clip_index} before generation",
                         extra={
                             "job_id": str(job_id),
                             "clip_index": clip_prompt.clip_index,
                             "image_url": image_url[:100] if image_url else None,
+                            "image_url_source": "character_ref" if (clip_prompt.character_reference_urls and image_url == collected_urls[0]) else "scene_ref",
                             "reference_image_urls_count": len(reference_image_urls),
                             "reference_image_urls_preview": [url[:100] for url in reference_image_urls[:5]],
                             "is_face_heavy": is_face_heavy,
-                            "character_refs_added": character_refs_added
+                            "character_refs_added": character_refs_added,
+                            "checkpoint": "before_generate_video_clip"
                         }
                     )
                 else:

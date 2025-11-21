@@ -66,16 +66,17 @@ def build_reference_index(references: Optional[ReferenceImages]) -> ReferenceInd
                 variation_key = f"{obj_ref.object_id}_var{obj_ref.variation_index}"
             object_urls[variation_key] = obj_ref.image_url
     
-    # CRITICAL LOGGING: Log reference index state
+    # SOLUTION 2 CRITICAL CHECKPOINT: Log reference index state
     logger.info(
-        f"Reference index built for prompt generation",
+        f"SOLUTION 2 CHECKPOINT: Reference index built for prompt generation",
         extra={
             "scene_urls_count": len(scene_urls),
             "character_urls_count": len(character_urls),
             "object_urls_count": len(object_urls),
             "character_ids_in_index": list(character_urls.keys()),
             "character_urls_preview": {k: v[:100] for k, v in list(character_urls.items())[:5]},
-            "status": references.status
+            "status": references.status,
+            "checkpoint": "prompt_generator_index_built"
         }
     )
 
@@ -202,9 +203,9 @@ def map_clip_references(
             }
         )
     
-    # CRITICAL LOGGING: Log final character reference state for this clip
+    # SOLUTION 2 CRITICAL CHECKPOINT: Log final character reference state for this clip
     logger.info(
-        f"Clip {clip_index}: Final character reference mapping",
+        f"SOLUTION 2 CHECKPOINT: Clip {clip_index} - Final character reference mapping",
         extra={
             "clip_index": clip_index,
             "main_character_id": main_character_id,
@@ -213,7 +214,8 @@ def map_clip_references(
             "character_reference_urls_count": len(character_reference_urls),
             "character_reference_urls_preview": [url[:100] for url in character_reference_urls[:3]],
             "clip_characters": list(clip.characters),
-            "all_characters_in_clip": list(clip.characters)
+            "all_characters_in_clip": list(clip.characters),
+            "checkpoint": "prompt_generator_clip_mapping"
         }
     )
 
@@ -294,8 +296,30 @@ def map_references(
     index = build_reference_index(references)
     mapping: Dict[int, ClipReferenceMapping] = {}
     
-    # Identify main character (first character in scene plan is typically the main character)
-    main_character_id = plan.characters[0].id if plan.characters else None
+    # Identify main character with uploaded image (if any)
+    # First, check if any character has an uploaded image (prompt_used="user_uploaded")
+    main_character_id = None
+    if references and references.character_references:
+        for char_ref in references.character_references:
+            if char_ref.prompt_used == "user_uploaded" and char_ref.character_id:
+                main_character_id = char_ref.character_id
+                logger.info(
+                    f"SOLUTION 2 CHECKPOINT: Found uploaded character image for character '{main_character_id}'",
+                    extra={
+                        "character_id": main_character_id,
+                        "image_url_preview": char_ref.image_url[:100],
+                        "checkpoint": "uploaded_character_identified"
+                    }
+                )
+                break
+    
+    # Fallback: If no uploaded image found, use first character as main character
+    if not main_character_id and plan.characters:
+        main_character_id = plan.characters[0].id
+        logger.debug(
+            f"No uploaded character image found, using first character '{main_character_id}' as main character",
+            extra={"character_id": main_character_id}
+        )
 
     # Build sets of valid scene, character, and object IDs from ScenePlan for validation
     valid_scene_ids = {scene.id for scene in plan.scenes}

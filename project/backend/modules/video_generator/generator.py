@@ -630,13 +630,15 @@ async def generate_video_clip(
                 # image_url should be the scene reference if available, otherwise it's the first character ref
                 
                 logger.info(
-                    f"Processing face-heavy clip reference images for {selected_model_key}",
+                    f"SOLUTION 2 CHECKPOINT: Processing face-heavy clip reference images for {selected_model_key}",
                     extra={
                         "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index if hasattr(clip_prompt, 'clip_index') else None,
                         "num_reference_urls": len(reference_image_urls) if reference_image_urls else 0,
-                        "image_url_preview": image_url[:50] if image_url else None,
-                        "first_ref_preview": reference_image_urls[0][:50] if reference_image_urls else None,
-                        "max_images": max_images
+                        "image_url_preview": image_url[:100] if image_url else None,
+                        "first_ref_preview": reference_image_urls[0][:100] if reference_image_urls else None,
+                        "max_images": max_images,
+                        "checkpoint": "generator_face_heavy_processing"
                     }
                 )
 
@@ -665,21 +667,23 @@ async def generate_video_clip(
                 limited_images = limited_images[:max_images]
                 
                 logger.info(
-                    f"Face-heavy clip: Using character ref first, then scene ref (if available)",
+                    f"SOLUTION 2 CHECKPOINT: Face-heavy clip - Using character ref first, then scene ref (if available)",
                     extra={
                         "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index if hasattr(clip_prompt, 'clip_index') else None,
                         "character_ref_url": reference_image_urls[0][:100] if reference_image_urls else None,
                         "scene_ref_url": image_url[:100] if image_url and (not reference_image_urls or image_url != reference_image_urls[0]) else None,
                         "final_images_count": len(limited_images),
                         "has_scene_ref": image_url != reference_image_urls[0] if reference_image_urls else False,
                         "all_reference_urls": [url[:100] for url in reference_image_urls[:3]] if reference_image_urls else [],
-                        "final_limited_urls": [url[:100] for url in limited_images[:3]]
+                        "final_limited_urls": [url[:100] for url in limited_images[:3]],
+                        "checkpoint": "generator_face_heavy_final"
                     }
                 )
                 
-                # CRITICAL LOGGING: Log final reference images passed to Replicate API
+                # SOLUTION 2 CRITICAL CHECKPOINT: Log final reference images passed to Replicate API
                 logger.info(
-                    f"Final reference images passed to Replicate API for clip {clip_prompt.clip_index}",
+                    f"SOLUTION 2 CHECKPOINT: Final reference images passed to Replicate API for clip {clip_prompt.clip_index}",
                     extra={
                         "job_id": str(job_id),
                         "clip_index": clip_prompt.clip_index,
@@ -689,27 +693,42 @@ async def generate_video_clip(
                         "limited_images_count": len(limited_images),
                         "limited_images_urls": [url[:100] for url in limited_images],
                         "image_url_used": image_url[:100] if image_url else None,
-                        "reference_image_urls_used": [url[:100] for url in reference_image_urls[:5]] if reference_image_urls else []
+                        "reference_image_urls_used": [url[:100] for url in reference_image_urls[:5]] if reference_image_urls else [],
+                        "checkpoint": "generator_replicate_api_input"
                     }
                 )
             else:
                 # Default: use character references (or scene if no character refs)
                 # For single image models, this will be handled in the elif branch
                 limited_images = reference_image_urls[:max_images]
+                
+                # SOLUTION 2 LOGGING: Log non-face-heavy clip handling
+                logger.info(
+                    f"SOLUTION 2 CHECKPOINT: Non-face-heavy clip - using reference_image_urls as-is (up to {max_images} images)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index if hasattr(clip_prompt, 'clip_index') else None,
+                        "limited_images_count": len(limited_images),
+                        "limited_images_urls": [url[:100] for url in limited_images],
+                        "checkpoint": "generator_non_face_heavy"
+                    }
+                )
             
             input_data[reference_images_param] = limited_images
             logger.info(
-                f"Using {len(limited_images)} reference image(s) via '{reference_images_param}' parameter for {selected_model_key} "
+                f"SOLUTION 2 CHECKPOINT: Using {len(limited_images)} reference image(s) via '{reference_images_param}' parameter for {selected_model_key} "
                 f"(face_heavy={is_face_heavy}, shot_type={'mid-shot' if is_medium_shot else 'close-up' if is_face_heavy else 'wide'})",
                 extra={
                     "job_id": str(job_id),
+                    "clip_index": clip_prompt.clip_index if hasattr(clip_prompt, 'clip_index') else None,
                     "model": selected_model_key,
                     "parameter": reference_images_param,
                     "num_images": len(limited_images),
                     "max_images": max_images,
                     "face_heavy": is_face_heavy,
                     "camera_angle": camera_angle if camera_angle else None,
-                    "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide")
+                    "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide"),
+                    "checkpoint": "generator_replicate_input_set"
                 }
             )
         elif image_url:
@@ -722,20 +741,36 @@ async def generate_video_clip(
                 primary_image = reference_image_urls[0]  # Character reference
                 input_data[image_param] = primary_image
                 logger.info(
-                    f"Using character reference for face-heavy clip (close-up or mid-shot) via '{image_param}' parameter for {selected_model_key}",
+                    f"SOLUTION 2 CHECKPOINT: Using character reference for face-heavy clip (close-up or mid-shot) via '{image_param}' parameter for {selected_model_key}",
                     extra={
                         "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index if hasattr(clip_prompt, 'clip_index') else None,
                         "model": selected_model_key,
                         "image_param": image_param,
                         "face_heavy": True,
                         "using_character_ref": True,
+                        "primary_image_preview": primary_image[:100] if primary_image else None,
                         "camera_angle": camera_angle if camera_angle else None,
-                        "shot_type": "mid-shot" if is_medium_shot else "close-up"
+                        "shot_type": "mid-shot" if is_medium_shot else "close-up",
+                        "checkpoint": "generator_single_image_face_heavy"
                     }
                 )
             else:
-                # Default: use scene reference
+                # Default: use scene reference (or image_url which may now be character ref after Solution 3 fix)
                 input_data[image_param] = image_url
+                logger.info(
+                    f"SOLUTION 2 CHECKPOINT: Using image_url (may be character or scene ref after Solution 3 fix) via '{image_param}' parameter for {selected_model_key}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index if hasattr(clip_prompt, 'clip_index') else None,
+                        "model": selected_model_key,
+                        "image_param": image_param,
+                        "face_heavy": False,
+                        "image_url_preview": image_url[:100] if image_url else None,
+                        "has_character_refs": bool(reference_image_urls),
+                        "checkpoint": "generator_single_image_default"
+                    }
+                )
                 logger.debug(
                     f"Using single image parameter '{image_param}' for model {selected_model_key}",
                     extra={"job_id": str(job_id), "model": selected_model_key, "image_param": image_param}

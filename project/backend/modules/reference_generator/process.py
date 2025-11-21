@@ -743,16 +743,44 @@ async def process(
         }
     )
     
+    # SOLUTION 2 CRITICAL CHECKPOINT: Verify uploaded character images in final ReferenceImages object
+    uploaded_character_count = sum(1 for ref in reference_images.character_references if ref.prompt_used == "user_uploaded")
     logger.info(
-        f"Reference generation completed for job {job_id}",
+        f"SOLUTION 2 CHECKPOINT: Reference generation completed for job {job_id}",
         extra={
             "job_id": str(job_id),
             "status": status,
             "total_references": reference_images.total_references,
+            "character_references_count": len(reference_images.character_references),
+            "uploaded_character_count": uploaded_character_count,
+            "character_reference_urls": [ref.image_url[:100] for ref in reference_images.character_references],
+            "character_reference_prompt_markers": [ref.prompt_used for ref in reference_images.character_references],
             "total_cost": float(total_cost),
-            "total_time": total_generation_time
+            "total_time": total_generation_time,
+            "checkpoint": "reference_generator_complete"
         }
     )
+    
+    # Additional verification for uploaded images
+    if uploaded_character_count > 0:
+        logger.info(
+            f"SOLUTION 2 VERIFICATION: Found {uploaded_character_count} uploaded character image(s) in final ReferenceImages",
+            extra={
+                "job_id": str(job_id),
+                "uploaded_character_count": uploaded_character_count,
+                "uploaded_character_ids": [ref.character_id for ref in reference_images.character_references if ref.prompt_used == "user_uploaded"],
+                "checkpoint": "uploaded_character_verification"
+            }
+        )
+    else:
+        logger.warning(
+            f"SOLUTION 2 WARNING: No uploaded character images found in final ReferenceImages for job {job_id}",
+            extra={
+                "job_id": str(job_id),
+                "character_references_count": len(reference_images.character_references),
+                "checkpoint": "uploaded_character_missing"
+            }
+        )
     
     # Publish stage complete event
     events.append({
