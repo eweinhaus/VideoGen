@@ -3,6 +3,7 @@ import { uploadAudio } from "@/lib/api"
 import type { PipelineStage } from "@/components/StepSelector"
 import type { VideoModel } from "@/components/ModelSelector"
 import type { Template } from "@/components/TemplateSelector"
+import type { CharacterImage } from "@/components/CharacterImageUploader"
 
 interface ErrorDetails {
   category?: string
@@ -21,6 +22,7 @@ interface UploadState {
   videoModel: VideoModel
   aspectRatio: string
   template: Template
+  characterImage: CharacterImage | null
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   errorDetails: ErrorDetails | null
@@ -30,6 +32,7 @@ interface UploadState {
   setVideoModel: (model: VideoModel) => void
   setAspectRatio: (aspectRatio: string) => void
   setTemplate: (template: Template) => void
+  setCharacterImage: (image: CharacterImage | null) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -80,6 +83,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   videoModel: "veo_31", // Default model
   aspectRatio: "16:9", // Default aspect ratio
   template: "standard", // Default template
+  characterImage: null,
   isSubmitting: false,
   errors: {},
   errorDetails: null,
@@ -145,6 +149,10 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ template })
   },
 
+  setCharacterImage: (image: CharacterImage | null) => {
+    set({ characterImage: image })
+  },
+
   validate: () => {
     const { audioFile, userPrompt } = get()
     const errors: { audio?: string; prompt?: string } = {}
@@ -192,8 +200,8 @@ export const uploadStore = create<UploadState>((set, get) => ({
         ? "composer" 
         : get().stopAtStage || "composer"
       
-      const { aspectRatio, template } = get()
-      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio, template)
+      const { aspectRatio, template, characterImage } = get()
+      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio, template, characterImage)
       // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
       // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
@@ -229,6 +237,12 @@ export const uploadStore = create<UploadState>((set, get) => ({
   },
 
   reset: () => {
+    // Clean up preview URL
+    const { characterImage } = get()
+    if (characterImage?.preview) {
+      URL.revokeObjectURL(characterImage.preview)
+    }
+    
     set({
       audioFile: null,
       userPrompt: "",
@@ -236,6 +250,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       videoModel: "veo_31", // Reset to default model
       aspectRatio: "16:9", // Reset to default aspect ratio
       template: "standard", // Reset to default template
+      characterImage: null,
       errors: {},
       errorDetails: null,
       isSubmitting: false,

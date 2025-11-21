@@ -593,6 +593,7 @@ async def process(
                 # Add character reference URLs
                 # FACE-HEAVY CLIPS: Use ALL character references (no artificial limit)
                 # OTHER CLIPS: Limit to 2 to leave room for scene/objects
+                # CRITICAL: Always include first character reference (main character with uploaded image)
                 character_refs_added = 0
                 if clip_prompt.character_reference_urls:
                     if is_face_heavy:
@@ -610,18 +611,37 @@ async def process(
                         )
                     else:
                         # Other clips: Limit to 2 to leave room for scene/objects
+                        # CRITICAL: Always include first character ref (main character with uploaded image)
+                        # This ensures uploaded character images are used even in wide shots
                         max_char_refs = min(len(clip_prompt.character_reference_urls), 2)
+                        logger.info(
+                            f"Non-face-heavy clip - limiting to {max_char_refs} character reference(s) (ensuring first/main character included) for clip {clip_prompt.clip_index}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_prompt.clip_index,
+                                "max_char_refs": max_char_refs,
+                                "total_character_refs_available": len(clip_prompt.character_reference_urls),
+                                "first_char_ref_preview": clip_prompt.character_reference_urls[0][:100] if clip_prompt.character_reference_urls else None
+                            }
+                        )
                     
-                    for char_ref_url in clip_prompt.character_reference_urls[:max_char_refs]:
+                    for idx, char_ref_url in enumerate(clip_prompt.character_reference_urls[:max_char_refs]):
                         if len(collected_urls) >= max_reference_images:
                             break
                         cached_url = image_cache_param.get(char_ref_url)
                         if cached_url:
                             collected_urls.append(cached_url)
                             character_refs_added += 1
-                            logger.debug(
-                                f"Using cached character reference for clip {clip_prompt.clip_index}",
-                                extra={"job_id": str(job_id), "url": char_ref_url[:50]}
+                            logger.info(
+                                f"Added character reference {idx+1}/{len(clip_prompt.character_reference_urls[:max_char_refs])} to collected_urls for clip {clip_prompt.clip_index}",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_prompt.clip_index,
+                                    "ref_index": idx,
+                                    "url_preview": char_ref_url[:80],
+                                    "is_first": idx == 0,
+                                    "collected_count": len(collected_urls)
+                                }
                             )
                         else:
                             # Download if not cached
@@ -629,9 +649,16 @@ async def process(
                             if downloaded_url:
                                 collected_urls.append(downloaded_url)
                                 character_refs_added += 1
-                                logger.debug(
-                                    f"Downloaded character reference for clip {clip_prompt.clip_index}",
-                                    extra={"job_id": str(job_id)}
+                                logger.info(
+                                    f"Downloaded and added character reference {idx+1}/{len(clip_prompt.character_reference_urls[:max_char_refs])} for clip {clip_prompt.clip_index}",
+                                    extra={
+                                        "job_id": str(job_id),
+                                        "clip_index": clip_prompt.clip_index,
+                                        "ref_index": idx,
+                                        "url_preview": char_ref_url[:80],
+                                        "is_first": idx == 0,
+                                        "collected_count": len(collected_urls)
+                                    }
                                 )
                 
                 # Add scene reference URL if available and we have room (max 3 total)
@@ -682,7 +709,23 @@ async def process(
                 # Set both single image (backward compatibility) and multiple images
                 if collected_urls:
                     reference_image_urls = collected_urls
-                    image_url = collected_urls[0]  # First image for backward compatibility
+                    # For backward compatibility: image_url should be scene reference if available,
+                    # otherwise use first character reference
+                    # This is important because generator.py uses image_url as scene reference
+                    # when combining with character references for face-heavy clips
+                    # collected_urls order: [character_refs..., scene_ref, object_refs...]
+                    if clip_prompt.scene_reference_url:
+                        # Find scene reference's cached URL (it's added after character refs)
+                        scene_cached = image_cache_param.get(clip_prompt.scene_reference_url)
+                        if scene_cached:
+                            # Scene reference was added to collected_urls, use it as image_url
+                            image_url = scene_cached
+                        else:
+                            # Scene reference wasn't cached/added (shouldn't happen), fall back
+                            image_url = collected_urls[0]
+                    else:
+                        # No scene reference, use first image (character reference)
+                        image_url = collected_urls[0]
                     logger.info(
                         f"Collected {len(reference_image_urls)} reference image(s) for clip {clip_prompt.clip_index} "
                         f"(face_heavy={is_face_heavy}, {character_refs_added}/{len(clip_prompt.character_reference_urls)} character refs used, "
@@ -699,6 +742,20 @@ async def process(
                             "face_heavy": is_face_heavy,
                             "shot_type": "mid-shot" if is_medium_shot else ("close-up" if is_face_heavy else "wide"),
                             "camera_angle": camera_angle if camera_angle else None
+                        }
+                    )
+                    
+                    # CRITICAL LOGGING: Log final reference URLs before generation
+                    logger.info(
+                        f"Final reference URLs for clip {clip_prompt.clip_index} before generation",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_prompt.clip_index,
+                            "image_url": image_url[:100] if image_url else None,
+                            "reference_image_urls_count": len(reference_image_urls),
+                            "reference_image_urls_preview": [url[:100] for url in reference_image_urls[:5]],
+                            "is_face_heavy": is_face_heavy,
+                            "character_refs_added": character_refs_added
                         }
                     )
                 else:

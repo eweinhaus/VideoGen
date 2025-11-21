@@ -91,8 +91,16 @@ async function publicRequest<T>(
       console.error("❌ Request timeout:", endpoint)
       throw new APIError("Request timeout - server took too long to respond", 0, true)
     }
+    // Provide more detailed error messages for connection issues
+    let errorMessage = "Connection error"
+    if (error instanceof TypeError && error.message.includes("fetch")) {
+      // Network error - server might be down or unreachable
+      errorMessage = `Cannot connect to server at ${API_BASE_URL}. Please check if the server is running.`
+    } else if (error instanceof Error) {
+      errorMessage = `Connection error: ${error.message}`
+    }
     console.error("❌ Request error:", endpoint, error)
-    throw new APIError("Connection error", 0, true)
+    throw new APIError(errorMessage, 0, true)
   }
 }
 
@@ -222,8 +230,16 @@ async function request<T>(
       console.error("❌ Request timeout:", endpoint)
       throw new APIError("Request timeout - server took too long to respond", 0, true)
     }
+    // Provide more detailed error messages for connection issues
+    let errorMessage = "Connection error"
+    if (error instanceof TypeError && error.message.includes("fetch")) {
+      // Network error - server might be down or unreachable
+      errorMessage = `Cannot connect to server at ${API_BASE_URL}. Please check if the server is running.`
+    } else if (error instanceof Error) {
+      errorMessage = `Connection error: ${error.message}`
+    }
     console.error("❌ Request error:", endpoint, error)
-    throw new APIError("Connection error", 0, true)
+    throw new APIError(errorMessage, 0, true)
   }
 }
 
@@ -245,7 +261,8 @@ export async function uploadAudio(
   stopAtStage: string | null = null,
   videoModel: string = "kling_v21",
   aspectRatio: string = "16:9",
-  template: string = "standard"
+  template: string = "standard",
+  characterImage: { file: File; preview?: string } | null = null
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -257,15 +274,23 @@ export async function uploadAudio(
   formData.append("aspect_ratio", aspectRatio)
   formData.append("template", template)
 
+  // Add main character image if provided
+  if (characterImage) {
+    formData.append("character_image", characterImage.file)
+  }
+
   // Use longer timeout for upload (180 seconds = 3 minutes)
   // Backend has 150s timeout for storage upload, plus buffer for validation, DB ops, etc.
+  // Add extra time if character image is included
+  const timeout = characterImage ? 240000 : 180000 // 4 minutes if image, 3 minutes otherwise
+  
   return request<UploadResponse>(
     "/api/v1/upload-audio",
     {
       method: "POST",
       body: formData,
     },
-    180000 // 3 minutes timeout
+    timeout
   )
 }
 
@@ -310,6 +335,8 @@ export async function transferStyle(
   transferOptions: StyleTransferOptions,
   additionalInstruction?: string
 ): Promise<RegenerationResponse> {
+  // Use longer timeout for style transfer (5 minutes) since it includes regeneration
+  // which can take several minutes for video generation
   return request<RegenerationResponse>(
     `/api/v1/jobs/${jobId}/clips/style-transfer`,
     {
@@ -321,7 +348,7 @@ export async function transferStyle(
         additional_instruction: additionalInstruction,
       }),
     },
-    30000
+    300000 // 5 minutes timeout for style transfer + regeneration
   )
 }
 

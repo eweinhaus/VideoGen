@@ -8,12 +8,13 @@ import uuid
 import re
 import asyncio
 from datetime import datetime
+from typing import List, Optional, Dict
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from mutagen import File as MutagenFile
 from shared.storage import StorageClient
 from shared.database import DatabaseClient
-from shared.validation import validate_audio_file, validate_prompt
+from shared.validation import validate_audio_file, validate_prompt, validate_character_image
 from shared.errors import ValidationError, BudgetExceededError, RetryableError
 from shared.logging import get_logger
 from shared.config import settings
@@ -37,6 +38,7 @@ async def upload_audio(
     video_model: str = Form("kling_v21"),
     aspect_ratio: str = Form("16:9"),
     template: str = Form("standard"),
+    character_image: Optional[UploadFile] = File(None),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -49,6 +51,7 @@ async def upload_audio(
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
         template: Template to use (default: "standard", options: "standard", "lipsync")
+        character_image: Optional main character reference image (PNG/JPG, ≤5MB, min 512x512)
         current_user: Current authenticated user
         
     Returns:
@@ -191,6 +194,103 @@ async def upload_audio(
         if template not in valid_templates:
             raise ValidationError(f"Invalid template: {template}. Must be one of: {', '.join(valid_templates)}")
         
+        # Process main character image if provided
+        uploaded_character_image = None
+        if character_image:
+            try:
+                # Validate image
+                file_obj = character_image.file
+                if character_image.filename and not hasattr(file_obj, "name"):
+                    file_obj.name = character_image.filename
+                
+                width, height = validate_character_image(file_obj, max_size_mb=5, min_dimension=512)
+                
+                # Read image data
+                character_image.file.seek(0)
+                image_data = await character_image.read()
+                character_image.file.seek(0)
+                
+                # Sanitize filename
+                original_filename = character_image.filename or "main_character.png"
+                if '.' in original_filename:
+                    name_part, ext = original_filename.rsplit('.', 1)
+                    sanitized_name = re.sub(r'[^\w\-]', '_', name_part)
+                    sanitized_name = re.sub(r'_+', '_', sanitized_name).strip('_')
+                    sanitized_filename = f"{sanitized_name}.{ext}" if sanitized_name else f"main_character.{ext}"
+                else:
+                    sanitized_filename = "main_character.png"
+                
+                # Determine content type
+                ext_lower = sanitized_filename.rsplit('.', 1)[-1].lower() if '.' in sanitized_filename else 'png'
+                image_mime_map = {
+                    'png': 'image/png',
+                    'jpg': 'image/jpeg',
+                    'jpeg': 'image/jpeg'
+                }
+                content_type = image_mime_map.get(ext_lower, 'image/png')
+                
+                # Upload to Supabase Storage
+                storage_path = f"{user_id}/{job_id}/character_references/main_character_{sanitized_filename}"
+                
+                try:
+                    image_url = await asyncio.wait_for(
+                        storage_client.upload_file(
+                            bucket="reference-images",
+                            path=storage_path,
+                            file_data=image_data,
+                            content_type=content_type
+                        ),
+                        timeout=60.0  # 60s timeout for image upload
+                    )
+                    
+                    # Generate signed URL (14-day expiration, same as generated references)
+                    signed_url = await storage_client.get_signed_url(
+                        bucket="reference-images",
+                        path=storage_path,
+                        expires_in=1209600  # 14 days
+                    )
+                    
+                    uploaded_character_image = {
+                        "url": signed_url,
+                        "index": 0,
+                        "width": width,
+                        "height": height,
+                        "filename": sanitized_filename
+                    }
+                    
+                    logger.info(
+                        f"Uploaded main character image for job {job_id}",
+                        extra={
+                            "job_id": job_id,
+                            "dimensions": f"{width}x{height}",
+                            "image_filename": sanitized_filename  # Changed from "filename" to avoid LogRecord conflict
+                        }
+                    )
+                    
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"Main character image upload timed out for job {job_id}",
+                        extra={"job_id": job_id}
+                    )
+                    raise ValidationError("Main character image upload timed out. Please try again.")
+                except RetryableError as e:
+                    logger.error(
+                        f"Main character image upload failed for job {job_id}",
+                        exc_info=e,
+                        extra={"job_id": job_id}
+                    )
+                    raise ValidationError("Main character image upload failed. Please try again.")
+                    
+            except ValidationError:
+                raise  # Re-raise validation errors
+            except Exception as e:
+                logger.error(
+                    f"Failed to process main character image for job {job_id}",
+                    exc_info=e,
+                    extra={"job_id": job_id}
+                )
+                raise ValidationError(f"Failed to process main character image: {str(e)}")
+        
         # Create job record in database
         # Note: Using 'id' as job_id (primary key) since schema uses 'id' as PK
         # Note: Schema has 'total_cost' not 'estimated_cost', so we don't store estimated_cost
@@ -209,6 +309,9 @@ async def upload_audio(
             "created_at": datetime.utcnow().isoformat()
         }
         
+        # Note: uploaded_character_images are passed through queue_service to orchestrator
+        # They will be stored in job_stages metadata during reference generation
+        
         await db_client.table("jobs").insert(job_data).execute()
         
         # Publish initial stage update so frontend knows which stage is pending
@@ -218,8 +321,20 @@ async def upload_audio(
             "status": "pending"
         })
         
-        # Enqueue job to queue (pass stop_at_stage, video_model, aspect_ratio, and template to orchestrator)
-        await enqueue_job(job_id, user_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template)
+        # Enqueue job to queue (pass stop_at_stage, video_model, aspect_ratio, template, and uploaded_character_image to orchestrator)
+        # Convert single image to list format for compatibility with existing code
+        uploaded_character_images = [uploaded_character_image] if uploaded_character_image else None
+        await enqueue_job(
+            job_id, 
+            user_id, 
+            audio_url, 
+            user_prompt, 
+            stop_at_stage, 
+            video_model, 
+            aspect_ratio, 
+            template,
+            uploaded_character_images
+        )
         
         logger.info(
             "Job created and enqueued",

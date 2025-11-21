@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AudioUploader } from "@/components/AudioUploader"
 import { PromptInput } from "@/components/PromptInput"
+import { CharacterImageUploader } from "@/components/CharacterImageUploader"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { StepSelector, type PipelineStage } from "@/components/StepSelector"
 import { AspectRatioSelector } from "@/components/AspectRatioSelector"
@@ -23,6 +24,7 @@ export default function UploadPage() {
     stopAtStage,
     videoModel,
     aspectRatio,
+    characterImage,
     isSubmitting,
     errors,
     errorDetails,
@@ -30,6 +32,7 @@ export default function UploadPage() {
     setUserPrompt,
     setStopAtStage,
     setAspectRatio,
+    setCharacterImage,
     submit,
     reset,
   } = uploadStore()
@@ -151,6 +154,14 @@ export default function UploadPage() {
               modelKey={videoModel}
               disabled={isSubmitting}
             />
+
+            <div className="space-y-2">
+              <CharacterImageUploader
+                value={characterImage}
+                onChange={setCharacterImage}
+                disabled={isSubmitting}
+              />
+            </div>
 
             {errors.audio || errors.prompt ? (
               <Alert variant="destructive">

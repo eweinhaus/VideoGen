@@ -237,15 +237,6 @@ export function AnalyticsDashboard({ jobId, userId }: AnalyticsDashboardProps) {
                 </div>
               </div>
               <div>
-                <div className="text-sm text-gray-500">Total Cost</div>
-                <div className="text-2xl font-semibold flex items-center gap-1">
-                  <DollarSign className="h-5 w-5" />
-                  {typeof userAnalytics.total_cost === "number"
-                    ? userAnalytics.total_cost.toFixed(2)
-                    : "N/A"}
-                </div>
-              </div>
-              <div>
                 <div className="text-sm text-gray-500">Avg Iterations/Clip</div>
                 <div className="text-2xl font-semibold">
                   {typeof userAnalytics.average_iterations_per_clip === "number"

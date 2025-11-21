@@ -38,6 +38,7 @@ async def process_job(job_data: dict) -> None:
     video_model = job_data.get("video_model", "kling_v21")  # Default to kling_v21 if not provided
     aspect_ratio = job_data.get("aspect_ratio", "16:9")  # Default to 16:9 if not provided
     template = job_data.get("template", "standard")  # Default to standard if not provided
+    uploaded_character_images = job_data.get("uploaded_character_images")  # Optional: user-uploaded character images
     
     if not all([job_id, user_id, audio_url, user_prompt]):
         logger.error("Invalid job data", extra={"job_data": job_data})
@@ -51,7 +52,9 @@ async def process_job(job_data: dict) -> None:
             "stop_at_stage": stop_at_stage,
             "video_model": video_model,
             "aspect_ratio": aspect_ratio,
-            "template": template
+            "template": template,
+            "has_uploaded_character_images": bool(uploaded_character_images),
+            "uploaded_character_images_count": len(uploaded_character_images) if uploaded_character_images else 0
         }
     )
     
@@ -73,8 +76,8 @@ async def process_job(job_data: dict) -> None:
             }).eq("id", job_id).execute()
             return
         
-        # Execute pipeline (pass stop_at_stage, video_model, aspect_ratio, and template)
-        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template)
+        # Execute pipeline (pass stop_at_stage, video_model, aspect_ratio, template, and uploaded_character_images)
+        await execute_pipeline(job_id, audio_url, user_prompt, stop_at_stage, video_model, aspect_ratio, template, uploaded_character_images)
         
         logger.info("Job processed successfully", extra={"job_id": job_id})
         
@@ -158,7 +161,12 @@ async def worker_loop():
             if job_json:
                 logger.info(f"Job popped from queue: {queue_key}")
                 # job_json is a tuple: (queue_key, job_data)
-                job_data_str = job_json[1]
+                job_data_bytes = job_json[1]
+                # Decode bytes to string if needed
+                if isinstance(job_data_bytes, bytes):
+                    job_data_str = job_data_bytes.decode('utf-8')
+                else:
+                    job_data_str = job_data_bytes
                 try:
                     job_data = json.loads(job_data_str)
                 except json.JSONDecodeError as e:
@@ -172,7 +180,10 @@ async def worker_loop():
                         "job_id": job_id,
                         "has_audio_url": bool(job_data.get("audio_url")),
                         "has_user_prompt": bool(job_data.get("user_prompt")),
-                        "stop_at_stage": job_data.get("stop_at_stage")
+                        "stop_at_stage": job_data.get("stop_at_stage"),
+                        "has_uploaded_character_images": bool(job_data.get("uploaded_character_images")),
+                        "uploaded_character_images_count": len(job_data.get("uploaded_character_images", [])),
+                        "uploaded_character_images_keys": list(job_data.keys()) if "uploaded_character_images" in job_data else []
                     }
                 )
                 

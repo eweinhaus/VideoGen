@@ -8,7 +8,7 @@ import json
 import time
 from datetime import datetime
 from uuid import UUID
-from typing import Optional
+from typing import Optional, List, Dict
 from decimal import Decimal
 from shared.database import DatabaseClient
 from shared.redis_client import RedisClient
@@ -292,7 +292,7 @@ async def handle_pipeline_error(job_id: str, error: Exception) -> None:
         logger.error("Failed to handle pipeline error", exc_info=e, extra={"job_id": job_id})
 
 
-async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21", aspect_ratio: str = "16:9", template: str = "standard") -> None:
+async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_at_stage: str = None, video_model: str = "kling_v21", aspect_ratio: str = "16:9", template: str = "standard", uploaded_character_images: Optional[List[Dict]] = None) -> None:
     """
     Execute the video generation pipeline (modules 3-8).
     
@@ -304,6 +304,7 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
         template: Template to use (default: "standard", options: "standard", "lipsync")
+        uploaded_character_images: Optional list of user-uploaded character reference images
     """
     # Ensure handle_pipeline_error is available (defensive programming for reload issues)
     error_handler = handle_pipeline_error
@@ -317,7 +318,10 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             "stop_at_stage": stop_at_stage,
             "video_model": video_model,
             "aspect_ratio": aspect_ratio,
-            "template": template
+            "template": template,
+            "has_uploaded_character_images": bool(uploaded_character_images),
+            "uploaded_character_images_count": len(uploaded_character_images) if uploaded_character_images else 0,
+            "uploaded_character_images": uploaded_character_images if uploaded_character_images else None
         }
     )
     try:
@@ -1002,7 +1006,22 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             job_id_uuid = UUID(job_id)
             duration_seconds = audio_data.duration if hasattr(audio_data, 'duration') else None
             # Reference generator returns tuple: (Optional[ReferenceImages], List[Dict[str, Any]])
-            references, reference_events = await generate_references(job_id_uuid, plan, duration_seconds)
+            # Pass uploaded_character_images if provided
+            logger.info(
+                f"Calling reference generator for job {job_id}",
+                extra={
+                    "job_id": job_id,
+                    "has_uploaded_character_images": bool(uploaded_character_images),
+                    "uploaded_character_images_count": len(uploaded_character_images) if uploaded_character_images else 0,
+                    "uploaded_image_urls": [img.get("url", "missing") for img in uploaded_character_images] if uploaded_character_images else []
+                }
+            )
+            references, reference_events = await generate_references(
+                job_id_uuid, 
+                plan, 
+                duration_seconds,
+                uploaded_character_images=uploaded_character_images
+            )
             
             # Track progress as images complete (for more frequent updates)
             reference_progress_tracker = {

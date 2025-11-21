@@ -65,6 +65,19 @@ def build_reference_index(references: Optional[ReferenceImages]) -> ReferenceInd
             else:
                 variation_key = f"{obj_ref.object_id}_var{obj_ref.variation_index}"
             object_urls[variation_key] = obj_ref.image_url
+    
+    # CRITICAL LOGGING: Log reference index state
+    logger.info(
+        f"Reference index built for prompt generation",
+        extra={
+            "scene_urls_count": len(scene_urls),
+            "character_urls_count": len(character_urls),
+            "object_urls_count": len(object_urls),
+            "character_ids_in_index": list(character_urls.keys()),
+            "character_urls_preview": {k: v[:100] for k, v in list(character_urls.items())[:5]},
+            "status": references.status
+        }
+    )
 
     return ReferenceIndex(
         scene_urls=scene_urls,
@@ -78,6 +91,7 @@ def map_clip_references(
     clip: ClipScript,
     index: ReferenceIndex,
     clip_index: int = 0,
+    main_character_id: Optional[str] = None,
 ) -> ClipReferenceMapping:
     scene_reference_url = None
     primary_scene_id = clip.scenes[0] if clip.scenes else None
@@ -97,10 +111,49 @@ def map_clip_references(
 
     # Map character references - use variation 0 (frontal portrait) for each character
     # This ensures every character mentioned in the clip gets their reference image
+    # IMPORTANT: Prioritize main character (first character in scene plan) to ensure uploaded images are first
+    # CRITICAL: Always include main character reference for ALL clips (even if not in clip.characters)
+    # This ensures visual consistency across all clips when user uploads a character image
     character_reference_urls = []
     missing_character_ids = []
-
-    for char_id in clip.characters:
+    
+    # CRITICAL FIX: Always include main character reference if available, even if not in clip.characters
+    # This ensures uploaded character images are used in ALL clips for visual consistency
+    main_character_in_clip = main_character_id in clip.characters if main_character_id else False
+    if main_character_id and main_character_id in index.character_urls:
+        # Main character has a reference image - ALWAYS include it first, even if not in clip.characters
+        main_char_url = index.character_urls[main_character_id]
+        character_reference_urls.append(main_char_url)
+        logger.info(
+            f"Clip {clip_index}: Including main character '{main_character_id}' reference (uploaded image) for visual consistency",
+            extra={
+                "clip_index": clip_index,
+                "main_character_id": main_character_id,
+                "main_character_in_clip_characters": main_character_in_clip,
+                "main_character_url_preview": main_char_url[:100],
+                "reason": "Always include main character reference for visual consistency across all clips"
+            }
+        )
+    
+    # Sort characters to prioritize main character (first in scene plan)
+    # This ensures uploaded character images (usually for main character) are first in the list
+    # Filter out main character from clip.characters since we already added it above
+    sorted_characters = [char_id for char_id in clip.characters if char_id != main_character_id]
+    if main_character_id and main_character_id in sorted_characters:
+        # Move main character to the front (shouldn't happen since we filtered, but safety check)
+        sorted_characters.remove(main_character_id)
+        sorted_characters.insert(0, main_character_id)
+        logger.debug(
+            f"Clip {clip_index}: Prioritizing main character '{main_character_id}' in character references",
+            extra={
+                "clip_index": clip_index,
+                "main_character_id": main_character_id,
+                "original_order": list(clip.characters),
+                "prioritized_order": sorted_characters
+            }
+        )
+    
+    for char_id in sorted_characters:
         # Find variation 0 (base character_id) for this character
         # Variation 0 is stored as the base character_id (without _var suffix)
         variation_0_url = None
@@ -148,6 +201,21 @@ def map_clip_references(
                 "available_character_ids": list(index.character_urls.keys())
             }
         )
+    
+    # CRITICAL LOGGING: Log final character reference state for this clip
+    logger.info(
+        f"Clip {clip_index}: Final character reference mapping",
+        extra={
+            "clip_index": clip_index,
+            "main_character_id": main_character_id,
+            "main_character_in_clip_characters": main_character_in_clip if main_character_id else None,
+            "main_character_reference_included": main_character_id in index.character_urls if main_character_id else None,
+            "character_reference_urls_count": len(character_reference_urls),
+            "character_reference_urls_preview": [url[:100] for url in character_reference_urls[:3]],
+            "clip_characters": list(clip.characters),
+            "all_characters_in_clip": list(clip.characters)
+        }
+    )
 
     # Map object references with rotation through variations
     # Find all variations for each object and rotate based on clip_index
@@ -225,6 +293,9 @@ def map_references(
 ) -> Dict[int, ClipReferenceMapping]:
     index = build_reference_index(references)
     mapping: Dict[int, ClipReferenceMapping] = {}
+    
+    # Identify main character (first character in scene plan is typically the main character)
+    main_character_id = plan.characters[0].id if plan.characters else None
 
     # Build sets of valid scene, character, and object IDs from ScenePlan for validation
     valid_scene_ids = {scene.id for scene in plan.scenes}
@@ -306,7 +377,8 @@ def map_references(
             )
 
         # Pass clip_index for reference variation rotation
-        mapping[clip.clip_index] = map_clip_references(clip, index, clip.clip_index)
+        # Also pass main_character_id to prioritize main character in character references
+        mapping[clip.clip_index] = map_clip_references(clip, index, clip.clip_index, main_character_id=main_character_id)
 
     return mapping
 

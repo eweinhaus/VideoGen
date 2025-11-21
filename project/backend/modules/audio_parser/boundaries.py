@@ -2,6 +2,14 @@
 Clip boundary generation component.
 
 Generate beat-aligned clip boundaries for video segmentation.
+
+VARIANCE STRATEGY:
+- Uses balanced variation pattern: [-1, 0, 1, 2, 0, -1, 1, 0, 2, -1, 1, 0] beats
+- Allows ±2s deviation from target duration (balanced between variance and quality)
+- This creates diverse clip lengths: some at 4-5s (short/punchy), some at 6-7s (medium), some at 7-8s (longer/contemplative)
+- Veo 3.1 supports discrete durations (4s, 6s, 8s), so this variance maps naturally to supported values
+- CRITICAL: First clip always starts at 0.0 (not first beat) to ensure full coverage
+- Result: More visual variety in clip pacing while maintaining proper coverage and alignment
 """
 
 import math
@@ -11,6 +19,29 @@ from shared.models.audio import ClipBoundary, Breakpoint
 from shared.logging import get_logger
 
 logger = get_logger("audio_parser")
+
+
+def _prefer_veo_durations(duration: float) -> float:
+    """
+    Prefer mapping to Veo 3.1 supported durations (4s, 6s, 8s) for better variance.
+    
+    This helps create more diverse clip lengths by preferring the discrete values
+    that Veo 3.1 supports, rather than always targeting intermediate values.
+    
+    Args:
+        duration: Target duration in seconds
+        
+    Returns:
+        Duration mapped to nearest Veo-supported value (4, 6, or 8), or original if outside range
+    """
+    if duration < 5.0:
+        return 4.0  # Short clips
+    elif duration < 7.0:
+        return 6.0  # Medium clips
+    elif duration <= 8.0:
+        return 8.0  # Long clips
+    else:
+        return 8.0  # Cap at max
 
 
 def _get_target_duration_for_segment(segment_type: str, beat_intensity: str) -> float:
@@ -151,36 +182,50 @@ def generate_boundaries(
         return boundaries[:max_clips]
     
     # Normal case: Beat-aligned boundaries
-    # PHASE 2.4: Use content-based duration selection
+    # PHASE 2.4: Use content-based duration selection with WIDE VARIANCE
     # Target duration already calculated above
+    # Strategy: Use wider variation pattern (-2 to +2 beats) to create diverse clip lengths
+    # This ensures we get clips at 4s, 6s, and 8s (Veo 3.1 supported durations) frequently
+    # Rather than all clips being similar lengths around 6-7s
     beat_interval = np.mean(np.diff(beat_timestamps)) if len(beat_timestamps) > 1 else (60.0 / bpm)
     base_beats_per_clip = max(1, math.ceil(target_duration / beat_interval))
 
     logger.info(
-        f"Generating boundaries: segment_type={segment_type}, beat_intensity={beat_intensity}, "
+        f"Generating boundaries with BALANCED VARIANCE: segment_type={segment_type}, beat_intensity={beat_intensity}, "
         f"target_duration={target_duration:.1f}s, beat_interval={beat_interval:.3f}s, "
-        f"base_beats_per_clip={base_beats_per_clip}"
+        f"base_beats_per_clip={base_beats_per_clip}, variation_pattern=[-1,0,1,2,0,-1,1,0,2,-1,1,0]"
     )
     
     boundaries = []
     current_beat_idx = 0
     clip_index = 0  # Track clip index for variation pattern
-    current_start = beat_timestamps[0] if len(beat_timestamps) > 0 else 0.0  # Start at first beat or 0.0
+    # CRITICAL: First clip must always start at 0.0, not at first beat
+    # This ensures full coverage from the beginning
+    current_start = 0.0
     
     while current_beat_idx < len(beat_timestamps) and len(boundaries) < max_clips:
-        # For first clip, start at first beat; for subsequent clips, start where previous ended
+        # For first clip, always start at 0.0; for subsequent clips, start where previous ended
         start = current_start
         
         # Find the beat index closest to our start time
-        if len(boundaries) > 0:
-            # Find the beat that is >= start time
+        # For first clip (starting at 0.0), find the first beat
+        # For subsequent clips, find the beat >= start time
+        if len(boundaries) == 0:
+            # First clip: start at 0.0, find first beat for alignment
+            if len(beat_timestamps) > 0:
+                # Find first beat (may be after 0.0)
+                while current_beat_idx < len(beat_timestamps) and beat_timestamps[current_beat_idx] < start:
+                    current_beat_idx += 1
+        else:
+            # Subsequent clips: find the beat that is >= start time
             while current_beat_idx < len(beat_timestamps) and beat_timestamps[current_beat_idx] < start:
                 current_beat_idx += 1
         
-        # Add variation: alternate between base, base+1, and base-1 beats per clip
-        # This creates natural variation in clip durations (roughly 5-8s range, prefer ~7s)
-        # Reduced variation to ensure we stay closer to target and don't exceed Veo 3.1's 8s limit
-        variation_pattern = [0, 1, -1, 0]  # Simpler pattern (repeats every 4 clips) to reduce over-generation
+        # Add variation: balanced pattern to create diverse clip lengths while maintaining coverage
+        # Veo 3.1 supports 4s, 6s, 8s - we want to use all three frequently
+        # Pattern: -1 (shorter), 0 (medium), +1 (longer), +2 (longest) - avoids -2 to prevent too-short clips
+        # This creates natural variation: some clips at 4-5s, some at 6-7s, some at 7-8s
+        variation_pattern = [-1, 0, 1, 2, 0, -1, 1, 0, 2, -1, 1, 0]  # Balanced pattern, avoids -2
         beats_variation = variation_pattern[clip_index % len(variation_pattern)]
         beats_per_clip = max(1, base_beats_per_clip + beats_variation)
         
@@ -190,9 +235,10 @@ def generate_boundaries(
 
         # PHASE 2.4: Adjust duration to be close to target
         # Production quality range: 4-8s (Veo 3.1 limit is 8s, 4s is production minimum)
-        # Allow range of target ±1.5s for flexibility
-        min_duration = max(4.0, target_duration - 1.5)
-        max_duration = min(8.0, target_duration + 1.5)
+        # BALANCED tolerance: Allow range of target ±2s for variance while maintaining quality
+        # This allows clips to range from 4s to 8s with controlled variation
+        min_duration = max(4.0, target_duration - 2.0)
+        max_duration = min(8.0, target_duration + 2.0)
 
         # Adjust duration to be within acceptable range
         if duration < min_duration:
@@ -407,8 +453,9 @@ def generate_boundaries(
     MAX_DURATION = 8.0  # Veo 3.1 limit: clips must be <= 8s
 
     # Calculate acceptable range based on target duration
-    final_min_duration = max(4.0, target_duration - 1.5)
-    final_max_duration = min(8.0, target_duration + 1.5)
+    # BALANCED tolerance for variance: Allow ±2s from target
+    final_min_duration = max(4.0, target_duration - 2.0)
+    final_max_duration = min(8.0, target_duration + 2.0)
 
     validated_boundaries = []
     for i, boundary in enumerate(boundaries):
@@ -758,6 +805,10 @@ def generate_boundaries_with_breakpoints(
     # Calculate minimum clips required based on MAX_DURATION constraint (8s)
     min_clips_required = math.ceil(total_duration / MAX_DURATION)
     
+    # Add variation pattern for breakpoint-aware generation too
+    # This ensures we get diverse clip lengths even when using breakpoints
+    variation_pattern = [-2, -1, 0, 1, 2, 0, -1, 1, -2, 0, 2, -1]  # Same pattern as generate_boundaries
+    
     # Calculate max_clips if not specified
     if max_clips is None:
         target_clips = round(total_duration / target_duration)
@@ -835,8 +886,29 @@ def generate_boundaries_with_breakpoints(
                 f"(source={best_breakpoint.source}, confidence={best_breakpoint.confidence:.2f})"
             )
         else:
-            # No breakpoint in range - use beat-aligned target duration
-            end_time = find_beat_aligned_time(current_time, target_duration, beat_timestamps)
+            # No breakpoint in range - use beat-aligned target duration with balanced variation
+            # Apply variation pattern to create more diverse clip lengths
+            variation_pattern = [-1, 0, 1, 2, 0, -1, 1, 0, 2, -1, 1, 0]  # Same balanced pattern
+            beats_variation = variation_pattern[clip_index % len(variation_pattern)]
+            beat_interval = np.mean(np.diff(beat_timestamps)) if len(beat_timestamps) > 1 else (60.0 / bpm)
+            base_beats_per_clip = max(1, math.ceil(target_duration / beat_interval))
+            beats_per_clip = max(1, base_beats_per_clip + beats_variation)
+            
+            # Find beat-aligned time based on varied beats
+            if beat_timestamps:
+                # Find current beat index
+                current_beat_idx_local = 0
+                for i, beat in enumerate(beat_timestamps):
+                    if beat >= current_time:
+                        current_beat_idx_local = i
+                        break
+                
+                # Calculate end beat index
+                end_beat_idx = min(current_beat_idx_local + beats_per_clip, len(beat_timestamps) - 1)
+                end_time = beat_timestamps[end_beat_idx]
+            else:
+                # Fallback to target duration
+                end_time = find_beat_aligned_time(current_time, target_duration, beat_timestamps)
             
             # Ensure end_time is valid and within segment
             if end_time <= current_time:

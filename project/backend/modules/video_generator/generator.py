@@ -625,10 +625,73 @@ async def generate_video_clip(
             
             # For face-heavy clips, prioritize character references
             if is_face_heavy and image_url and max_images >= 2:
-                # Use character reference first, then scene reference
-                # Take first character reference, then add scene reference
-                limited_images = [reference_image_urls[0], image_url] if len(reference_image_urls) > 0 else [image_url]
+                # Use character reference first, then scene reference (if different from character ref)
+                # Note: reference_image_urls contains all images in order: [char_refs..., scene_ref, object_refs...]
+                # image_url should be the scene reference if available, otherwise it's the first character ref
+                
+                logger.info(
+                    f"Processing face-heavy clip reference images for {selected_model_key}",
+                    extra={
+                        "job_id": str(job_id),
+                        "num_reference_urls": len(reference_image_urls) if reference_image_urls else 0,
+                        "image_url_preview": image_url[:50] if image_url else None,
+                        "first_ref_preview": reference_image_urls[0][:50] if reference_image_urls else None,
+                        "max_images": max_images
+                    }
+                )
+
+                if reference_image_urls and len(reference_image_urls) > 0:
+                    # Check if image_url is different from the first character reference
+                    # If they're the same, it means there's no scene reference, so just use character refs
+                    if image_url != reference_image_urls[0]:
+                        # image_url is scene reference, reference_image_urls[0] is character reference
+                        # Explicitly prioritize: [Character Ref 1, Scene Ref]
+                        limited_images = [reference_image_urls[0], image_url]
+                        
+                        # If we have room for more images (e.g., max_images=3), try to add them
+                        # We skip reference_image_urls[0] (already added) and try others
+                        if max_images > 2:
+                            for ref in reference_image_urls[1:]:
+                                # Don't duplicate the scene reference (image_url) or first char ref
+                                if ref != image_url and len(limited_images) < max_images:
+                                    limited_images.append(ref)
+                    else:
+                        # No scene reference, just use character references
+                        limited_images = reference_image_urls[:max_images]
+                else:
+                    # Fallback: use image_url if no reference_image_urls
+                    limited_images = [image_url]
+                
                 limited_images = limited_images[:max_images]
+                
+                logger.info(
+                    f"Face-heavy clip: Using character ref first, then scene ref (if available)",
+                    extra={
+                        "job_id": str(job_id),
+                        "character_ref_url": reference_image_urls[0][:100] if reference_image_urls else None,
+                        "scene_ref_url": image_url[:100] if image_url and (not reference_image_urls or image_url != reference_image_urls[0]) else None,
+                        "final_images_count": len(limited_images),
+                        "has_scene_ref": image_url != reference_image_urls[0] if reference_image_urls else False,
+                        "all_reference_urls": [url[:100] for url in reference_image_urls[:3]] if reference_image_urls else [],
+                        "final_limited_urls": [url[:100] for url in limited_images[:3]]
+                    }
+                )
+                
+                # CRITICAL LOGGING: Log final reference images passed to Replicate API
+                logger.info(
+                    f"Final reference images passed to Replicate API for clip {clip_prompt.clip_index}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "model": selected_model_key,
+                        "is_face_heavy": is_face_heavy,
+                        "max_images": max_images,
+                        "limited_images_count": len(limited_images),
+                        "limited_images_urls": [url[:100] for url in limited_images],
+                        "image_url_used": image_url[:100] if image_url else None,
+                        "reference_image_urls_used": [url[:100] for url in reference_image_urls[:5]] if reference_image_urls else []
+                    }
+                )
             else:
                 # Default: use character references (or scene if no character refs)
                 # For single image models, this will be handled in the elif branch

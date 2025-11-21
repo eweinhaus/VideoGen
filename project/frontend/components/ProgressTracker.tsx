@@ -1234,12 +1234,6 @@ export function ProgressTracker({
         ) : null}
       </div>
 
-      {displayCost !== null && (
-        <p className="text-sm text-muted-foreground">
-          Total cost: ${displayCost.toFixed(2)}
-        </p>
-      )}
-
       <StageIndicator 
         stages={displayStages} 
         currentStage={displayStage}

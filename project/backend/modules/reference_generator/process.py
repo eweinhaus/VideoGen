@@ -26,7 +26,8 @@ logger = get_logger("reference_generator")
 async def process(
     job_id: UUID,
     plan: ScenePlan,
-    duration_seconds: Optional[float] = None
+    duration_seconds: Optional[float] = None,
+    uploaded_character_images: Optional[List[Dict[str, Any]]] = None
 ) -> Tuple[Optional[ReferenceImages], List[Dict[str, Any]]]:
     """
     Generate reference images for scenes and characters.
@@ -36,6 +37,8 @@ async def process(
         plan: Scene plan from Scene Planner
         duration_seconds: Optional audio duration in seconds (for budget checks)
                          If None, budget checks may be skipped (orchestrator handles pre-flight)
+        uploaded_character_images: Optional list of user-uploaded character reference images
+                                   Each dict should have: url, label (optional), index
         
     Returns:
         ReferenceImages object if successful (≥50% threshold AND minimum requirements met),
@@ -102,21 +105,134 @@ async def process(
     if not plan.style:
         raise ValidationError("ScenePlan must have a style object", job_id=job_id)
 
+    # Match uploaded main character image to main character (if provided)
+    character_image_map: Dict[str, str] = {}
+    if uploaded_character_images and len(uploaded_character_images) > 0:
+        from .character_matcher import match_uploaded_image_to_main_character
+        # Only use the first image (main character only)
+        uploaded_image = uploaded_character_images[0]
+        
+        logger.info(
+            f"Processing uploaded character image for job {job_id}",
+            extra={
+                "job_id": str(job_id),
+                "uploaded_image_url": uploaded_image.get("url", "missing"),
+                "uploaded_image_index": uploaded_image.get("index", "missing"),
+                "total_characters_in_plan": len(plan.characters),
+                "character_roles": [char.role for char in plan.characters] if plan.characters else [],
+                "character_ids": [char.id for char in plan.characters] if plan.characters else []
+            }
+        )
+        
+        main_character_id = match_uploaded_image_to_main_character(
+            uploaded_image,
+            plan
+        )
+        if main_character_id:
+            character_image_map[main_character_id] = uploaded_image["url"]
+            logger.info(
+                f"Successfully matched uploaded main character image for job {job_id}",
+                extra={
+                    "job_id": str(job_id),
+                    "main_character_id": main_character_id,
+                    "image_url": uploaded_image["url"],
+                    "character_image_map": character_image_map
+                }
+            )
+        else:
+            # CRITICAL: Even if matching fails, use first character as fallback
+            # This ensures the uploaded image is ALWAYS used if provided
+            if plan.characters and len(plan.characters) > 0:
+                fallback_character_id = plan.characters[0].id
+                character_image_map[fallback_character_id] = uploaded_image["url"]
+                logger.warning(
+                    f"Character matcher returned None, using first character '{fallback_character_id}' as fallback for uploaded image in job {job_id}",
+                    extra={
+                        "job_id": str(job_id),
+                        "fallback_character_id": fallback_character_id,
+                        "fallback_character_role": plan.characters[0].role,
+                        "total_characters": len(plan.characters),
+                        "character_roles": [char.role for char in plan.characters] if plan.characters else [],
+                        "character_ids": [char.id for char in plan.characters] if plan.characters else [],
+                        "uploaded_image_url": uploaded_image.get("url", "missing"),
+                        "character_image_map": character_image_map
+                    }
+                )
+            else:
+                logger.error(
+                    f"Could not match uploaded image to main character and no characters available for job {job_id}",
+                    extra={
+                        "job_id": str(job_id),
+                        "uploaded_image_url": uploaded_image.get("url", "missing")
+                    }
+                )
+    else:
+        logger.info(
+            f"No uploaded character images provided for job {job_id}",
+            extra={"job_id": str(job_id)}
+        )
+    
+    # CRITICAL LOGGING: Log final character_image_map state
+    logger.info(
+        f"Character image map final state for job {job_id}",
+        extra={
+            "job_id": str(job_id),
+            "character_image_map": character_image_map,
+            "character_image_map_size": len(character_image_map),
+            "mapped_character_ids": list(character_image_map.keys()),
+            "mapped_image_urls": [url[:100] for url in character_image_map.values()] if character_image_map else []
+        }
+    )
+    
     # Extract unique scenes, characters, and objects (deduplicate by ID)
     unique_scenes_list = list({scene.id: scene for scene in plan.scenes}.values())
-    unique_characters_list = list({char.id: char for char in plan.characters}.values())
+    # Filter out characters that have uploaded images (they don't need generation)
+    all_unique_characters = list({char.id: char for char in plan.characters}.values())
+    unique_characters_list = [
+        char for char in all_unique_characters
+        if char.id not in character_image_map
+    ]
     unique_objects_list = list({obj.id: obj for obj in plan.objects}.values()) if plan.objects else []
+    
+    # Log which characters are being skipped due to uploaded images
+    skipped_characters = [char.id for char in all_unique_characters if char.id in character_image_map]
+    if skipped_characters:
+        logger.info(
+            f"Skipping character generation for characters with uploaded images in job {job_id}",
+            extra={
+                "job_id": str(job_id),
+                "skipped_character_ids": skipped_characters,
+                "characters_to_generate": [char.id for char in unique_characters_list],
+                "character_image_map_keys": list(character_image_map.keys()),
+                "all_character_ids": [char.id for char in all_unique_characters]
+            }
+        )
+    else:
+        # Log warning if we expected to skip but didn't
+        if character_image_map:
+            logger.warning(
+                f"Character image map exists but no characters were skipped in job {job_id}",
+                extra={
+                    "job_id": str(job_id),
+                    "character_image_map": character_image_map,
+                    "all_character_ids": [char.id for char in all_unique_characters],
+                    "characters_to_generate": [char.id for char in unique_characters_list]
+                }
+            )
 
     # Calculate total expected images including variations
     variations_per_scene = settings.reference_variations_per_scene
     variations_per_character = settings.reference_variations_per_character
     variations_per_object = settings.reference_variations_per_object
     
-    total_images = (
+    # Total images = generated images + uploaded character images
+    generated_images = (
         len(unique_scenes_list) * variations_per_scene +
         len(unique_characters_list) * variations_per_character +
         len(unique_objects_list) * variations_per_object
     )
+    uploaded_character_count = len(character_image_map)
+    total_images = generated_images + uploaded_character_count
     
     logger.info(
         f"Reference generator input validation for job {job_id}",
@@ -222,11 +338,23 @@ async def process(
                 "object_ids": [o.id for o in unique_objects_list]
             }
         )
+        # Double-check: Log what we're passing to generator to ensure filtering worked
+        logger.info(
+            f"Calling generate_all_references with filtered character list for job {job_id}",
+            extra={
+                "job_id": str(job_id),
+                "characters_passed_to_generator": [char.id for char in unique_characters_list],
+                "characters_with_uploaded_images": list(character_image_map.keys()),
+                "total_characters_in_plan": len(plan.characters),
+                "filtered_out_count": len(skipped_characters) if skipped_characters else 0
+            }
+        )
+        
         results = await generate_all_references(
             job_id=job_id,
             plan=plan,
             scenes=unique_scenes_list,
-            characters=unique_characters_list,
+            characters=unique_characters_list,  # This should NOT include characters with uploaded images
             objects=unique_objects_list,
             duration_seconds=duration_seconds,
             events_callback=publish_event_data
@@ -372,6 +500,61 @@ async def process(
     character_references_count = 0
     object_references_count = 0
     completed_images = 0
+    
+    # Add uploaded character images to character_references
+    for char_id, image_url in character_image_map.items():
+        uploaded_ref_image = ReferenceImage(
+            character_id=char_id,
+            image_url=image_url,
+            variation_index=0,  # User uploads are always variation 0
+            prompt_used="user_uploaded",  # Special marker for uploaded images
+            generation_time=0.0,  # No generation time for uploaded images
+            cost=Decimal("0.00")  # No cost for uploaded images
+        )
+        character_references.append(uploaded_ref_image)
+        character_references_count += 1
+        successful_images += 1
+        completed_images += 1
+        
+        logger.info(
+            f"Added uploaded character image to character_references for character '{char_id}' in job {job_id}",
+            extra={
+                "job_id": str(job_id),
+                "character_id": char_id,
+                "image_url": image_url,
+                "variation_index": 0,
+                "total_character_references": len(character_references),
+                "character_references_count": character_references_count
+            }
+        )
+        
+        # Publish event for uploaded image
+        events.append({
+            "event_type": "reference_generation_complete",
+            "data": {
+                "image_type": "character",
+                "image_id": char_id,
+                "image_url": image_url,
+                "generation_time": 0.0,
+                "cost": 0.0,
+                "retry_count": 0,
+                "total_images": total_images,
+                "completed_images": completed_images,
+                "source": "user_uploaded"
+            }
+        })
+    
+    # CRITICAL LOGGING: Log character_references list state after adding uploaded images
+    logger.info(
+        f"Character references list state after adding uploaded images for job {job_id}",
+        extra={
+            "job_id": str(job_id),
+            "character_references_count": len(character_references),
+            "character_reference_ids": [ref.character_id for ref in character_references],
+            "character_reference_urls": [ref.image_url[:100] for ref in character_references],
+            "uploaded_markers": [ref.prompt_used for ref in character_references]
+        }
+    )
     
     for result in results:
         # Skip skipped variations (they're not failures, just not generated for consistency)

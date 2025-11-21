@@ -6,6 +6,8 @@ Shared validation utilities for common input validation tasks.
 
 import mimetypes
 from typing import Optional, BinaryIO
+from PIL import Image
+import io
 
 from shared.errors import ValidationError
 
@@ -152,3 +154,90 @@ def validate_file_size(
             f"File size ({file_size_mb:.2f} MB) exceeds maximum "
             f"of {max_size_mb:.2f} MB"
         )
+
+
+def validate_character_image(
+    file: BinaryIO,
+    max_size_mb: int = 5,
+    min_dimension: int = 512
+) -> tuple[int, int]:
+    """
+    Validate a character reference image file.
+    
+    Args:
+        file: File object to validate
+        max_size_mb: Maximum file size in MB (default: 5)
+        min_dimension: Minimum width/height in pixels (default: 512)
+        
+    Returns:
+        Tuple of (width, height) in pixels
+        
+    Raises:
+        ValidationError: If file is invalid
+    """
+    # Check if file is None or empty
+    if file is None:
+        raise ValidationError("Image file is required")
+    
+    # Get file size
+    file.seek(0, 2)  # Seek to end
+    file_size = file.tell()
+    file.seek(0)  # Reset to beginning
+    
+    if file_size == 0:
+        raise ValidationError("Image file is empty")
+    
+    # Check file size
+    max_size_bytes = max_size_mb * 1024 * 1024
+    if file_size > max_size_bytes:
+        raise ValidationError(
+            f"Image file size ({file_size / (1024 * 1024):.2f} MB) exceeds maximum "
+            f"of {max_size_mb} MB"
+        )
+    
+    # Check file format and dimensions
+    file.seek(0)
+    try:
+        image = Image.open(io.BytesIO(file.read()))
+        file.seek(0)  # Reset for potential reuse
+        
+        # Check format
+        valid_formats = ["PNG", "JPEG", "JPG"]
+        if image.format not in valid_formats:
+            raise ValidationError(
+                f"Invalid image format: {image.format}. Supported formats: {', '.join(valid_formats)}"
+            )
+        
+        # Check dimensions
+        width, height = image.size
+        if width < min_dimension or height < min_dimension:
+            raise ValidationError(
+                f"Image dimensions ({width}x{height}) are too small. "
+                f"Minimum dimension: {min_dimension} pixels"
+            )
+        
+        return (width, height)
+        
+    except Exception as e:
+        if isinstance(e, ValidationError):
+            raise
+        # If PIL fails, check MIME type as fallback
+        file.seek(0)
+        header = file.read(12)
+        file.seek(0)
+        
+        # Check for common image file signatures
+        valid_signatures = [
+            b"\x89PNG\r\n\x1a\n",  # PNG
+            b"\xff\xd8\xff",  # JPEG
+        ]
+        
+        is_valid_image = any(header.startswith(sig) for sig in valid_signatures)
+        
+        if not is_valid_image:
+            raise ValidationError(
+                "Invalid image file format. Supported formats: PNG, JPEG, JPG"
+            )
+        
+        # If we can't read dimensions, raise error
+        raise ValidationError(f"Could not read image dimensions: {str(e)}")

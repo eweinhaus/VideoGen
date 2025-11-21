@@ -51,6 +51,7 @@ sse-starlette>=1.6.5  # SSE support for FastAPI
 python-jose[cryptography]>=3.3.0  # JWT token handling
 passlib[bcrypt]>=1.7.4  # Password hashing (if needed for auth)
 python-dateutil>=2.8.2  # Date/time utilities
+Pillow>=10.0.0  # Image processing for character image validation
 
 # Testing
 pytest>=7.4.0
