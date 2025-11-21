@@ -7,7 +7,7 @@ export interface UploadResponse {
 
 export interface JobResponse {
   id: string
-  status: "queued" | "processing" | "completed" | "failed"
+  status: "queued" | "processing" | "completed" | "failed" | "regenerating"
   current_stage: string | null
   progress: number
   video_url: string | null

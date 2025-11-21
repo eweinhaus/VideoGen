@@ -1,6 +1,6 @@
 export interface Job {
   id: string
-  status: "queued" | "processing" | "completed" | "failed"
+  status: "queued" | "processing" | "completed" | "failed" | "regenerating"
   currentStage: string | null
   progress: number
   videoUrl: string | null
