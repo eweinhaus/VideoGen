@@ -380,7 +380,6 @@ async def compare_clip_versions(
             extra={"job_id": job_id, "clip_index": clip_index}
         )
         clips = await load_clips_from_job_stages(UUID(job_id))
-        clips = await load_clips_from_job_stages(UUID(job_id))
         if not clips:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
