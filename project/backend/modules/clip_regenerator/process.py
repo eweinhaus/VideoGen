@@ -1203,6 +1203,66 @@ async def regenerate_clip_with_recomposition(
             exc_info=True
         )
     
+    # Save the regenerated clip as a new version
+    try:
+        # Get the next version number
+        version_result = await db.table("clip_versions").select("version_number").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+        
+        next_version = 2  # Default to version 2 if no versions exist
+        if version_result.data and len(version_result.data) > 0:
+            next_version = version_result.data[0].get("version_number", 1) + 1
+        
+        # Mark all previous versions as not current
+        await db.table("clip_versions").update({"is_current": False}).eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).execute()
+        
+        # Get thumbnail if available
+        thumbnail_url = None
+        try:
+            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).limit(1).execute()
+            if thumb_result.data and len(thumb_result.data) > 0:
+                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+        except Exception:
+            pass  # Table may not exist
+        
+        # Save regenerated clip as new version
+        regenerated_version_data = {
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "version_number": next_version,
+            "video_url": new_clip_url,
+            "thumbnail_url": thumbnail_url,
+            "prompt": modified_prompt,
+            "user_instruction": user_instruction,
+            "cost": float(regeneration_result.cost) if regeneration_result.cost else 0.0,
+            "duration": float(new_clip.actual_duration) if new_clip.actual_duration else None,
+            "is_current": True,  # This is the current version
+            "created_at": "now()"
+        }
+        
+        await db.table("clip_versions").insert(regenerated_version_data).execute()
+        logger.info(
+            f"Saved regenerated clip to clip_versions as version {next_version}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "version_number": next_version,
+                "video_url": new_clip_url
+            }
+        )
+    except Exception as e:
+        # Don't fail regeneration if clip_versions save fails, but log the warning
+        logger.warning(
+            f"Failed to save regenerated clip to clip_versions: {e}",
+            extra={"job_id": str(job_id), "clip_index": clip_index},
+            exc_info=True
+        )
+    
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
     updated_clips[clip_position] = new_clip
@@ -1555,6 +1615,19 @@ async def regenerate_clip_with_recomposition(
             "template_used": regeneration_result.template_used
         }
     )
+    
+    # Publish final regeneration_complete event with full video URL
+    if event_publisher:
+        await event_publisher("regeneration_complete", {
+            "sequence": 1000,
+            "clip_index": clip_index,
+            "new_clip_url": new_clip.video_url,
+            "video_url": video_output.video_url,  # Full recomposed video URL
+            "cost": float(regeneration_result.cost),
+            "temperature": regeneration_result.temperature,
+            "seed": regeneration_result.seed,
+            "template_used": regeneration_result.template_used
+        })
     
     return RegenerationResult(
         clip=new_clip,
