@@ -80,7 +80,15 @@ export function ClipSelector({
         
         if (!mounted) return
         
-        setClips(response.clips)
+        // Add cache-busting timestamp to thumbnail URLs to force immediate refresh
+        const clipsWithCacheBusting = response.clips.map(clip => ({
+          ...clip,
+          thumbnail_url: clip.thumbnail_url 
+            ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}t=${Date.now()}` 
+            : null
+        }))
+        
+        setClips(clipsWithCacheBusting)
         // Clear failed thumbnails on refresh to retry loading new thumbnails
         setFailedThumbnails(new Set())
         setLoading(false)
