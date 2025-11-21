@@ -94,6 +94,9 @@ async def update_job_stage(
             serializable_metadata = make_json_serializable(metadata)
             stage_data["metadata"] = serializable_metadata
         
+        # Convert the entire stage_data dict to ensure all UUIDs are converted to strings
+        stage_data = make_json_serializable(stage_data)
+        
         # Check if stage exists
         existing = await db_client.table("job_stages").select("id").eq("job_id", job_id).eq("stage_name", stage_name).execute()
         

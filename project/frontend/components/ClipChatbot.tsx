@@ -969,7 +969,7 @@ export function ClipChatbot({
               variant="outline"
               size="sm"
               onClick={() => handleCompareClip(selectedClipIndices[0])}
-              disabled={loadingComparison || isProcessing}
+              disabled={loadingComparison}
               className="w-full"
             >
               <GitCompare className="h-4 w-4 mr-2" />
@@ -1008,7 +1008,6 @@ export function ClipChatbot({
                       saveSelectedClips(allIndices)
                     }
                   }}
-                  disabled={isProcessing}
                   className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                 />
                 <span>Select All Clips ({clips.length})</span>
@@ -1042,14 +1041,12 @@ export function ClipChatbot({
                           saveSelectedClips(newSelection)
                         }
                       }}
-                      disabled={isProcessing}
                       className={cn(
                         "relative w-full rounded overflow-hidden transition-all",
                         "flex flex-col h-full box-border",
                         isSelected
                           ? "border-4 border-blue-500 shadow-lg"
-                          : "border-4 border-transparent hover:border-blue-400/50",
-                        isProcessing && "opacity-50 cursor-not-allowed"
+                          : "border-4 border-transparent hover:border-blue-400/50"
                       )}
                     >
                       {/* Thumbnail */}

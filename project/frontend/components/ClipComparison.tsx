@@ -446,7 +446,7 @@ export function ClipComparison({
   const rightVideoRef = isSwapped && regeneratedClip ? originalVideoRef : regeneratedVideoRef
   
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-end p-4 pl-[440px]">
       {/* Hidden audio element for synchronized playback */}
       {audioUrl && (
         <audio
@@ -491,7 +491,7 @@ export function ClipComparison({
       )}
       <div
         ref={containerRef}
-        className="bg-white rounded-lg shadow-xl w-full max-w-7xl max-h-[90vh] overflow-auto"
+        className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
@@ -649,9 +649,28 @@ export function ClipComparison({
           </div>
           
           {/* Controls */}
-          <div className="flex flex-col items-center gap-4">
-            {/* Primary playback controls */}
-            <div className="flex items-center gap-4">
+          <div className="flex flex-col items-center gap-4 pb-4">
+            {/* Primary playback controls with revert button */}
+            <div className="flex items-center gap-4 border-t pt-4">
+              {/* Revert to Prior Clip button - only show if there's a regenerated clip */}
+              {regeneratedClip && onRevert && clipIndex !== undefined && (
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      await onRevert(clipIndex, originalClip.version_number)
+                      onClose() // Close modal after successful revert
+                    } catch (error) {
+                      console.error("Failed to revert clip:", error)
+                      setError(error instanceof Error ? error.message : "Failed to revert clip")
+                    }
+                  }}
+                  className="text-orange-600 border-orange-600 hover:bg-orange-50"
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Revert to Prior Clip
+                </Button>
+              )}
               <Button onClick={handlePlay} variant="default">
                 {isPlaying ? (
                   <>
@@ -673,32 +692,6 @@ export function ClipComparison({
                 {isSynced ? "Synchronized" : "Independent"}
               </Button>
             </div>
-            
-            {/* Version management buttons */}
-            {regeneratedClip && onRevert && clipIndex !== undefined && (
-              <div className="flex flex-col items-center gap-3 w-full">
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    try {
-                      await onRevert(clipIndex, leftClip.version_number) // Revert to the original version being shown
-                      onClose() // Close modal after successful revert
-                    } catch (error) {
-                      console.error("Failed to revert clip:", error)
-                      setError(error instanceof Error ? error.message : "Failed to revert clip")
-                    }
-                  }}
-                  className="text-orange-600 border-orange-600 hover:bg-orange-50 min-w-[200px]"
-                >
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  Use Original Version (v{leftClip.version_number})
-                </Button>
-                <div className="text-xs text-muted-foreground text-center max-w-md">
-                  This will re-stitch the full video using the original clip version (v{leftClip.version_number}) 
-                  instead of the regenerated version (v{rightClip?.version_number}).
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

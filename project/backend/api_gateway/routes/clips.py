@@ -361,180 +361,125 @@ async def compare_clip_versions(
                     }
                 )
         
-        # Load comparison versions from clip_versions table
-        # Strategy: Compare the previous version (before latest) vs the latest version
-        # If only 2 versions exist, compare v1 (original) vs v2 (latest)
-        # If multiple versions exist, compare previous vs latest (e.g., v3 vs v4)
+        # CRITICAL CHANGE: ALWAYS load original from job_stages (source of truth)
+        # Reason: job_stages is NEVER overwritten during regeneration, so it always
+        # contains the TRUE ORIGINAL clip. clip_versions is ONLY for regenerated versions (v2+).
+        # This prevents the bug where both "original" and "regenerated" show the same video.
+        #
+        # Strategy:
+        # 1. Original (v1): ALWAYS from job_stages (never changes)
+        # 2. Regenerated (v2+): ALWAYS from clip_versions (current/latest version)
+        
         db = DatabaseClient()
         original_data = None
         regenerated_data = None
         
+        # Step 1: ALWAYS load original from job_stages (TRUE original, never overwritten)
+        logger.info(
+            "Loading original clip from job_stages (source of truth for original)",
+            extra={"job_id": job_id, "clip_index": clip_index}
+        )
+        clips = await load_clips_from_job_stages(UUID(job_id))
+        clips = await load_clips_from_job_stages(UUID(job_id))
+        if not clips:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Clips not found for job {job_id}"
+            )
+        
+        original_clip = None
+        for clip in clips.clips:
+            if clip.clip_index == clip_index:
+                original_clip = clip
+                break
+        
+        if not original_clip:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Clip {clip_index} not found for job {job_id}"
+            )
+        
+        # Get thumbnail and prompt for original
+        thumbnail_url = None
         try:
-            # First, get all versions for this clip to determine what to compare
-            all_versions_result = await db.table("clip_versions").select("*").eq(
+            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
                 "job_id", str(job_id)
-            ).eq("clip_index", clip_index).order("version_number", desc=True).execute()
+            ).eq("clip_index", clip_index).limit(1).execute()
+            if thumb_result.data and len(thumb_result.data) > 0:
+                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+        except Exception:
+            pass  # Table may not exist
+        
+        clip_prompts = await load_clip_prompts_from_job_stages(UUID(job_id))
+        prompt = ""
+        if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
+            prompt = clip_prompts.clip_prompts[clip_index].prompt
+        
+        original_data = {
+            "video_url": original_clip.video_url,
+            "thumbnail_url": thumbnail_url,
+            "prompt": prompt,
+            "version_number": 1,  # Original is always version 1
+            "duration": original_clip.actual_duration or original_clip.target_duration,
+            "user_instruction": None,  # Original has no instruction
+            "cost": float(original_clip.cost) if original_clip.cost else None,
+            "created_at": None
+        }
+        
+        logger.info(
+            "Loaded original clip from job_stages",
+            extra={
+                "job_id": job_id,
+                "clip_index": clip_index,
+                "video_url": original_data.get("video_url"),
+                "source": "job_stages"
+            }
+        )
+        
+        # Step 2: Load regenerated (current/latest) version from clip_versions table
+        # If no versions exist in clip_versions, that means no regeneration has happened yet
+        try:
+            # Get the latest version (highest version_number) from clip_versions
+            latest_result = await db.table("clip_versions").select("*").eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
             
-            if all_versions_result.data and len(all_versions_result.data) > 0:
-                all_versions = all_versions_result.data
-                latest_version = all_versions[0]  # Highest version_number
+            if latest_result.data and len(latest_result.data) > 0:
+                latest_version = latest_result.data[0]
+                regenerated_data = {
+                    "video_url": latest_version.get("video_url"),
+                    "thumbnail_url": latest_version.get("thumbnail_url"),
+                    "prompt": latest_version.get("prompt", ""),
+                    "version_number": latest_version.get("version_number"),
+                    "duration": float(latest_version.get("duration")) if latest_version.get("duration") is not None else None,
+                    "user_instruction": latest_version.get("user_instruction"),
+                    "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
+                    "created_at": latest_version.get("created_at")
+                }
                 
-                # Determine which version to use as "original" (previous version)
-                if len(all_versions) == 1:
-                    # Only one version exists - this shouldn't happen if we saved v1 correctly
-                    # But handle it gracefully: use this as regenerated, load original from job_stages
-                    logger.warning(
-                        "Only one version found in clip_versions, loading original from job_stages",
-                        extra={"job_id": job_id, "clip_index": clip_index, "version": latest_version.get("version_number")}
-                    )
-                    regenerated_data = {
-                        "video_url": latest_version.get("video_url"),
-                        "thumbnail_url": latest_version.get("thumbnail_url"),
-                        "prompt": latest_version.get("prompt", ""),
-                        "version_number": latest_version.get("version_number"),
-                        "duration": float(latest_version.get("duration")) if latest_version.get("duration") is not None else None,
-                        "user_instruction": latest_version.get("user_instruction"),
-                        "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
-                        "created_at": latest_version.get("created_at")
+                logger.info(
+                    "Loaded regenerated clip from clip_versions",
+                    extra={
+                        "job_id": job_id,
+                        "clip_index": clip_index,
+                        "version_number": regenerated_data.get("version_number"),
+                        "video_url": regenerated_data.get("video_url"),
+                        "source": "clip_versions"
                     }
-                    # Will load original from job_stages below
-                elif len(all_versions) >= 2:
-                    # We have at least 2 versions - compare previous vs latest
-                    previous_version = all_versions[1]  # Second highest version_number
-                    
-                    # Original = previous version (the one before the latest)
-                    original_data = {
-                        "video_url": previous_version.get("video_url"),
-                        "thumbnail_url": previous_version.get("thumbnail_url"),
-                        "prompt": previous_version.get("prompt", ""),
-                        "version_number": previous_version.get("version_number"),
-                        "duration": float(previous_version.get("duration")) if previous_version.get("duration") is not None else None,
-                        "user_instruction": previous_version.get("user_instruction"),
-                        "cost": float(previous_version.get("cost", 0)) if previous_version.get("cost") else None,
-                        "created_at": previous_version.get("created_at")
-                    }
-                    
-                    # Regenerated = latest version
-                    regenerated_data = {
-                        "video_url": latest_version.get("video_url"),
-                        "thumbnail_url": latest_version.get("thumbnail_url"),
-                        "prompt": latest_version.get("prompt", ""),
-                        "version_number": latest_version.get("version_number"),
-                        "duration": float(latest_version.get("duration")) if latest_version.get("duration") is not None else None,
-                        "user_instruction": latest_version.get("user_instruction"),
-                        "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
-                        "created_at": latest_version.get("created_at")
-                    }
-                    
-                    logger.info(
-                        "Loaded comparison from clip_versions: previous vs latest",
-                        extra={
-                            "job_id": job_id,
-                            "clip_index": clip_index,
-                            "original_version": original_data.get("version_number"),
-                            "regenerated_version": regenerated_data.get("version_number"),
-                            "total_versions": len(all_versions)
-                        }
-                    )
+                )
+            else:
+                # No regenerated version exists yet
+                logger.info(
+                    "No regenerated version found in clip_versions (clip never regenerated)",
+                    extra={"job_id": job_id, "clip_index": clip_index}
+                )
         except Exception as e:
             logger.warning(
-                "Failed to load versions from clip_versions, will try job_stages fallback",
+                "Failed to load regenerated version from clip_versions",
                 extra={"job_id": job_id, "clip_index": clip_index},
                 exc_info=e
             )
-            # Table may not exist, fall back to job_stages
-        
-        # Fallback: Load from job_stages if clip_versions doesn't have versions
-        # This should only happen for clips that were never regenerated
-        if not original_data:
-            logger.info(
-                "No versions found in clip_versions, loading from job_stages (clip never regenerated)",
-                extra={"job_id": job_id, "clip_index": clip_index}
-            )
-            clips = await load_clips_from_job_stages(UUID(job_id))
-            if not clips:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Clips not found for job {job_id}"
-                )
-            
-            original_clip = None
-            for clip in clips.clips:
-                if clip.clip_index == clip_index:
-                    original_clip = clip
-                    break
-            
-            if not original_clip:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Clip {clip_index} not found for job {job_id}"
-                )
-            
-            # Get thumbnail and prompt for original
-            thumbnail_url = None
-            try:
-                thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
-                    "job_id", str(job_id)
-                ).eq("clip_index", clip_index).limit(1).execute()
-                if thumb_result.data and len(thumb_result.data) > 0:
-                    thumbnail_url = thumb_result.data[0].get("thumbnail_url")
-            except Exception:
-                pass  # Table may not exist
-            
-            clip_prompts = await load_clip_prompts_from_job_stages(UUID(job_id))
-            prompt = ""
-            if clip_prompts and clip_index < len(clip_prompts.clip_prompts):
-                prompt = clip_prompts.clip_prompts[clip_index].prompt
-            
-            original_data = {
-                "video_url": original_clip.video_url,
-                "thumbnail_url": thumbnail_url,
-                "prompt": prompt,
-                "version_number": 1,  # Original is always version 1
-                "duration": original_clip.actual_duration or original_clip.target_duration,
-                "user_instruction": None,  # Original has no instruction
-                "cost": float(original_clip.cost) if original_clip.cost else None,
-                "created_at": None
-            }
-        
-        # If specific regenerated version was requested, override the default
-        if regenerated_version is not None and regenerated_version > 1:
-            try:
-                result = await db.table("clip_versions").select("*").eq(
-                    "job_id", str(job_id)
-                ).eq("clip_index", clip_index).eq("version_number", regenerated_version).limit(1).execute()
-                
-                if result.data and len(result.data) > 0:
-                    version_data = result.data[0]
-                    regenerated_data = {
-                        "video_url": version_data.get("video_url"),
-                        "thumbnail_url": version_data.get("thumbnail_url"),
-                        "prompt": version_data.get("prompt"),
-                        "version_number": version_data.get("version_number"),
-                        "duration": float(version_data.get("duration")) if version_data.get("duration") is not None else None,
-                        "user_instruction": version_data.get("user_instruction"),
-                        "cost": float(version_data.get("cost", 0)) if version_data.get("cost") else None,
-                        "created_at": version_data.get("created_at")
-                    }
-                    # Also update original to be the version before the requested one
-                    if regenerated_version > 2:
-                        prev_result = await db.table("clip_versions").select("*").eq(
-                            "job_id", str(job_id)
-                        ).eq("clip_index", clip_index).eq("version_number", regenerated_version - 1).limit(1).execute()
-                        if prev_result.data and len(prev_result.data) > 0:
-                            prev_version_data = prev_result.data[0]
-                            original_data = {
-                                "video_url": prev_version_data.get("video_url"),
-                                "thumbnail_url": prev_version_data.get("thumbnail_url"),
-                                "prompt": prev_version_data.get("prompt", ""),
-                                "version_number": prev_version_data.get("version_number"),
-                                "duration": float(prev_version_data.get("duration")) if prev_version_data.get("duration") is not None else None,
-                                "user_instruction": prev_version_data.get("user_instruction"),
-                                "cost": float(prev_version_data.get("cost", 0)) if prev_version_data.get("cost") else None,
-                                "created_at": prev_version_data.get("created_at")
-                            }
-            except Exception:
-                pass  # Table may not exist
+            # Table may not exist, regenerated_data remains None
         
         # If no regenerated version found, that's okay - means no regeneration yet
         # We'll return None for regenerated, and frontend can handle it
@@ -568,11 +513,16 @@ async def compare_clip_versions(
         
         if urls_match:
             logger.error(
-                "WARNING: Original and regenerated video URLs are the same! This indicates the original was not preserved correctly.",
+                "🚨 CRITICAL BUG: Original and regenerated video URLs are the SAME! "
+                "This indicates the original was not preserved correctly in the database.",
                 extra={
                     "job_id": job_id,
                     "clip_index": clip_index,
-                    "video_url": original_url
+                    "video_url": original_url,
+                    "original_version": original_data.get("version_number"),
+                    "regenerated_version": regenerated_data.get("version_number") if regenerated_data else None,
+                    "action_required": "Check clip_versions table for version integrity",
+                    "database_query": f"SELECT * FROM clip_versions WHERE job_id = '{job_id}' AND clip_index = {clip_index} ORDER BY version_number"
                 }
             )
         

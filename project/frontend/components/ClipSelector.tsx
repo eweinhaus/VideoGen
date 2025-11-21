@@ -19,6 +19,7 @@ interface ClipSelectorProps {
   onClipSelect: (clipIndex: number, timestampStart?: number) => void
   selectedClipIndex?: number
   totalClips?: number
+  refreshTrigger?: number // Add a refresh trigger prop
 }
 
 /**
@@ -55,6 +56,7 @@ export function ClipSelector({
   onClipSelect,
   selectedClipIndex,
   totalClips,
+  refreshTrigger,
 }: ClipSelectorProps) {
   const [clips, setClips] = useState<ClipData[]>([])
   const [loading, setLoading] = useState(true)
@@ -79,6 +81,8 @@ export function ClipSelector({
         if (!mounted) return
         
         setClips(response.clips)
+        // Clear failed thumbnails on refresh to retry loading new thumbnails
+        setFailedThumbnails(new Set())
         setLoading(false)
       } catch (err) {
         if (!mounted) return
@@ -94,7 +98,7 @@ export function ClipSelector({
     return () => {
       mounted = false
     }
-  }, [jobId])
+  }, [jobId, refreshTrigger]) // Add refreshTrigger to dependencies
 
   if (loading) {
     return (

@@ -212,7 +212,10 @@ async def process_regeneration_job(job_data: dict) -> None:
                 })
             else:
                 successful_count += 1
-                total_cost += result.get("cost", Decimal("0"))
+                # Result is now a dict with cost as Decimal
+                cost = result.get("cost", Decimal("0"))
+                if cost:
+                    total_cost += Decimal(str(cost))
         
         # Release job lock on completion
         await update_job_status(UUID(job_id), "completed")
@@ -292,23 +295,32 @@ async def regenerate_single_clip(
         event_publisher=event_pub
     )
     
+    # Extract cost from result (it's a RegenerationResult dataclass)
+    cost = float(result.cost) if result.cost else 0.0
+    video_url = result.video_output.video_url if result.video_output else None
+    
     logger.info(
         f"Completed regeneration for clip {clip_index}",
         extra={
             "job_id": str(job_id),
             "clip_index": clip_index,
-            "cost": float(result.get("cost", 0))
+            "cost": cost
         }
     )
     
     # Publish individual clip completion
     await event_pub("clip_regeneration_complete", {
         "clip_index": clip_index,
-        "new_clip_url": result.get("video_url"),
-        "cost": float(result.get("cost", 0))
+        "new_clip_url": video_url,
+        "cost": cost
     })
     
-    return result
+    # Return a dict for easier aggregation
+    return {
+        "cost": result.cost,
+        "video_url": video_url,
+        "clip_index": clip_index
+    }
 
 
 async def process_job_with_limit(job_data: dict) -> None:

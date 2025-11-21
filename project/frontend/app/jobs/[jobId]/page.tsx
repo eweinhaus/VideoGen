@@ -33,6 +33,7 @@ export default function JobProgressPage() {
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<any>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
+  const [clipRefreshTrigger, setClipRefreshTrigger] = useState(0) // Add refresh trigger
   
   // Restore comparison state from localStorage on mount or when selectedClipIndex changes
   useEffect(() => {
@@ -197,6 +198,14 @@ export default function JobProgressPage() {
     })
   }, [])
   
+  // Status flags - define before early returns
+  const isCompleted = job?.status === "completed" && job?.videoUrl
+  const isRegenerating = job?.status === "regenerating"
+  const isFailed = job?.status === "failed"
+  const isQueued = job?.status === "queued" && !job?.currentStage
+  const isProcessing = job?.status === "processing"
+  const showVideoUI = (isCompleted || isRegenerating) && job?.videoUrl
+  
   // Early returns after all hooks
   if (authLoading) {
     return (
@@ -311,12 +320,6 @@ export default function JobProgressPage() {
     )
   }
 
-  const isCompleted = job.status === "completed" && job.videoUrl
-  const isFailed = job.status === "failed"
-  // Only show "queued" message if status is queued AND no stage has started yet
-  const isQueued = job.status === "queued" && !job.currentStage
-  const isProcessing = job.status === "processing"
-
   return (
     <>
       {/* Cross-page loading modal - persists until audio_parser starts */}
@@ -346,7 +349,7 @@ export default function JobProgressPage() {
         </div>
       )}
       
-      <div className="container mx-auto max-w-7xl px-4 py-8">
+      <div className="container mx-auto px-4 py-8 md:pl-[440px] md:max-w-none">
       <div className="mb-6">
         <Button
           variant="ghost"
@@ -358,13 +361,23 @@ export default function JobProgressPage() {
         </Button>
         
         {/* Sticky header with progress and video - pinned to top when video loaded */}
-        {isCompleted && job?.videoUrl && (
+        {showVideoUI && (
           <div className="sticky top-0 z-30 bg-background/95 backdrop-blur-sm border-b pb-4 mb-6 -mx-4 px-4 -mt-4 pt-4 space-y-4">
-            <Alert>
-              <AlertDescription>
-                Video generation completed successfully!
-              </AlertDescription>
-            </Alert>
+            {isRegenerating && (
+              <Alert>
+                <AlertDescription className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span>Regenerating clip... Your video will update when complete.</span>
+                </AlertDescription>
+              </Alert>
+            )}
+            {isCompleted && (
+              <Alert>
+                <AlertDescription>
+                  Video generation completed successfully!
+                </AlertDescription>
+              </Alert>
+            )}
             <VideoPlayer 
               videoUrl={job.videoUrl} 
               jobId={jobId} 
@@ -380,6 +393,7 @@ export default function JobProgressPage() {
                 }}
                 selectedClipIndex={selectedClipIndex}
                 totalClips={undefined}
+                refreshTrigger={clipRefreshTrigger}
               />
             </div>
             <ProgressTracker
@@ -398,7 +412,7 @@ export default function JobProgressPage() {
                 <CardDescription>Job ID: {jobId}</CardDescription>
               </div>
               {/* Timer aligned to the right of the title - get from job store */}
-              {job?.estimatedRemaining != null && (isProcessing || isQueued) && (
+              {job?.estimatedRemaining != null && (isProcessing || isQueued || isRegenerating) && (
                 <div className="text-sm font-mono text-muted-foreground self-center">
                   <span className="tabular-nums">{formatRemaining(job.estimatedRemaining)}</span>
                 </div>
@@ -509,7 +523,7 @@ export default function JobProgressPage() {
               </div>
             ) : (
               <div className="space-y-6">
-                {isCompleted && job.videoUrl ? (
+                {showVideoUI ? (
                   <>
                     {/* Floating ClipChatbot - positioned fixed at bottom-left */}
                     <ClipChatbot
@@ -520,6 +534,10 @@ export default function JobProgressPage() {
                         try {
                           await fetchJob(jobId)
                           console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+                          
+                          // Trigger ClipSelector refresh to show new thumbnails
+                          setClipRefreshTrigger(prev => prev + 1)
+                          console.log("✅ ClipSelector refresh triggered")
                           
                           // CRITICAL FIX: If comparison view is open for the regenerated clip,
                           // refresh it to show old vs. new (not new vs. new)
