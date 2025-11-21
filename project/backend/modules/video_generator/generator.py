@@ -347,6 +347,7 @@ async def generate_video_clip(
     aspect_ratio: str = "16:9",
     temperature: Optional[float] = None,  # LLM-determined temperature for video generation
     seed: Optional[int] = None,  # Seed for reproducible generation (reused for precise changes)
+    version_number: Optional[int] = None,  # Version number for regenerations (None for original)
 ) -> Clip:
     """
     Generate single video clip via Replicate.
@@ -999,18 +1000,35 @@ async def generate_video_clip(
             
             # Upload to Supabase Storage
             storage = StorageClient()
-            clip_path = f"{job_id}/clip_{clip_prompt.clip_index}.mp4"
             
-            # Delete existing file if it exists (handles retry scenarios)
-            try:
-                await storage.delete_file("video-clips", clip_path)
-                logger.debug(
-                    f"Deleted existing clip file before upload",
-                    extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+            # Use versioned filename for regenerations to preserve original
+            if version_number and version_number > 1:
+                # Regeneration: use versioned filename (e.g., clip_4_v2.mp4, clip_4_v3.mp4)
+                clip_path = f"{job_id}/clip_{clip_prompt.clip_index}_v{version_number}.mp4"
+                # Don't delete existing file - preserve original and previous versions
+                logger.info(
+                    f"Using versioned filename for regeneration (preserving original)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_prompt.clip_index,
+                        "version_number": version_number,
+                        "clip_path": clip_path
+                    }
                 )
-            except Exception:
-                # File doesn't exist or delete failed - that's okay, continue with upload
-                pass
+            else:
+                # Original generation: use standard filename
+                clip_path = f"{job_id}/clip_{clip_prompt.clip_index}.mp4"
+                
+                # Delete existing file if it exists (handles retry scenarios for original generation only)
+                try:
+                    await storage.delete_file("video-clips", clip_path)
+                    logger.debug(
+                        f"Deleted existing clip file before upload (retry scenario)",
+                        extra={"job_id": str(job_id), "clip_index": clip_prompt.clip_index}
+                    )
+                except Exception:
+                    # File doesn't exist or delete failed - that's okay, continue with upload
+                    pass
             
             logger.info(
                 f"Uploading video to Supabase Storage",
