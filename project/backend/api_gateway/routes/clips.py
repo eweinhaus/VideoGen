@@ -588,6 +588,8 @@ async def compare_clip_versions(
                 
                 # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
                 # We need to access the nested "clips" array
+                # ALSO: Use list_position to match clips by their position in the array,
+                # not by clip_index, as they might differ!
                 if isinstance(clips_wrapper, dict):
                     clips_list = clips_wrapper.get("clips", [])
                 elif isinstance(clips_wrapper, list):
@@ -596,8 +598,15 @@ async def compare_clip_versions(
                 else:
                     clips_list = []
                 
-                if clip_index < len(clips_list):
-                    current_clip_url = clips_list[clip_index].get("video_url", "")
+                # Find the list position for this clip_index
+                list_pos = None
+                for idx, c in enumerate(clips_list):
+                    if isinstance(c, dict) and c.get("clip_index") == clip_index:
+                        list_pos = idx
+                        break
+                
+                if list_pos is not None and list_pos < len(clips_list):
+                    current_clip_url = clips_list[list_pos].get("video_url", "")
                     
                     # Check if this URL matches any clip_version
                     if current_clip_url:
@@ -611,17 +620,17 @@ async def compare_clip_versions(
                                 active_version_number = int(version_match.group(1))
                                 logger.info(
                                     f"✅ Detected active version from URL: v{active_version_number}",
-                                    extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                                    extra={"job_id": job_id, "clip_index": clip_index, "list_pos": list_pos, "url": current_clip_url}
                                 )
                         else:
                             # URL doesn't have _v pattern, it's likely v1 (original)
                             logger.info(
                                 f"✅ No version pattern in URL, defaulting to v1 (original)",
-                                extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                                extra={"job_id": job_id, "clip_index": clip_index, "list_pos": list_pos, "url": current_clip_url}
                             )
                 else:
                     logger.warning(
-                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
+                        f"Could not find clip {clip_index} in clips list (total clips: {len(clips_list)})",
                         extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
                     )
         except Exception as e:
@@ -727,17 +736,26 @@ async def revert_clip_to_version(
             )
         
         # Find the clip to revert
+        # CRITICAL: We need to find the clip BY ITS clip_index property, not by list position
+        # The clips.clips list might not be sorted by clip_index!
         clip_to_revert = None
-        for clip in clips.clips:
+        list_position = None
+        for idx, clip in enumerate(clips.clips):
             if clip.clip_index == clip_index:
                 clip_to_revert = clip
+                list_position = idx
                 break
         
-        if not clip_to_revert:
+        if not clip_to_revert or list_position is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Clip {clip_index} not found for job {job_id}"
             )
+        
+        logger.info(
+            f"Found clip {clip_index} at list position {list_position}",
+            extra={"job_id": job_id, "clip_index": clip_index, "list_position": list_position}
+        )
         
         # If version_number is 1, use original clip (already in clips)
         # If version_number > 1, load from clip_versions table
@@ -878,8 +896,10 @@ async def revert_clip_to_version(
                     clips_list = []
                 
                 # Update the specific clip's video_url in metadata
-                if clip_index < len(clips_list):
-                    clips_list[clip_index]["video_url"] = clip_to_revert.video_url
+                # CRITICAL: Use list_position (the actual index in the clips array)
+                # not clip_index (the logical clip number), as they might differ!
+                if list_position < len(clips_list):
+                    clips_list[list_position]["video_url"] = clip_to_revert.video_url
                     
                     # Update the metadata structure
                     if isinstance(clips_wrapper, dict):
@@ -898,13 +918,14 @@ async def revert_clip_to_version(
                         extra={
                             "job_id": job_id,
                             "clip_index": clip_index,
+                            "list_position": list_position,
                             "new_url": clip_to_revert.video_url
                         }
                     )
                 else:
                     logger.warning(
-                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
-                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
+                        f"List position {list_position} out of range (total clips: {len(clips_list)})",
+                        extra={"job_id": job_id, "clip_index": clip_index, "list_position": list_position, "total_clips": len(clips_list)}
                     )
         except Exception as e:
             # Non-critical error - log but don't fail the revert
