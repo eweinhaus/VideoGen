@@ -1055,6 +1055,36 @@ async def revert_clip_to_version(
                 exc_info=True
             )
         
+        # CRITICAL: Update is_current flag in clip_versions to reflect the active version
+        # This ensures the ClipCompare button shows the correct text
+        try:
+            db = DatabaseClient()
+            # Set all versions of this clip to is_current=False
+            await db.table("clip_versions").update({"is_current": False}).eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).execute()
+            
+            # Set the reverted version to is_current=True
+            await db.table("clip_versions").update({"is_current": True}).eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).eq("version_number", request.version_number).execute()
+            
+            logger.info(
+                f"✅ Updated is_current flags in clip_versions",
+                extra={
+                    "job_id": job_id,
+                    "clip_index": clip_index,
+                    "active_version": request.version_number
+                }
+            )
+        except Exception as e:
+            # Non-critical error - log but don't fail the revert
+            logger.warning(
+                f"Failed to update is_current flags in clip_versions: {e}",
+                extra={"job_id": job_id, "clip_index": clip_index},
+                exc_info=True
+            )
+        
         # Regenerate thumbnail for the reverted clip (async, non-blocking)
         from modules.video_generator.thumbnail_generator import generate_clip_thumbnail
         asyncio.create_task(

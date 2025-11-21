@@ -135,12 +135,19 @@ export default function JobProgressPage() {
       // Refresh job to get updated video URL
       await fetchJob(jobId)
       
-      // Wait briefly for backend thumbnail generation to complete (500ms)
-      // This is much faster than the old 2-3s delays, but ensures thumbnail is ready
+      // Immediately refresh comparison data to update button text
+      // The button needs to know the new active version
+      if (showComparison && selectedClipIndex === clipIndex) {
+        await handleCompare(clipIndex)
+      }
+      
+      // Wait for backend thumbnail generation to complete (2 seconds)
+      // Backend generates thumbnails asynchronously after recomposition
+      // We need to wait longer since it's a background task
       setTimeout(() => {
         setClipRefreshTrigger(prev => prev + 1)
-        console.log("✅ ClipSelector refresh triggered after revert (with 500ms for thumbnail generation)")
-      }, 500)
+        console.log("✅ ClipSelector refresh triggered after revert (with 2s for async thumbnail generation)")
+      }, 2000)  // Increased from 500ms to 2000ms
       
       // Show success message (you could add a toast notification here)
       console.log(`✅ Successfully reverted clip ${clipIndex} to version ${versionNumber}`)
