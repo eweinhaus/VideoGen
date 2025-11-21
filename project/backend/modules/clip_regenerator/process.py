@@ -1663,8 +1663,26 @@ async def regenerate_clip_with_recomposition(
         ) from e
     
     # Save the regenerated clip as a new version WITH RETRY LOGIC
-    # Note: next_version was already calculated before generation (see above)
+    # Note: Calculate next_version here (not in regenerate_clip function, different scope)
     # This ensures the version number matches the filename (clip_X_vN.mp4)
+    
+    # Get the next version number
+    version_result_for_save = await db.table("clip_versions").select("version_number").eq(
+        "job_id", str(job_id)
+    ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+    
+    next_version = 2  # Default to version 2 if no versions exist
+    if version_result_for_save.data and len(version_result_for_save.data) > 0:
+        next_version = version_result_for_save.data[0].get("version_number", 1) + 1
+    
+    logger.info(
+        f"Determined next version number: {next_version} for saving to clip_versions",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "next_version": next_version
+        }
+    )
     
     # Mark all previous versions as not current
     await db.table("clip_versions").update({"is_current": False}).eq(
