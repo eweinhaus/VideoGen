@@ -474,7 +474,7 @@ export function ClipComparison({
   const showRevertButton = regeneratedClip && onRevert && clipIndex !== undefined
   
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 pl-[400px]">
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 lg:pl-[420px]">
       {/* Hidden audio element for synchronized playback */}
       {audioUrl && (
         <audio
@@ -519,7 +519,7 @@ export function ClipComparison({
       )}
       <div
         ref={containerRef}
-        className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto"
+        className="bg-white rounded-lg shadow-xl w-full max-w-7xl 2xl:max-w-[90%] max-h-[90vh] overflow-auto"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
@@ -582,18 +582,20 @@ export function ClipComparison({
           )}
           
           {/* Video comparison */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
             {/* Left video (original or swapped) */}
-            <div className="space-y-2">
-              <div className="text-sm font-medium">
-                {isSwapped 
-                  ? `Latest (v${leftClip.version_number})` 
-                  : leftClip.version_number === 1 
-                    ? `Original (v${leftClip.version_number})` 
-                    : `Previous (v${leftClip.version_number})`
-                }
+            <div className="flex flex-col">
+              <div className="text-sm font-medium min-h-[2.5rem] flex items-start mb-2">
+                <span>
+                  {isSwapped 
+                    ? `Latest (v${leftClip.version_number})` 
+                    : leftClip.version_number === 1 
+                      ? `Original (v${leftClip.version_number})` 
+                      : `Previous (v${leftClip.version_number})`
+                  }
+                </span>
               </div>
-              <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+              <div className="relative bg-black rounded-lg overflow-hidden aspect-video flex-shrink-0">
                 {leftClip.thumbnail_url && isLoading && (
                   <Image
                     src={leftClip.thumbnail_url}
@@ -621,30 +623,32 @@ export function ClipComparison({
                   </div>
                 )}
               </div>
-              <div className="text-xs text-gray-600">
+              <div className="text-xs text-gray-600 mt-2">
                 Time: {formatDuration(leftClip === originalClip ? originalTime : regeneratedTime)}
               </div>
-              <div className="text-xs text-gray-500 line-clamp-2">
+              <div className="text-xs text-gray-500 line-clamp-2 mt-1">
                 {leftClip.prompt}
               </div>
             </div>
             
             {/* Right video (regenerated or swapped) */}
-            <div className="space-y-2">
+            <div className="flex flex-col">
               {rightClip ? (
                 <>
-                  <div className="text-sm font-medium">
-                    {isSwapped 
-                      ? (rightClip.version_number === 1 ? `Original (v${rightClip.version_number})` : `Previous (v${rightClip.version_number})`)
-                      : `Latest (v${rightClip.version_number})`
-                    }
-                    {rightClip.user_instruction && (
-                      <span className="text-xs text-gray-500 ml-2">
-                        &quot;{rightClip.user_instruction}&quot;
-                      </span>
-                    )}
+                  <div className="text-sm font-medium min-h-[2.5rem] flex items-start mb-2">
+                    <span>
+                      {isSwapped 
+                        ? (rightClip.version_number === 1 ? `Original (v${rightClip.version_number})` : `Previous (v${rightClip.version_number})`)
+                        : `Latest (v${rightClip.version_number})`
+                      }
+                      {rightClip.user_instruction && (
+                        <span className="text-xs text-gray-500 ml-2 font-normal">
+                          &quot;{rightClip.user_instruction}&quot;
+                        </span>
+                      )}
+                    </span>
                   </div>
-                  <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                  <div className="relative bg-black rounded-lg overflow-hidden aspect-video flex-shrink-0">
                     {rightClip.thumbnail_url && isLoading && (
                       <Image
                         src={rightClip.thumbnail_url}
@@ -672,10 +676,10 @@ export function ClipComparison({
                       </div>
                     )}
                   </div>
-                  <div className="text-xs text-gray-600">
+                  <div className="text-xs text-gray-600 mt-2">
                     Time: {formatDuration(rightClip === regeneratedClip ? regeneratedTime : originalTime)}
                   </div>
-                  <div className="text-xs text-gray-500 line-clamp-2">
+                  <div className="text-xs text-gray-500 line-clamp-2 mt-1">
                     {rightClip.prompt}
                   </div>
                 </>

@@ -55,12 +55,17 @@ interface ClipChatbotProps {
   jobId: string
   onRegenerationComplete?: (newVideoUrl: string) => void
   audioUrl?: string | null
+  // NEW: Shared clip selection state (synchronized with main ClipSelector)
+  selectedClipIndex?: number
+  onClipSelect?: (clipIndex: number, timestamp?: number) => void
 }
 
 export function ClipChatbot({
   jobId,
   onRegenerationComplete,
   audioUrl,
+  selectedClipIndex: externalSelectedClipIndex,
+  onClipSelect,
 }: ClipChatbotProps) {
   // Generate unique storage key for this job (unified chat)
   const storageKey = `clip_chat_${jobId}`
@@ -82,6 +87,31 @@ export function ClipChatbot({
   const [clips, setClips] = useState<ClipData[]>([])
   const [selectedClipIndices, setSelectedClipIndices] = useState<number[]>([])
   const [loadingClips, setLoadingClips] = useState(true)
+  
+  // Sync external selection with internal selection
+  // When parent changes selection (e.g., from main ClipSelector), update internal state
+  useEffect(() => {
+    if (externalSelectedClipIndex !== undefined) {
+      // Check if this clip is already selected in our array
+      if (!selectedClipIndices.includes(externalSelectedClipIndex)) {
+        // Replace selection with just this clip (single selection from parent)
+        setSelectedClipIndices([externalSelectedClipIndex])
+        saveSelectedClips([externalSelectedClipIndex])
+      }
+    }
+  }, [externalSelectedClipIndex])
+  
+  // Sync internal selection with parent
+  // When internal selection changes, notify parent of the first selected clip
+  useEffect(() => {
+    if (onClipSelect && selectedClipIndices.length > 0) {
+      const firstSelectedClip = clips.find(c => c.clip_index === selectedClipIndices[0])
+      if (firstSelectedClip) {
+        // Notify parent of selection change with timestamp for video seeking
+        onClipSelect(firstSelectedClip.clip_index, firstSelectedClip.timestamp_start)
+      }
+    }
+  }, [selectedClipIndices, clips, onClipSelect])
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<{
     original: any

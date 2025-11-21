@@ -536,6 +536,11 @@ export default function JobProgressPage() {
                     <ClipChatbot
                       jobId={jobId}
                       audioUrl={job?.audioUrl ?? undefined}
+                      selectedClipIndex={selectedClipIndex}
+                      onClipSelect={(clipIndex, timestamp) => {
+                        setSelectedClipIndex(clipIndex)
+                        setSelectedClipTimestamp(timestamp)
+                      }}
                       onRegenerationComplete={async (newVideoUrl) => {
                         // Refresh job to get updated video URL and trigger re-render
                         try {
