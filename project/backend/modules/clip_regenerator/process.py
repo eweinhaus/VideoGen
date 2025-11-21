@@ -42,6 +42,204 @@ from modules.analytics.tracking import track_regeneration_async
 logger = get_logger("clip_regenerator.process")
 
 
+async def _retry_content_moderation_for_regeneration(
+    original_clip_prompt: ClipPrompt,
+    original_reference_images: List[str],
+    image_url: Optional[str],
+    settings_dict: dict,
+    job_id: UUID,
+    environment: str,
+    aspect_ratio: str,
+    temperature: Optional[float],
+    seed: Optional[int],
+    event_publisher: Optional[callable]
+) -> Optional[Clip]:
+    """
+    Retry regeneration after content moderation failure.
+    
+    Implements the same 4-attempt strategy as main video generation:
+    - Attempt 1: Original model + original prompt + refs (already failed)
+    - Attempt 2: Veo 3.1 + sanitized prompt + reference images
+    - Attempt 3: Kling Turbo + sanitized prompt + NO reference images
+    - Attempt 4: Kling Turbo + sanitized prompt + NO reference images (retry)
+    
+    Args:
+        original_clip_prompt: Original ClipPrompt that failed
+        original_reference_images: List of reference image URLs used in original attempt
+        image_url: Single reference image (backward compatibility)
+        settings_dict: Generation settings
+        job_id: Job ID for tracking
+        environment: Environment (development/production)
+        aspect_ratio: Video aspect ratio
+        temperature: Temperature parameter for generation (Veo 3.1 only)
+        seed: Seed parameter for generation (Veo 3.1 only)
+        event_publisher: Optional event publisher callback
+        
+    Returns:
+        Clip if any retry attempt succeeds, None if all fail
+    """
+    from modules.video_generator.prompt_sanitizer import sanitize_prompt_for_content_moderation
+    
+    # Sanitize the prompt once for all retry attempts
+    sanitized_prompt = sanitize_prompt_for_content_moderation(
+        original_clip_prompt.prompt, 
+        job_id=str(job_id)
+    )
+    
+    # Track which prompt to use
+    prompt_sanitized = sanitized_prompt != original_clip_prompt.prompt
+    
+    if not prompt_sanitized:
+        logger.warning(
+            f"Prompt sanitization did not change the prompt - retrying anyway with Kling Turbo fallback",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": original_clip_prompt.clip_index
+            }
+        )
+    
+    # Attempt 2: Veo 3.1 with sanitized prompt + reference images
+    logger.info(
+        f"Content moderation retry attempt 2 for clip {original_clip_prompt.clip_index}: "
+        f"Veo 3.1 with sanitized prompt + reference images",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": original_clip_prompt.clip_index,
+            "attempt": 2,
+            "model": "veo_31",
+            "using_ref_images": True,
+            "prompt_sanitized": prompt_sanitized
+        }
+    )
+    
+    # Create sanitized clip prompt for attempt 2
+    sanitized_clip_prompt = ClipPrompt(
+        clip_index=original_clip_prompt.clip_index,
+        prompt=sanitized_prompt,
+        negative_prompt=original_clip_prompt.negative_prompt,
+        duration=original_clip_prompt.duration,
+        scene_reference_url=original_clip_prompt.scene_reference_url,
+        character_reference_urls=original_clip_prompt.character_reference_urls,
+        object_reference_urls=original_clip_prompt.object_reference_urls,
+        metadata=original_clip_prompt.metadata
+    )
+    
+    try:
+        clip = await generate_video_clip(
+            clip_prompt=sanitized_clip_prompt,
+            image_url=image_url,
+            reference_image_urls=original_reference_images if original_reference_images else None,
+            settings=settings_dict,
+            job_id=job_id,
+            environment=environment,
+            video_model="veo_31",
+            aspect_ratio=aspect_ratio,
+            temperature=temperature,
+            seed=seed
+        )
+        
+        logger.info(
+            f"Content moderation retry attempt 2 succeeded for clip {original_clip_prompt.clip_index}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": original_clip_prompt.clip_index,
+                "attempt": 2,
+                "model": "veo_31"
+            }
+        )
+        return clip
+        
+    except Exception as e:
+        logger.warning(
+            f"Content moderation retry attempt 2 failed for clip {original_clip_prompt.clip_index}: {str(e)}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": original_clip_prompt.clip_index,
+                "attempt": 2,
+                "error": str(e)
+            }
+        )
+    
+    # Attempts 3-4: Kling Turbo without reference images
+    for attempt_num in [3, 4]:
+        logger.info(
+            f"Content moderation retry attempt {attempt_num} for clip {original_clip_prompt.clip_index}: "
+            f"Kling Turbo with sanitized prompt (no reference images)",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": original_clip_prompt.clip_index,
+                "attempt": attempt_num,
+                "model": "kling_v25_turbo",
+                "using_ref_images": False,
+                "prompt_sanitized": prompt_sanitized
+            }
+        )
+        
+        # Publish progress event for fallback attempt
+        if event_publisher:
+            await event_publisher("content_moderation_retry", {
+                "sequence": 4.5,  # Between video_generating and video_generated
+                "progress": 30,
+                "clip_index": original_clip_prompt.clip_index,
+                "attempt": attempt_num,
+                "model": "kling_v25_turbo",
+                "message": f"Retrying with Kling Turbo (attempt {attempt_num - 2}/2)"
+            })
+        
+        try:
+            # Use Kling Turbo without reference images (text-only)
+            clip = await generate_video_clip(
+                clip_prompt=sanitized_clip_prompt,
+                image_url=None,  # No reference images for Kling Turbo fallback
+                reference_image_urls=None,
+                settings=settings_dict,
+                job_id=job_id,
+                environment=environment,
+                video_model="kling_v25_turbo",
+                aspect_ratio=aspect_ratio,
+                temperature=None,  # Kling doesn't use temperature
+                seed=None  # Kling doesn't use seed
+            )
+            
+            logger.info(
+                f"Content moderation retry attempt {attempt_num} succeeded for clip {original_clip_prompt.clip_index}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": original_clip_prompt.clip_index,
+                    "attempt": attempt_num,
+                    "model": "kling_v25_turbo"
+                }
+            )
+            return clip
+            
+        except Exception as e:
+            logger.warning(
+                f"Content moderation retry attempt {attempt_num} failed for clip {original_clip_prompt.clip_index}: {str(e)}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": original_clip_prompt.clip_index,
+                    "attempt": attempt_num,
+                    "error": str(e)
+                }
+            )
+            
+            # Continue to next attempt if this wasn't the last one
+            if attempt_num < 4:
+                continue
+    
+    # All retry attempts failed
+    logger.error(
+        f"All content moderation retry attempts failed for clip {original_clip_prompt.clip_index}",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": original_clip_prompt.clip_index,
+            "attempts_tried": "2-4",
+            "models_tried": ["veo_31", "kling_v25_turbo"]
+        }
+    )
+    return None
+
+
 @dataclass
 class RegenerationResult:
     """Result of clip regeneration."""
@@ -905,7 +1103,9 @@ async def regenerate_clip(
         
         # Track regeneration success (for analytics) - non-blocking
         if user_id:
-            track_regeneration_async(
+            import asyncio
+            # Fire and forget - don't block on analytics tracking
+            asyncio.create_task(track_regeneration_async(
                 job_id=job_id,
                 user_id=user_id,
                 clip_index=clip_index,
@@ -913,7 +1113,7 @@ async def regenerate_clip(
                 template_id=template_match.template_id if template_match else None,
                 cost=cost_estimate,
                 success=True
-            )
+            ))
         
         return RegenerationResult(
             clip=new_clip,
@@ -925,20 +1125,190 @@ async def regenerate_clip(
             seed=seed
         )
         
-    except Exception as e:
-        # Track regeneration failure (for analytics) - non-blocking
-        if user_id:
-            # Use cost estimate calculated earlier (template or LLM path)
-            track_regeneration_async(
-                job_id=job_id,
-                user_id=user_id,
-                clip_index=clip_index,
-                instruction=user_instruction,
-                template_id=template_match.template_id if template_match else None,
-                cost=cost_estimate,
-                success=False
-            )
+    except RetryableError as e:
+        # Check if this is a content moderation error that needs retry
+        error_message = str(e).lower()
+        is_content_moderation = (
+            "content moderation" in error_message or 
+            "fallback to kling turbo" in error_message or
+            "flagged as sensitive" in error_message
+        )
         
+        if is_content_moderation:
+            logger.info(
+                f"Content moderation error detected for clip {clip_index}, attempting retry with fallback",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "error": str(e)
+                }
+            )
+            
+            # Publish retry event
+            if event_publisher:
+                await event_publisher("content_moderation_retry_starting", {
+                    "sequence": 4.2,
+                    "clip_index": clip_index,
+                    "message": "Content moderation triggered, retrying with sanitized prompt and fallback model"
+                })
+            
+            # Attempt retry with content moderation fallback
+            try:
+                new_clip = await _retry_content_moderation_for_regeneration(
+                    original_clip_prompt=new_clip_prompt,
+                    original_reference_images=reference_image_urls if reference_image_urls else [],
+                    image_url=image_url,
+                    settings_dict=settings_dict,
+                    job_id=job_id,
+                    environment=environment,
+                    aspect_ratio=aspect_ratio,
+                    temperature=temperature if video_model == "veo_31" else None,
+                    seed=seed if video_model == "veo_31" else None,
+                    event_publisher=event_publisher
+                )
+                
+                if new_clip:
+                    logger.info(
+                        f"Content moderation retry succeeded for clip {clip_index}",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "fallback_model": new_clip.model if hasattr(new_clip, 'model') else "unknown"
+                        }
+                    )
+                    
+                    # Track successful regeneration (after retry)
+                    if user_id:
+                        import asyncio
+                        asyncio.create_task(track_regeneration_async(
+                            job_id=job_id,
+                            user_id=user_id,
+                            clip_index=clip_index,
+                            instruction=user_instruction,
+                            template_id=template_match.template_id if template_match else None,
+                            cost=cost_estimate,
+                            success=True
+                        ))
+                    
+                    return RegenerationResult(
+                        clip=new_clip,
+                        modified_prompt=modified_prompt,
+                        template_used=template_match.template_id if template_match else None,
+                        cost=cost_estimate,
+                        temperature=temperature,
+                        temperature_reasoning=temperature_reasoning,
+                        seed=seed
+                    )
+                else:
+                    # All retry attempts failed
+                    logger.error(
+                        f"All content moderation retry attempts failed for clip {clip_index}",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index
+                        }
+                    )
+                    
+                    # Track failure
+                    if user_id:
+                        import asyncio
+                        asyncio.create_task(track_regeneration_async(
+                            job_id=job_id,
+                            user_id=user_id,
+                            clip_index=clip_index,
+                            instruction=user_instruction,
+                            template_id=template_match.template_id if template_match else None,
+                            cost=cost_estimate,
+                            success=False
+                        ))
+                    
+                    # Publish failure event
+                    if event_publisher:
+                        await event_publisher("regeneration_failed", {
+                            "sequence": 999,
+                            "clip_index": clip_index,
+                            "error": "Content moderation: all retry attempts failed"
+                        })
+                    
+                    raise GenerationError(
+                        f"Failed to regenerate clip after content moderation retries: {str(e)}", 
+                        job_id=job_id
+                    ) from e
+                    
+            except Exception as retry_error:
+                logger.error(
+                    f"Error during content moderation retry for clip {clip_index}: {retry_error}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "error_type": type(retry_error).__name__
+                    },
+                    exc_info=True
+                )
+                
+                # Track failure
+                if user_id:
+                    import asyncio
+                    asyncio.create_task(track_regeneration_async(
+                        job_id=job_id,
+                        user_id=user_id,
+                        clip_index=clip_index,
+                        instruction=user_instruction,
+                        template_id=template_match.template_id if template_match else None,
+                        cost=cost_estimate,
+                        success=False
+                    ))
+                
+                # Publish failure event
+                if event_publisher:
+                    await event_publisher("regeneration_failed", {
+                        "sequence": 999,
+                        "clip_index": clip_index,
+                        "error": str(retry_error)
+                    })
+                
+                raise GenerationError(
+                    f"Failed during content moderation retry: {str(retry_error)}", 
+                    job_id=job_id
+                ) from retry_error
+        else:
+            # Non-content-moderation retryable error - just fail for now
+            logger.error(
+                f"Retryable error (non-content-moderation) for clip {clip_index}: {e}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "error_type": type(e).__name__,
+                    "stage": "video_generation"
+                },
+                exc_info=True
+            )
+            
+            # Track failure
+            if user_id:
+                import asyncio
+                asyncio.create_task(track_regeneration_async(
+                    job_id=job_id,
+                    user_id=user_id,
+                    clip_index=clip_index,
+                    instruction=user_instruction,
+                    template_id=template_match.template_id if template_match else None,
+                    cost=cost_estimate,
+                    success=False
+                ))
+            
+            # Publish failure event
+            if event_publisher:
+                await event_publisher("regeneration_failed", {
+                    "sequence": 999,
+                    "clip_index": clip_index,
+                    "error": str(e)
+                })
+            
+            raise GenerationError(f"Failed to generate new clip: {str(e)}", job_id=job_id) from e
+            
+    except Exception as e:
+        # Non-retryable error
         logger.error(
             f"Failed to generate new clip: {e}",
             extra={
@@ -953,6 +1323,19 @@ async def regenerate_clip(
             },
             exc_info=True
         )
+        
+        # Track failure
+        if user_id:
+            import asyncio
+            asyncio.create_task(track_regeneration_async(
+                job_id=job_id,
+                user_id=user_id,
+                clip_index=clip_index,
+                instruction=user_instruction,
+                template_id=template_match.template_id if template_match else None,
+                cost=cost_estimate,
+                success=False
+            ))
         
         # Publish regeneration_failed event
         if event_publisher:
@@ -1237,7 +1620,7 @@ async def regenerate_clip_with_recomposition(
             "version_number": next_version,
             "video_url": new_clip_url,
             "thumbnail_url": thumbnail_url,
-            "prompt": modified_prompt,
+            "prompt": regeneration_result.modified_prompt,  # From regeneration_result
             "user_instruction": user_instruction,
             "cost": float(regeneration_result.cost) if regeneration_result.cost else 0.0,
             "duration": float(new_clip.actual_duration) if new_clip.actual_duration else None,
@@ -1255,6 +1638,40 @@ async def regenerate_clip_with_recomposition(
                 "video_url": new_clip_url
             }
         )
+        
+        # CRITICAL VERIFICATION: Verify both versions exist in database using helper function
+        try:
+            from modules.clip_regenerator.version_verifier import verify_clip_versions_after_save
+            
+            verification = await verify_clip_versions_after_save(
+                job_id=job_id,
+                clip_index=clip_index,
+                expected_original_url=old_clip_url,  # Verify original URL is preserved
+                expected_latest_url=new_clip_url,    # Verify new URL is saved
+                expected_latest_version=next_version
+            )
+            
+            if not verification.get("success"):
+                logger.error(
+                    "⚠️ Database verification returned failure",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "verification": verification
+                    }
+                )
+        except Exception as e:
+            # Don't fail regeneration if verification fails, but log it
+            logger.error(
+                "⚠️ Failed to verify clip versions in database (non-fatal)",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                },
+                exc_info=True
+            )
     except Exception as e:
         # Don't fail regeneration if clip_versions save fails, but log the warning
         logger.warning(
@@ -1409,61 +1826,24 @@ async def regenerate_clip_with_recomposition(
                 "duration": video_output.duration
             })
         
-        # Save updated clips to database so subsequent regenerations use latest versions
-        try:
-            from api_gateway.services.db_helpers import update_job_stage
-            # Build clips dict, ensuring all values are JSON serializable
-            clips_dict = {
-                "job_id": str(updated_clips_obj.job_id),
-                "clips": [
-                    {
-                        "clip_index": clip.clip_index,
-                        "video_url": clip.video_url,
-                        "actual_duration": float(clip.actual_duration) if clip.actual_duration is not None else None,
-                        "target_duration": float(clip.target_duration) if clip.target_duration is not None else None,
-                        "duration_diff": float(clip.duration_diff) if clip.duration_diff is not None else None,
-                        "status": clip.status,
-                        "cost": str(clip.cost),
-                        "retry_count": int(clip.retry_count) if clip.retry_count is not None else 0,
-                        "generation_time": float(clip.generation_time) if clip.generation_time is not None else None,
-                        # Include metadata but ensure all UUIDs are converted to strings
-                        "metadata": (
-                            {
-                                k: str(v) if isinstance(v, UUID) else v
-                                for k, v in clip.metadata.items()
-                            }
-                            if clip.metadata else {}
-                        )
-                    }
-                    for clip in updated_clips_obj.clips
-                ],
-                "total_clips": int(updated_clips_obj.total_clips),
-                "successful_clips": int(updated_clips_obj.successful_clips),
-                "failed_clips": int(updated_clips_obj.failed_clips),
-                "total_cost": str(updated_clips_obj.total_cost),
-                "total_generation_time": float(updated_clips_obj.total_generation_time) if updated_clips_obj.total_generation_time is not None else None
+        # CRITICAL FIX: DO NOT update job_stages with regenerated clips!
+        # Reason: job_stages should always preserve the ORIGINAL clips for comparison purposes.
+        # The clip_versions table is the source of truth for regenerated versions.
+        # If we update job_stages here, we overwrite the original clip URLs, making
+        # comparison impossible (both "original" and "regenerated" would show the same video).
+        #
+        # The recomposition already updated the final video URL in the jobs table,
+        # which is all we need. Subsequent regenerations should load from clip_versions,
+        # not from job_stages.
+        logger.info(
+            f"Skipping job_stages update to preserve original clip URLs for comparison",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "total_clips": updated_clips_obj.total_clips,
+                "note": "job_stages preserves original clips, clip_versions tracks regenerated versions"
             }
-            await update_job_stage(
-                job_id=job_id,
-                stage_name="video_generator",
-                status="completed",
-                metadata={"clips": clips_dict}
-            )
-            logger.info(
-                f"Saved updated clips to database after recomposition",
-                extra={
-                    "job_id": str(job_id),
-                    "clip_index": clip_index,
-                    "total_clips": updated_clips_obj.total_clips
-                }
-            )
-        except Exception as e:
-            # Don't fail regeneration if database save fails, but log the warning
-            logger.warning(
-                f"Failed to save updated clips to database after recomposition: {e}",
-                extra={"job_id": str(job_id), "clip_index": clip_index},
-                exc_info=True
-            )
+        )
         
     except CompositionError as e:
         logger.error(
