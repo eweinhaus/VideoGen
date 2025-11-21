@@ -444,7 +444,10 @@ async def regenerate_single_clip_only(
         )
     
     # Publish starting event for this specific clip with progress
-    await event_pub("clip_regeneration_starting", {
+    # Note: Using "regeneration_started" (not "clip_regeneration_starting") 
+    # to match frontend SSE listener for chatbot progress messages
+    await event_pub("regeneration_started", {
+        "sequence": 1,
         "clip_index": clip_index,
         "progress": int((clip_position / total_clips) * 100),
         "message": f"Starting regeneration for clip {clip_index} ({clip_position + 1}/{total_clips})"
@@ -541,7 +544,10 @@ async def regenerate_single_clip(
     )
     
     # Publish starting event for this specific clip with progress
-    await event_pub("clip_regeneration_starting", {
+    # Note: Using "regeneration_started" (not "clip_regeneration_starting") 
+    # to match frontend SSE listener for chatbot progress messages
+    await event_pub("regeneration_started", {
+        "sequence": 1,
         "clip_index": clip_index,
         "progress": int((clip_position / total_clips) * 100),
         "message": f"Starting regeneration for clip {clip_index} ({clip_position + 1}/{total_clips})"

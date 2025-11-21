@@ -135,17 +135,20 @@ async def get_job_clips(
         JSON response with clips array and total_clips count
         
     Raises:
-        HTTPException: 404 if job not found, 403 if access denied, 400 if job not completed
+        HTTPException: 404 if job not found, 403 if access denied, 400 if job not in allowed status
     """
     try:
         # Verify job ownership (includes admin bypass for etweinhaus@gmail.com)
         job = await verify_job_ownership(job_id, current_user)
         
-        # Check job status
-        if job.get("status") != "completed":
+        # Check job status - allow access during regeneration and processing
+        # This enables frontend to refresh thumbnails and metadata during regenerations
+        allowed_statuses = ["completed", "processing", "regenerating"]
+        current_status = job.get("status")
+        if current_status not in allowed_statuses:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Job not completed yet"
+                detail=f"Job not in allowed status. Current status: {current_status}"
             )
         
         # Load clips from job_stages
