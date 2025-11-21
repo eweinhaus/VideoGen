@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import Image from "next/image"
-import { regenerateClip, getJobClips, getClipComparison } from "@/lib/api"
+import { regenerateClip, getJobClips, getClipComparison, revertClipToVersion } from "@/lib/api"
 import { useSSE } from "@/hooks/useSSE"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -820,6 +820,51 @@ export function ClipChatbot({
     }
   }
 
+  const handleRevert = async (clipIndex: number, versionNumber: number) => {
+    try {
+      await revertClipToVersion(jobId, clipIndex, versionNumber)
+      
+      // Show success message in chat
+      addSystemMessage(
+        `Successfully reverted clip ${clipIndex + 1} to version ${versionNumber}. The main video has been updated.`,
+        "success"
+      )
+      
+      // Refresh clips to update thumbnails after revert
+      // Wait a bit for thumbnail to regenerate
+      setTimeout(async () => {
+        try {
+          const response = await getJobClips(jobId)
+          setClips(response.clips)
+          console.log(`✅ Refreshed clips after revert - thumbnails updated`)
+        } catch (err) {
+          console.error("Failed to refresh clips after revert:", err)
+        }
+      }, 2000) // 2 second delay for thumbnail generation
+      
+      // Trigger regeneration complete callback if provided to update main video
+      if (onRegenerationComplete) {
+        // The backend will return the new video URL, but we need to refresh the job to get it
+        // For now, just notify that a revert happened
+        console.log(`✅ Reverted clip ${clipIndex} to version ${versionNumber}`)
+      }
+      
+      // DON'T close comparison modal - let user toggle back and forth between versions
+      // The button text will update automatically based on activeVersion state in ClipComparison
+      // User can manually close modal when done comparing
+    } catch (error) {
+      console.error("Failed to revert clip:", error)
+      
+      let errorMessage = "Failed to revert clip"
+      if (error instanceof APIError) {
+        errorMessage = error.message || errorMessage
+      }
+      
+      addSystemMessage(errorMessage, "error")
+      throw error // Re-throw to let ClipComparison handle the error
+    }
+  }
+
   return (
     <>
       {showComparison && comparisonData && selectedClipIndices.length > 0 && (
@@ -829,11 +874,13 @@ export function ClipChatbot({
           audioUrl={audioUrl ?? undefined}
           clipStartTime={comparisonData.clip_start_time ?? null}
           clipEndTime={comparisonData.clip_end_time ?? null}
+          activeVersionNumber={comparisonData.active_version_number}
           onClose={() => {
             setShowComparison(false)
             setComparisonData(null)
             saveComparisonState(false, null)
           }}
+          onRevert={handleRevert}
           clipIndex={selectedClipIndices[0]}
         />
       )}

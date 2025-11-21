@@ -106,6 +106,13 @@ export default function JobProgressPage() {
       await revertClipToVersion(jobId, clipIndex, versionNumber)
       // Refresh job to get updated video URL
       await fetchJob(jobId)
+      
+      // Trigger ClipSelector refresh to update thumbnails (after 2s delay for backend thumbnail generation)
+      setTimeout(() => {
+        setClipRefreshTrigger(prev => prev + 1)
+        console.log("✅ ClipSelector refresh triggered after revert")
+      }, 2000)
+      
       // Show success message (you could add a toast notification here)
       console.log(`✅ Successfully reverted clip ${clipIndex} to version ${versionNumber}`)
     } catch (error) {
@@ -568,6 +575,7 @@ export default function JobProgressPage() {
                         audioUrl={job?.audioUrl ?? undefined}
                         clipStartTime={comparisonData.clip_start_time ?? null}
                         clipEndTime={comparisonData.clip_end_time ?? null}
+                        activeVersionNumber={comparisonData.active_version_number}
                         onClose={() => {
                           setShowComparison(false)
                           setComparisonData(null)

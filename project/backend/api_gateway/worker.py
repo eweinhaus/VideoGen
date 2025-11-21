@@ -168,11 +168,13 @@ async def process_regeneration_job(job_data: dict) -> None:
         """Wrapper for event publishing."""
         await publish_event(job_id, event_type, data)
     
-    # Publish start event
-    await event_pub("regeneration_started", {
-        "regeneration_id": regeneration_id,
-        "clip_indices": clip_indices
-    })
+    # Publish start event for each clip being regenerated
+    for clip_index in clip_indices:
+        await event_pub("regeneration_started", {
+            "sequence": 1,
+            "clip_index": clip_index,
+            "instruction": user_instruction
+        })
     
     try:
         # Process all clips in parallel (like video_generator does)
