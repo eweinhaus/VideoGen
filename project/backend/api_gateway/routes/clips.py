@@ -594,19 +594,50 @@ async def compare_clip_versions(
                 # After sorting in load_clips_from_job_stages, clip_index should match array position
                 if isinstance(clips_wrapper, dict):
                     clips_list = clips_wrapper.get("clips", [])
+                    logger.info(
+                        f"📦 Extracted clips_list from dict wrapper",
+                        extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
+                    )
                 elif isinstance(clips_wrapper, list):
                     # Backward compatibility: if clips is a list directly
                     clips_list = clips_wrapper  # FIX: was incorrectly: clips_wrapper = clips_list
+                    logger.info(
+                        f"📦 Using clips_wrapper as clips_list (backward compat)",
+                        extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
+                    )
                 else:
                     clips_list = []
+                    logger.warning(
+                        f"📦 clips_wrapper is neither dict nor list, defaulting to empty",
+                        extra={"job_id": job_id, "clip_index": clip_index, "type": type(clips_wrapper).__name__}
+                    )
+                
+                logger.info(
+                    f"🔍 About to check clip at index {clip_index}, clips_list length: {len(clips_list)}",
+                    extra={"job_id": job_id, "clip_index": clip_index, "clips_list_length": len(clips_list)}
+                )
                 
                 # Since clips should be sorted by clip_index, we can directly access by index
                 # But we still need to verify the clip_index matches
                 if clip_index < len(clips_list):
                     current_clip_data = clips_list[clip_index]
+                    logger.info(
+                        f"🔍 Retrieved clip data at position {clip_index}",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "clip_data_clip_index": current_clip_data.get("clip_index") if isinstance(current_clip_data, dict) else "not_dict",
+                            "has_video_url": "video_url" in current_clip_data if isinstance(current_clip_data, dict) else False
+                        }
+                    )
+                    
                     # Verify this is the right clip
                     if isinstance(current_clip_data, dict) and current_clip_data.get("clip_index") == clip_index:
                         current_clip_url = current_clip_data.get("video_url", "")
+                        logger.info(
+                            f"🔍 Current clip URL from metadata: {current_clip_url[:100]}...",
+                            extra={"job_id": job_id, "clip_index": clip_index, "has_version_pattern": "_v" in current_clip_url}
+                        )
                         
                         # Check if this URL matches any clip_version
                         if current_clip_url:
@@ -774,7 +805,8 @@ async def revert_clip_to_version(
                 "job_id": job_id,
                 "clip_index": clip_index,
                 "list_position": list_position,
-                "matches": list_position == clip_index
+                "matches": list_position == clip_index,
+                "old_video_url": clip_to_revert.video_url
             }
         )
         
@@ -853,6 +885,23 @@ async def revert_clip_to_version(
         # Call composer to re-stitch video
         try:
             from modules.composer.process import process as compose_video
+            
+            # Debug: Log all clips being sent to composer
+            logger.info(
+                f"🔧 Sending clips to composer",
+                extra={
+                    "job_id": job_id,
+                    "clip_count": len(clips.clips),
+                    "clips_debug": [
+                        {
+                            "clip_index": c.clip_index,
+                            "video_url_preview": c.video_url[:100] if c.video_url else None
+                        }
+                        for c in clips.clips
+                    ]
+                }
+            )
+            
             video_output = await compose_video(
                 job_id,
                 clips,
