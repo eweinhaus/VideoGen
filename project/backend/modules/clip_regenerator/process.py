@@ -5,6 +5,7 @@ Main orchestration function for regenerating a single clip based on user instruc
 Handles template matching, LLM modification, and video generation.
 """
 
+import asyncio
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from uuid import UUID
@@ -1516,8 +1517,14 @@ async def regenerate_clip_with_recomposition(
     # IMPORTANT: Load the TRUE original from clip_versions v1 if it exists, not from job_stages
     # (job_stages may already have a regenerated clip from a previous regeneration)
     original_clip = clips.clips[clip_position]
+    
+    # CRITICAL: Save versions with retry logic to prevent silent failures
+    db = DatabaseClient()
+    version_save_max_retries = 3
+    version_save_retry_delay = 1.0  # seconds
+    
+    # Step 1: Save original clip as version 1 (if not already saved)
     try:
-        db = DatabaseClient()
         # Check if version 1 already exists for this clip
         existing_version = await db.table("clip_versions").select("*").eq(
             "job_id", str(job_id)
@@ -1543,7 +1550,7 @@ async def regenerate_clip_with_recomposition(
             except Exception:
                 pass  # Table may not exist
             
-            # Save original clip as version 1
+            # Save original clip as version 1 WITH RETRY LOGIC
             version_data = {
                 "job_id": str(job_id),
                 "clip_index": clip_index,
@@ -1558,15 +1565,50 @@ async def regenerate_clip_with_recomposition(
                 "created_at": "now()"
             }
             
-            await db.table("clip_versions").insert(version_data).execute()
-            logger.info(
-                f"Saved original clip to clip_versions as version 1",
-                extra={
-                    "job_id": str(job_id),
-                    "clip_index": clip_index,
-                    "video_url": original_clip.video_url
-                }
-            )
+            # Retry loop for version 1 save
+            for attempt in range(1, version_save_max_retries + 1):
+                try:
+                    await db.table("clip_versions").insert(version_data).execute()
+                    logger.info(
+                        f"✅ Saved original clip to clip_versions as version 1 (attempt {attempt})",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "video_url": original_clip.video_url,
+                            "attempt": attempt
+                        }
+                    )
+                    break  # Success!
+                except Exception as e:
+                    if attempt < version_save_max_retries:
+                        logger.warning(
+                            f"⚠️ Failed to save version 1 (attempt {attempt}/{version_save_max_retries}), retrying...",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_index,
+                                "attempt": attempt,
+                                "error": str(e),
+                                "error_type": type(e).__name__
+                            }
+                        )
+                        await asyncio.sleep(version_save_retry_delay * attempt)  # Exponential backoff
+                    else:
+                        # CRITICAL: Last attempt failed - raise error to fail the regeneration
+                        logger.error(
+                            f"❌ CRITICAL: Failed to save version 1 after {version_save_max_retries} attempts",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_index,
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                                "version_data": version_data
+                            },
+                            exc_info=True
+                        )
+                        raise GenerationError(
+                            f"Failed to save original clip version to database after {version_save_max_retries} attempts: {str(e)}",
+                            job_id=job_id
+                        ) from e
         else:
             # Version 1 already exists - this means we've regenerated before
             # The original is already saved, so we don't need to save it again
@@ -1578,107 +1620,147 @@ async def regenerate_clip_with_recomposition(
                     "existing_v1_url": existing_version.data[0].get("video_url")
                 }
             )
+    except GenerationError:
+        # Re-raise generation errors (these are intentional failures)
+        raise
     except Exception as e:
-        # Don't fail regeneration if clip_versions save fails, but log the warning
-        logger.warning(
-            f"Failed to save original clip to clip_versions: {e}",
-            extra={"job_id": str(job_id), "clip_index": clip_index},
-            exc_info=True
-        )
-    
-    # Save the regenerated clip as a new version
-    try:
-        # Get the next version number
-        version_result = await db.table("clip_versions").select("version_number").eq(
-            "job_id", str(job_id)
-        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
-        
-        next_version = 2  # Default to version 2 if no versions exist
-        if version_result.data and len(version_result.data) > 0:
-            next_version = version_result.data[0].get("version_number", 1) + 1
-        
-        # Mark all previous versions as not current
-        await db.table("clip_versions").update({"is_current": False}).eq(
-            "job_id", str(job_id)
-        ).eq("clip_index", clip_index).execute()
-        
-        # Get thumbnail if available
-        thumbnail_url = None
-        try:
-            thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
-                "job_id", str(job_id)
-            ).eq("clip_index", clip_index).limit(1).execute()
-            if thumb_result.data and len(thumb_result.data) > 0:
-                thumbnail_url = thumb_result.data[0].get("thumbnail_url")
-        except Exception:
-            pass  # Table may not exist
-        
-        # Save regenerated clip as new version
-        regenerated_version_data = {
-            "job_id": str(job_id),
-            "clip_index": clip_index,
-            "version_number": next_version,
-            "video_url": new_clip_url,
-            "thumbnail_url": thumbnail_url,
-            "prompt": regeneration_result.modified_prompt,  # From regeneration_result
-            "user_instruction": user_instruction,
-            "cost": float(regeneration_result.cost) if regeneration_result.cost else 0.0,
-            "duration": float(new_clip.actual_duration) if new_clip.actual_duration else None,
-            "is_current": True,  # This is the current version
-            "created_at": "now()"
-        }
-        
-        await db.table("clip_versions").insert(regenerated_version_data).execute()
-        logger.info(
-            f"Saved regenerated clip to clip_versions as version {next_version}",
+        # CRITICAL: Unexpected error in version 1 check/save - don't swallow it
+        logger.error(
+            f"❌ CRITICAL: Unexpected error while checking/saving version 1",
             extra={
                 "job_id": str(job_id),
                 "clip_index": clip_index,
-                "version_number": next_version,
-                "video_url": new_clip_url
-            }
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
         )
-        
-        # CRITICAL VERIFICATION: Verify both versions exist in database using helper function
+        raise GenerationError(
+            f"Unexpected error while saving original clip version: {str(e)}",
+            job_id=job_id
+        ) from e
+    
+    # Save the regenerated clip as a new version WITH RETRY LOGIC
+    # Get the next version number
+    version_result = await db.table("clip_versions").select("version_number").eq(
+        "job_id", str(job_id)
+    ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+    
+    next_version = 2  # Default to version 2 if no versions exist
+    if version_result.data and len(version_result.data) > 0:
+        next_version = version_result.data[0].get("version_number", 1) + 1
+    
+    # Mark all previous versions as not current
+    await db.table("clip_versions").update({"is_current": False}).eq(
+        "job_id", str(job_id)
+    ).eq("clip_index", clip_index).execute()
+    
+    # Get thumbnail if available
+    thumbnail_url = None
+    try:
+        thumb_result = await db.table("clip_thumbnails").select("thumbnail_url").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).limit(1).execute()
+        if thumb_result.data and len(thumb_result.data) > 0:
+            thumbnail_url = thumb_result.data[0].get("thumbnail_url")
+    except Exception:
+        pass  # Table may not exist
+    
+    # Save regenerated clip as new version WITH RETRY LOGIC
+    regenerated_version_data = {
+        "job_id": str(job_id),
+        "clip_index": clip_index,
+        "version_number": next_version,
+        "video_url": new_clip_url,
+        "thumbnail_url": thumbnail_url,
+        "prompt": regeneration_result.modified_prompt,  # From regeneration_result
+        "user_instruction": user_instruction,
+        "cost": float(regeneration_result.cost) if regeneration_result.cost else 0.0,
+        "duration": float(new_clip.actual_duration) if new_clip.actual_duration else None,
+        "is_current": True,  # This is the current version
+        "created_at": "now()"
+    }
+    
+    # Retry loop for regenerated version save
+    for attempt in range(1, version_save_max_retries + 1):
         try:
-            from modules.clip_regenerator.version_verifier import verify_clip_versions_after_save
-            
-            verification = await verify_clip_versions_after_save(
-                job_id=job_id,
-                clip_index=clip_index,
-                expected_original_url=old_clip_url,  # Verify original URL is preserved
-                expected_latest_url=new_clip_url,    # Verify new URL is saved
-                expected_latest_version=next_version
-            )
-            
-            if not verification.get("success"):
-                logger.error(
-                    "⚠️ Database verification returned failure",
-                    extra={
-                        "job_id": str(job_id),
-                        "clip_index": clip_index,
-                        "verification": verification
-                    }
-                )
-        except Exception as e:
-            # Don't fail regeneration if verification fails, but log it
-            logger.error(
-                "⚠️ Failed to verify clip versions in database (non-fatal)",
+            await db.table("clip_versions").insert(regenerated_version_data).execute()
+            logger.info(
+                f"✅ Saved regenerated clip to clip_versions as version {next_version} (attempt {attempt})",
                 extra={
                     "job_id": str(job_id),
                     "clip_index": clip_index,
-                    "error": str(e),
-                    "error_type": type(e).__name__
+                    "version_number": next_version,
+                    "video_url": new_clip_url,
+                    "attempt": attempt
+                }
+            )
+            break  # Success!
+        except Exception as e:
+            if attempt < version_save_max_retries:
+                logger.warning(
+                    f"⚠️ Failed to save regenerated version (attempt {attempt}/{version_save_max_retries}), retrying...",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "attempt": attempt,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "version_data": regenerated_version_data
+                    }
+                )
+                await asyncio.sleep(version_save_retry_delay * attempt)  # Exponential backoff
+            else:
+                # CRITICAL: Last attempt failed - raise error to fail the regeneration
+                logger.error(
+                    f"❌ CRITICAL: Failed to save regenerated version after {version_save_max_retries} attempts",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "version_data": regenerated_version_data
+                    },
+                    exc_info=True
+                )
+                raise GenerationError(
+                    f"Failed to save regenerated clip version to database after {version_save_max_retries} attempts: {str(e)}",
+                    job_id=job_id
+                ) from e
+    
+    # CRITICAL VERIFICATION: Verify both versions exist in database using helper function
+    try:
+        from modules.clip_regenerator.version_verifier import verify_clip_versions_after_save
+        
+        verification = await verify_clip_versions_after_save(
+            job_id=job_id,
+            clip_index=clip_index,
+            expected_original_url=old_clip_url,  # Verify original URL is preserved
+            expected_latest_url=new_clip_url,    # Verify new URL is saved
+            expected_latest_version=next_version
+        )
+        
+        if not verification.get("success"):
+            logger.error(
+                "⚠️ Database verification returned failure",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "verification": verification
+                }
+            )
+    except Exception as e:
+        # Don't fail regeneration if verification fails, but log it
+        logger.error(
+            "⚠️ Failed to verify clip versions in database (non-fatal)",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "error": str(e),
+                "error_type": type(e).__name__
                 },
                 exc_info=True
             )
-    except Exception as e:
-        # Don't fail regeneration if clip_versions save fails, but log the warning
-        logger.warning(
-            f"Failed to save regenerated clip to clip_versions: {e}",
-            extra={"job_id": str(job_id), "clip_index": clip_index},
-            exc_info=True
-        )
     
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
@@ -1955,9 +2037,8 @@ async def regenerate_clip_with_recomposition(
     
     # Verify the update worked
     try:
-        from shared.database import DatabaseClient
-        db = DatabaseClient()
-        verify_result = await db.table("jobs").select("video_url").eq("id", str(job_id)).limit(1).execute()
+        db_verify = DatabaseClient()
+        verify_result = await db_verify.table("jobs").select("video_url").eq("id", str(job_id)).limit(1).execute()
         if verify_result.data:
             job_data = verify_result.data[0] if isinstance(verify_result.data, list) else verify_result.data
             actual_video_url = job_data.get("video_url")
