@@ -91,6 +91,11 @@ export default function JobProgressPage() {
     
     try {
       const data = await getClipComparison(jobId, clipIndex)
+      console.log("🎯 Received comparison data:", {
+        active_version_number: data.active_version_number,
+        originalVersion: data.original.version_number,
+        regeneratedVersion: data.regenerated?.version_number
+      })
       setComparisonData(data)
       setShowComparison(true)
     } catch (err) {

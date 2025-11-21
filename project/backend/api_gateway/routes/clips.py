@@ -700,6 +700,11 @@ async def compare_clip_versions(
             "clip_end_time": clip_end_time
         }
         
+        logger.info(
+            f"🎯 Response includes active_version_number: {active_version_number}",
+            extra={"job_id": job_id, "clip_index": clip_index, "active_version_number": active_version_number}
+        )
+        
         # Add regenerated data if it exists
         if regenerated_data:
             response["regenerated"] = {

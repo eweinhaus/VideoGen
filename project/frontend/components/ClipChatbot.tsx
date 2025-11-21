@@ -143,6 +143,7 @@ export function ClipChatbot({
     regenerated: any | null
     clip_start_time?: number | null
     clip_end_time?: number | null
+    active_version_number?: number  // NEW: which version is currently active in main video
   } | null>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
