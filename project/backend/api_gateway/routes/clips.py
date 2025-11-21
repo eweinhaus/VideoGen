@@ -386,6 +386,9 @@ async def compare_clip_versions(
                 detail=f"Clips not found for job {job_id}"
             )
         
+        # CRITICAL: Sort clips by clip_index to ensure correct ordering
+        clips.clips.sort(key=lambda c: c.clip_index)
+        
         original_clip = None
         for clip in clips.clips:
             if clip.clip_index == clip_index:
@@ -438,13 +441,15 @@ async def compare_clip_versions(
         # Step 2: Load regenerated (current/latest) version from clip_versions table
         # If no versions exist in clip_versions, that means no regeneration has happened yet
         try:
-            # Get the latest version (highest version_number) from clip_versions
-            latest_result = await db.table("clip_versions").select("*").eq(
+            # Get the latest TWO versions (highest version_numbers) from clip_versions
+            # We need both to show: previous (second-to-last) vs latest
+            versions_result = await db.table("clip_versions").select("*").eq(
                 "job_id", str(job_id)
-            ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+            ).eq("clip_index", clip_index).order("version_number", desc=True).limit(2).execute()
             
-            if latest_result.data and len(latest_result.data) > 0:
-                latest_version = latest_result.data[0]
+            if versions_result.data and len(versions_result.data) > 0:
+                # Latest version (v5, v2, etc.)
+                latest_version = versions_result.data[0]
                 regenerated_data = {
                     "video_url": latest_version.get("video_url"),
                     "thumbnail_url": latest_version.get("thumbnail_url"),
@@ -455,6 +460,33 @@ async def compare_clip_versions(
                     "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
                     "created_at": latest_version.get("created_at")
                 }
+                
+                # If there's a second version, use it as "original" (previous version)
+                # This allows users to compare v4 vs v5, not v1 vs v5
+                if len(versions_result.data) > 1:
+                    previous_version = versions_result.data[1]
+                    # Override original_data with the previous version from clip_versions
+                    original_data = {
+                        "video_url": previous_version.get("video_url"),
+                        "thumbnail_url": previous_version.get("thumbnail_url"),
+                        "prompt": previous_version.get("prompt", ""),
+                        "version_number": previous_version.get("version_number"),
+                        "duration": float(previous_version.get("duration")) if previous_version.get("duration") is not None else None,
+                        "user_instruction": previous_version.get("user_instruction"),
+                        "cost": float(previous_version.get("cost", 0)) if previous_version.get("cost") else None,
+                        "created_at": previous_version.get("created_at")
+                    }
+                    logger.info(
+                        "Loaded previous version from clip_versions (showing previous vs latest)",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "previous_version": original_data.get("version_number"),
+                            "latest_version": regenerated_data.get("version_number"),
+                            "source": "clip_versions"
+                        }
+                    )
+                # else: Keep original_data from job_stages (v1) if only one version exists
                 
                 logger.info(
                     "Loaded regenerated clip from clip_versions",
@@ -544,6 +576,111 @@ async def compare_clip_versions(
             }
         )
         
+        # Determine which version is currently active in the main video
+        # by comparing job_stages.metadata with clip_versions
+        active_version_number = 1  # Default to v1 (original)
+        try:
+            # Get the current video URL from job_stages
+            result = await db.table("job_stages").select("metadata").eq(
+                "job_id", str(job_id)
+            ).eq("stage_name", "video_generator").limit(1).execute()
+            
+            if result.data and len(result.data) > 0:
+                metadata = result.data[0].get("metadata", {})
+                # Parse metadata if it's a string (JSON serialized)
+                if isinstance(metadata, str):
+                    import json
+                    metadata = json.loads(metadata)
+                
+                clips_wrapper = metadata.get("clips", {})
+                
+                # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
+                # We need to access the nested "clips" array
+                # After sorting in load_clips_from_job_stages, clip_index should match array position
+                if isinstance(clips_wrapper, dict):
+                    clips_list = clips_wrapper.get("clips", [])
+                    logger.info(
+                        f"📦 Extracted clips_list from dict wrapper",
+                        extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
+                    )
+                elif isinstance(clips_wrapper, list):
+                    # Backward compatibility: if clips is a list directly
+                    clips_list = clips_wrapper  # FIX: was incorrectly: clips_wrapper = clips_list
+                    logger.info(
+                        f"📦 Using clips_wrapper as clips_list (backward compat)",
+                        extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
+                    )
+                else:
+                    clips_list = []
+                    logger.warning(
+                        f"📦 clips_wrapper is neither dict nor list, defaulting to empty",
+                        extra={"job_id": job_id, "clip_index": clip_index, "type": type(clips_wrapper).__name__}
+                    )
+                
+                logger.info(
+                    f"🔍 About to check clip at index {clip_index}, clips_list length: {len(clips_list)}",
+                    extra={"job_id": job_id, "clip_index": clip_index, "clips_list_length": len(clips_list)}
+                )
+                
+                # Since clips should be sorted by clip_index, we can directly access by index
+                # But we still need to verify the clip_index matches
+                if clip_index < len(clips_list):
+                    current_clip_data = clips_list[clip_index]
+                    logger.info(
+                        f"🔍 Retrieved clip data at position {clip_index}",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "clip_data_clip_index": current_clip_data.get("clip_index") if isinstance(current_clip_data, dict) else "not_dict",
+                            "has_video_url": "video_url" in current_clip_data if isinstance(current_clip_data, dict) else False
+                        }
+                    )
+                    
+                    # Verify this is the right clip
+                    if isinstance(current_clip_data, dict) and current_clip_data.get("clip_index") == clip_index:
+                        current_clip_url = current_clip_data.get("video_url", "")
+                        logger.info(
+                            f"🔍 Current clip URL from metadata: {current_clip_url[:100]}...",
+                            extra={"job_id": job_id, "clip_index": clip_index, "has_version_pattern": "_v" in current_clip_url}
+                        )
+                        
+                        # Check if this URL matches any clip_version
+                        if current_clip_url:
+                            # Extract the file path from the URL for comparison
+                            # URLs look like: https://.../video-clips/.../clip_1_v6.mp4?token=...
+                            if "_v" in current_clip_url:
+                                # Extract version from filename (e.g., clip_1_v6.mp4 → 6)
+                                import re
+                                version_match = re.search(r'clip_\d+_v(\d+)\.mp4', current_clip_url)
+                                if version_match:
+                                    active_version_number = int(version_match.group(1))
+                                    logger.info(
+                                        f"✅ Detected active version from URL: v{active_version_number}",
+                                        extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                                    )
+                            else:
+                                # URL doesn't have _v pattern, it's likely v1 (original)
+                                logger.info(
+                                    f"✅ No version pattern in URL, defaulting to v1 (original)",
+                                    extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                                )
+                    else:
+                        logger.warning(
+                            f"Clip index mismatch at position {clip_index}: expected {clip_index}, got {current_clip_data.get('clip_index') if isinstance(current_clip_data, dict) else 'unknown'}",
+                            extra={"job_id": job_id, "clip_index": clip_index}
+                        )
+                else:
+                    logger.warning(
+                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
+                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
+                    )
+        except Exception as e:
+            logger.warning(
+                f"Failed to determine active version, defaulting to v1: {e}",
+                extra={"job_id": job_id, "clip_index": clip_index},
+                exc_info=True
+            )
+        
         # Build response
         response = {
             "original": {
@@ -557,10 +694,16 @@ async def compare_clip_versions(
             },
             "duration_mismatch": duration_mismatch,
             "duration_diff": duration_diff,
+            "active_version_number": active_version_number,  # NEW: indicates which version is in main video
             # Add clip boundary info for audio trimming in frontend
             "clip_start_time": clip_start_time,
             "clip_end_time": clip_end_time
         }
+        
+        logger.info(
+            f"🎯 Response includes active_version_number: {active_version_number}",
+            extra={"job_id": job_id, "clip_index": clip_index, "active_version_number": active_version_number}
+        )
         
         # Add regenerated data if it exists
         if regenerated_data:
@@ -638,18 +781,44 @@ async def revert_clip_to_version(
                 detail=f"Clips not found for job {job_id}"
             )
         
+        # CRITICAL: Sort clips by clip_index to ensure correct ordering
+        # The composer expects clips in sequential order (0, 1, 2, ...)
+        clips.clips.sort(key=lambda c: c.clip_index)
+        logger.info(
+            f"Sorted {len(clips.clips)} clips by clip_index",
+            extra={
+                "job_id": job_id,
+                "clip_indices": [c.clip_index for c in clips.clips]
+            }
+        )
+        
         # Find the clip to revert
+        # After sorting, the list position should match clip_index
+        # But we still need to verify this
         clip_to_revert = None
-        for clip in clips.clips:
+        list_position = None
+        for idx, clip in enumerate(clips.clips):
             if clip.clip_index == clip_index:
                 clip_to_revert = clip
+                list_position = idx
                 break
         
-        if not clip_to_revert:
+        if not clip_to_revert or list_position is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Clip {clip_index} not found for job {job_id}"
             )
+        
+        logger.info(
+            f"Found clip {clip_index} at list position {list_position} (after sorting)",
+            extra={
+                "job_id": job_id,
+                "clip_index": clip_index,
+                "list_position": list_position,
+                "matches": list_position == clip_index,
+                "old_video_url": clip_to_revert.video_url
+            }
+        )
         
         # If version_number is 1, use original clip (already in clips)
         # If version_number > 1, load from clip_versions table
@@ -675,10 +844,18 @@ async def revert_clip_to_version(
                 
                 version_data = result.data[0]
                 # Replace the clip with the specified version
+                old_video_url = clip_to_revert.video_url
                 clip_to_revert.video_url = version_data.get("video_url")
                 logger.info(
-                    f"Reverting clip {clip_index} to version {request.version_number}",
-                    extra={"job_id": job_id, "clip_index": clip_index, "version_number": request.version_number}
+                    f"✅ Reverting clip {clip_index} to version {request.version_number}",
+                    extra={
+                        "job_id": job_id,
+                        "clip_index": clip_index,
+                        "version_number": request.version_number,
+                        "old_video_url": old_video_url,
+                        "new_video_url": clip_to_revert.video_url,
+                        "url_changed": old_video_url != clip_to_revert.video_url
+                    }
                 )
             except Exception as e:
                 logger.error(
@@ -718,6 +895,23 @@ async def revert_clip_to_version(
         # Call composer to re-stitch video
         try:
             from modules.composer.process import process as compose_video
+            
+            # Debug: Log all clips being sent to composer
+            logger.info(
+                f"🔧 Sending clips to composer",
+                extra={
+                    "job_id": job_id,
+                    "clip_count": len(clips.clips),
+                    "clips_debug": [
+                        {
+                            "clip_index": c.clip_index,
+                            "video_url_preview": c.video_url[:100] if c.video_url else None
+                        }
+                        for c in clips.clips
+                    ]
+                }
+            )
+            
             video_output = await compose_video(
                 job_id,
                 clips,
@@ -758,6 +952,97 @@ async def revert_clip_to_version(
             "video_url": video_output.video_url,
             "updated_at": "now()"
         }).eq("id", job_id).execute()
+        
+        # CRITICAL: Update job_stages.metadata to reflect the reverted clip
+        # This ensures the comparison modal knows which version is active
+        try:
+            # Load current metadata
+            metadata_result = await db_client.table("job_stages").select("metadata").eq(
+                "job_id", job_id
+            ).eq("stage_name", "video_generator").limit(1).execute()
+            
+            if metadata_result.data and len(metadata_result.data) > 0:
+                metadata = metadata_result.data[0].get("metadata", {})
+                # Parse metadata if it's a string (JSON serialized)
+                if isinstance(metadata, str):
+                    import json
+                    metadata = json.loads(metadata)
+                
+                clips_wrapper = metadata.get("clips", {})
+                
+                # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
+                # We need to access the nested "clips" array
+                if isinstance(clips_wrapper, dict):
+                    clips_list = clips_wrapper.get("clips", [])
+                elif isinstance(clips_wrapper, list):
+                    # Backward compatibility: if clips is a list directly
+                    clips_list = clips_wrapper
+                else:
+                    clips_list = []
+                
+                # Update the specific clip's video_url in metadata
+                # CRITICAL: The metadata's clips array might NOT be sorted by clip_index!
+                # We need to find the clip by its clip_index property, not by array position
+                clip_found = False
+                for idx, clip_data in enumerate(clips_list):
+                    if isinstance(clip_data, dict) and clip_data.get("clip_index") == clip_index:
+                        # Found the clip! Update its URL
+                        clips_list[idx]["video_url"] = clip_to_revert.video_url
+                        clip_found = True
+                        logger.info(
+                            f"✅ Updated metadata clip at position {idx} (clip_index={clip_index})",
+                            extra={
+                                "job_id": job_id,
+                                "clip_index": clip_index,
+                                "metadata_position": idx,
+                                "new_url": clip_to_revert.video_url
+                            }
+                        )
+                        break
+                
+                if clip_found:
+                    # Update the metadata structure
+                    if isinstance(clips_wrapper, dict):
+                        clips_wrapper["clips"] = clips_list
+                        metadata["clips"] = clips_wrapper
+                    else:
+                        metadata["clips"] = clips_list
+                    
+                    # Save updated metadata back to job_stages
+                    await db_client.table("job_stages").update({
+                        "metadata": metadata
+                    }).eq("job_id", job_id).eq("stage_name", "video_generator").execute()
+                    
+                    logger.info(
+                        f"✅ Updated job_stages.metadata with reverted clip URL",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "new_url": clip_to_revert.video_url
+                        }
+                    )
+                else:
+                    logger.warning(
+                        f"Could not find clip {clip_index} in metadata clips array",
+                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
+                    )
+        except Exception as e:
+            # Non-critical error - log but don't fail the revert
+            logger.warning(
+                f"Failed to update job_stages.metadata: {e}",
+                extra={"job_id": job_id, "clip_index": clip_index},
+                exc_info=True
+            )
+        
+        # Regenerate thumbnail for the reverted clip (async, non-blocking)
+        from modules.video_generator.thumbnail_generator import generate_clip_thumbnail
+        asyncio.create_task(
+            generate_clip_thumbnail(
+                clip_url=clip_to_revert.video_url,
+                job_id=UUID(job_id),
+                clip_index=clip_index
+            )
+        )
         
         # Publish completion event
         await publish_event(job_id, "completed", {

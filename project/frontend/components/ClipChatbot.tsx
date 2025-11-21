@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react"
 import Image from "next/image"
-import { regenerateClip, getJobClips, getClipComparison } from "@/lib/api"
+import { regenerateClip, getJobClips, getClipComparison, revertClipToVersion } from "@/lib/api"
 import { useSSE } from "@/hooks/useSSE"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -55,12 +55,17 @@ interface ClipChatbotProps {
   jobId: string
   onRegenerationComplete?: (newVideoUrl: string) => void
   audioUrl?: string | null
+  // NEW: Shared clip selection state (synchronized with main ClipSelector)
+  selectedClipIndex?: number
+  onClipSelect?: (clipIndex: number, timestamp?: number) => void
 }
 
 export function ClipChatbot({
   jobId,
   onRegenerationComplete,
   audioUrl,
+  selectedClipIndex: externalSelectedClipIndex,
+  onClipSelect,
 }: ClipChatbotProps) {
   // Generate unique storage key for this job (unified chat)
   const storageKey = `clip_chat_${jobId}`
@@ -82,12 +87,63 @@ export function ClipChatbot({
   const [clips, setClips] = useState<ClipData[]>([])
   const [selectedClipIndices, setSelectedClipIndices] = useState<number[]>([])
   const [loadingClips, setLoadingClips] = useState(true)
+  
+  // Track the last synced clip index to prevent infinite loops
+  const lastSyncedClipRef = useRef<number | undefined>(undefined)
+  
+  // Sync external selection with internal selection
+  // Sync selection state from parent if:
+  // - Chatbot has 0 clips selected (empty state), OR
+  // - Chatbot has exactly 1 clip selected (single selection mode)
+  // Do NOT sync if chatbot has 2+ clips (multi-select mode - user is bulk editing)
+  useEffect(() => {
+    if (externalSelectedClipIndex !== undefined && 
+        externalSelectedClipIndex !== lastSyncedClipRef.current &&
+        selectedClipIndices.length <= 1) { // Allow sync when 0 or 1 clip selected
+      // Replace selection with this clip (single selection from parent)
+      setSelectedClipIndices([externalSelectedClipIndex])
+      // Save to localStorage
+      try {
+        localStorage.setItem(selectedClipsKey, JSON.stringify([externalSelectedClipIndex]))
+      } catch (err) {
+        console.error("Failed to save selected clips:", err)
+      }
+      lastSyncedClipRef.current = externalSelectedClipIndex
+    }
+  }, [externalSelectedClipIndex, selectedClipIndices, selectedClipsKey])
+  
+  // Sync internal selection with parent
+  // When internal selection changes, notify parent of the LAST selected clip
+  // (the one the user just clicked, which is at the end of the array)
+  useEffect(() => {
+    if (onClipSelect && clips.length > 0) {
+      if (selectedClipIndices.length > 0) {
+        // Use the LAST selected clip (most recently clicked)
+        const lastSelectedIndex = selectedClipIndices[selectedClipIndices.length - 1]
+        
+        // Only sync if this is a new clip (different from last synced)
+        if (lastSelectedIndex !== lastSyncedClipRef.current) {
+          const lastSelectedClip = clips.find(c => c.clip_index === lastSelectedIndex)
+          if (lastSelectedClip) {
+            // Notify parent of selection change with timestamp for video seeking
+            onClipSelect(lastSelectedClip.clip_index, lastSelectedClip.timestamp_start)
+            lastSyncedClipRef.current = lastSelectedIndex
+          }
+        }
+      } else if (selectedClipIndices.length === 0 && lastSyncedClipRef.current !== undefined) {
+        // When all clips are deselected, clear the parent's selection too
+        onClipSelect(undefined as any, undefined)
+        lastSyncedClipRef.current = undefined
+      }
+    }
+  }, [selectedClipIndices, clips, onClipSelect])
   const [showComparison, setShowComparison] = useState(false)
   const [comparisonData, setComparisonData] = useState<{
     original: any
     regenerated: any | null
     clip_start_time?: number | null
     clip_end_time?: number | null
+    active_version_number?: number  // NEW: which version is currently active in main video
   } | null>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -732,9 +788,17 @@ export function ClipChatbot({
     try {
       setLoadingComparison(true)
       const data = await getClipComparison(jobId, clipIndex)
+      console.log("🎯 ClipChatbot received comparison data:", {
+        active_version_number: data.active_version_number,
+        originalVersion: data.original.version_number,
+        regeneratedVersion: data.regenerated?.version_number
+      })
       setComparisonData({
         original: data.original,
         regenerated: data.regenerated,
+        clip_start_time: data.clip_start_time,
+        clip_end_time: data.clip_end_time,
+        active_version_number: data.active_version_number,  // CRITICAL: Pass through the active version
       })
       setShowComparison(true)
     } catch (err) {
@@ -820,6 +884,51 @@ export function ClipChatbot({
     }
   }
 
+  const handleRevert = async (clipIndex: number, versionNumber: number) => {
+    try {
+      await revertClipToVersion(jobId, clipIndex, versionNumber)
+      
+      // Show success message in chat
+      addSystemMessage(
+        `Successfully reverted clip ${clipIndex + 1} to version ${versionNumber}. The main video has been updated.`,
+        "success"
+      )
+      
+      // Refresh clips to update thumbnails after revert
+      // Wait a bit for thumbnail to regenerate
+      setTimeout(async () => {
+        try {
+          const response = await getJobClips(jobId)
+          setClips(response.clips)
+          console.log(`✅ Refreshed clips after revert - thumbnails updated`)
+        } catch (err) {
+          console.error("Failed to refresh clips after revert:", err)
+        }
+      }, 2000) // 2 second delay for thumbnail generation
+      
+      // Trigger regeneration complete callback if provided to update main video
+      if (onRegenerationComplete) {
+        // The backend will return the new video URL, but we need to refresh the job to get it
+        // For now, just notify that a revert happened
+        console.log(`✅ Reverted clip ${clipIndex} to version ${versionNumber}`)
+      }
+      
+      // DON'T close comparison modal - let user toggle back and forth between versions
+      // The button text will update automatically based on activeVersion state in ClipComparison
+      // User can manually close modal when done comparing
+    } catch (error) {
+      console.error("Failed to revert clip:", error)
+      
+      let errorMessage = "Failed to revert clip"
+      if (error instanceof APIError) {
+        errorMessage = error.message || errorMessage
+      }
+      
+      addSystemMessage(errorMessage, "error")
+      throw error // Re-throw to let ClipComparison handle the error
+    }
+  }
+
   return (
     <>
       {showComparison && comparisonData && selectedClipIndices.length > 0 && (
@@ -829,11 +938,13 @@ export function ClipChatbot({
           audioUrl={audioUrl ?? undefined}
           clipStartTime={comparisonData.clip_start_time ?? null}
           clipEndTime={comparisonData.clip_end_time ?? null}
+          activeVersionNumber={comparisonData.active_version_number}
           onClose={() => {
             setShowComparison(false)
             setComparisonData(null)
             saveComparisonState(false, null)
           }}
+          onRevert={handleRevert}
           clipIndex={selectedClipIndices[0]}
         />
       )}

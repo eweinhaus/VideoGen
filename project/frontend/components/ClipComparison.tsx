@@ -29,6 +29,7 @@ interface ClipComparisonProps {
   clipIndex?: number
   clipStartTime?: number | null  // Start time of clip in full audio (for trimming)
   clipEndTime?: number | null    // End time of clip in full audio (for trimming)
+  activeVersionNumber?: number   // NEW: which version is currently in main video
 }
 
 export function ClipComparison({
@@ -42,12 +43,36 @@ export function ClipComparison({
   clipIndex,
   clipStartTime,
   clipEndTime,
+  activeVersionNumber,
 }: ClipComparisonProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isSynced, setIsSynced] = useState(syncPlayback)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isReverting, setIsReverting] = useState(false)
+  const [activeVersion, setActiveVersion] = useState<number>(
+    activeVersionNumber ?? (regeneratedClip?.version_number ?? 1)
+  )
+  
+  // Debug logging for active version
+  useEffect(() => {
+    console.log("🔍 ClipComparison Active Version Debug:", {
+      activeVersionNumber,
+      regeneratedClipVersion: regeneratedClip?.version_number,
+      originalClipVersion: originalClip.version_number,
+      initializedActiveVersion: activeVersion,
+      buttonShouldSay: activeVersion === regeneratedClip?.version_number ? "Revert to Prior Version" : "Change clip to latest version"
+    })
+  }, [activeVersionNumber, regeneratedClip?.version_number, originalClip.version_number, activeVersion])
+  
+  // Update activeVersion when activeVersionNumber prop changes
+  useEffect(() => {
+    if (activeVersionNumber !== undefined && activeVersionNumber !== null) {
+      console.log(`🔄 Updating activeVersion from prop: ${activeVersionNumber}`)
+      setActiveVersion(activeVersionNumber)
+    }
+  }, [activeVersionNumber])
   
   const originalVideoRef = useRef<HTMLVideoElement>(null)
   const regeneratedVideoRef = useRef<HTMLVideoElement>(null)
@@ -445,8 +470,11 @@ export function ClipComparison({
   const leftVideoRef = isSwapped && regeneratedClip ? regeneratedVideoRef : originalVideoRef
   const rightVideoRef = isSwapped && regeneratedClip ? originalVideoRef : regeneratedVideoRef
   
+  // Check if revert button should be shown
+  const showRevertButton = regeneratedClip && onRevert && clipIndex !== undefined
+  
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-end p-4 pl-[440px]">
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 lg:pl-[420px]">
       {/* Hidden audio element for synchronized playback */}
       {audioUrl && (
         <audio
@@ -491,7 +519,7 @@ export function ClipComparison({
       )}
       <div
         ref={containerRef}
-        className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto"
+        className="bg-white rounded-lg shadow-xl w-full max-w-7xl 2xl:max-w-[90%] max-h-[90vh] overflow-auto"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b">
@@ -521,6 +549,17 @@ export function ClipComparison({
         
         {/* Content */}
         <div className="p-4">
+          {isReverting && (
+            <Alert className="mb-4 bg-blue-50 border-blue-300">
+              <div className="flex items-center gap-3">
+                <LoadingSpinner className="h-4 w-4 flex-shrink-0" />
+                <AlertDescription>
+                  <strong>Recomposing video...</strong> This may take a few moments. The main video will update automatically when complete.
+                </AlertDescription>
+              </div>
+            </Alert>
+          )}
+          
           {error && (
             <Alert variant="destructive" className="mb-4">
               <AlertDescription>{error}</AlertDescription>
@@ -543,13 +582,20 @@ export function ClipComparison({
           )}
           
           {/* Video comparison */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
             {/* Left video (original or swapped) */}
-            <div className="space-y-2">
-              <div className="text-sm font-medium">
-                {isSwapped ? "Regenerated" : "Original"} (v{leftClip.version_number})
+            <div className="flex flex-col">
+              <div className="text-sm font-medium min-h-[2.5rem] flex items-start mb-2">
+                <span>
+                  {isSwapped 
+                    ? `Latest (v${leftClip.version_number})` 
+                    : leftClip.version_number === 1 
+                      ? `Original (v${leftClip.version_number})` 
+                      : `Previous (v${leftClip.version_number})`
+                  }
+                </span>
               </div>
-              <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+              <div className="relative bg-black rounded-lg overflow-hidden aspect-video flex-shrink-0">
                 {leftClip.thumbnail_url && isLoading && (
                   <Image
                     src={leftClip.thumbnail_url}
@@ -577,27 +623,29 @@ export function ClipComparison({
                   </div>
                 )}
               </div>
-              <div className="text-xs text-gray-600">
+              <div className="text-xs text-gray-600 mt-2">
                 Time: {formatDuration(leftClip === originalClip ? originalTime : regeneratedTime)}
-              </div>
-              <div className="text-xs text-gray-500 line-clamp-2">
-                {leftClip.prompt}
               </div>
             </div>
             
             {/* Right video (regenerated or swapped) */}
-            <div className="space-y-2">
+            <div className="flex flex-col">
               {rightClip ? (
                 <>
-                  <div className="text-sm font-medium">
-                    {isSwapped ? "Original" : "Regenerated"} (v{rightClip.version_number})
-                    {rightClip.user_instruction && (
-                      <span className="text-xs text-gray-500 ml-2">
-                        &quot;{rightClip.user_instruction}&quot;
-                      </span>
-                    )}
+                  <div className="text-sm font-medium min-h-[2.5rem] flex items-start mb-2">
+                    <span>
+                      {isSwapped 
+                        ? (rightClip.version_number === 1 ? `Original (v${rightClip.version_number})` : `Previous (v${rightClip.version_number})`)
+                        : `Latest (v${rightClip.version_number})`
+                      }
+                      {rightClip.user_instruction && (
+                        <span className="text-xs text-gray-500 ml-2 font-normal">
+                          &quot;{rightClip.user_instruction}&quot;
+                        </span>
+                      )}
+                    </span>
                   </div>
-                  <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                  <div className="relative bg-black rounded-lg overflow-hidden aspect-video flex-shrink-0">
                     {rightClip.thumbnail_url && isLoading && (
                       <Image
                         src={rightClip.thumbnail_url}
@@ -625,11 +673,8 @@ export function ClipComparison({
                       </div>
                     )}
                   </div>
-                  <div className="text-xs text-gray-600">
+                  <div className="text-xs text-gray-600 mt-2">
                     Time: {formatDuration(rightClip === regeneratedClip ? regeneratedTime : originalTime)}
-                  </div>
-                  <div className="text-xs text-gray-500 line-clamp-2">
-                    {rightClip.prompt}
                   </div>
                 </>
               ) : (
@@ -649,48 +694,109 @@ export function ClipComparison({
           </div>
           
           {/* Controls */}
-          <div className="flex flex-col items-center gap-4 pb-4">
-            {/* Primary playback controls with revert button */}
-            <div className="flex items-center gap-4 border-t pt-4">
-              {/* Revert to Prior Clip button - only show if there's a regenerated clip */}
-              {regeneratedClip && onRevert && clipIndex !== undefined && (
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    try {
-                      await onRevert(clipIndex, originalClip.version_number)
-                      onClose() // Close modal after successful revert
-                    } catch (error) {
-                      console.error("Failed to revert clip:", error)
-                      setError(error instanceof Error ? error.message : "Failed to revert clip")
-                    }
-                  }}
-                  className="text-orange-600 border-orange-600 hover:bg-orange-50"
-                >
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  Revert to Prior Clip
-                </Button>
-              )}
-              <Button onClick={handlePlay} variant="default">
-                {isPlaying ? (
-                  <>
-                    <Pause className="h-4 w-4 mr-2" />
-                    Pause
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4 mr-2" />
-                    Play
-                  </>
-                )}
-              </Button>
-              <Button
-                variant={isSynced ? "default" : "outline"}
-                onClick={() => setIsSynced(!isSynced)}
-                disabled={!regeneratedClip}
-              >
-                {isSynced ? "Synchronized" : "Independent"}
-              </Button>
+          <div className="flex flex-col gap-4 pb-4">
+            <div className="border-t pt-4 px-4">
+              <div className="flex items-center justify-between">
+                {/* Revert button on far left */}
+                <div className="flex-shrink-0">
+                  {showRevertButton ? (
+                    <Button
+                      variant="outline"
+                      disabled={isReverting}
+                      onClick={async () => {
+                        if (isReverting || !onRevert) return
+                        
+                        try {
+                          setIsReverting(true)
+                          setError(null)
+                          
+                          // Determine which version to apply based on what's currently in the main video
+                          const targetVersion = activeVersion === regeneratedClip!.version_number 
+                            ? originalClip.version_number  // Currently on latest (v5), switch to previous (v4)
+                            : regeneratedClip!.version_number  // Currently on previous (v4), switch to latest (v5)
+                          
+                          console.log("🔄 Version Toggle Debug:", {
+                            activeVersion,
+                            originalClipVersion: originalClip.version_number,
+                            regeneratedClipVersion: regeneratedClip!.version_number,
+                            targetVersion,
+                            clipIndex: clipIndex!
+                          })
+                          
+                          await onRevert(clipIndex!, targetVersion)
+                          
+                          // Update active version after successful revert
+                          setActiveVersion(targetVersion)
+                          
+                          // Keep loading state for a bit to show the recomposition is happening
+                          // The parent component will handle SSE events and update the main video
+                          setTimeout(() => {
+                            setIsReverting(false)
+                          }, 3000)  // Show loading for 3 seconds minimum
+                          
+                          // Don't close modal - let user see the result and toggle again if needed
+                          // onClose() 
+                        } catch (error) {
+                          console.error("Failed to switch clip version:", error)
+                          setError(error instanceof Error ? error.message : "Failed to switch clip version")
+                          setIsReverting(false)
+                        }
+                      }}
+                      className={`transition-colors ${
+                        isReverting 
+                          ? 'bg-orange-100 text-orange-600 border-orange-300 cursor-wait' 
+                          : 'bg-orange-50 text-orange-700 border-orange-300 hover:bg-orange-100 hover:border-orange-400'
+                      }`}
+                    >
+                      {isReverting ? (
+                        <>
+                          <LoadingSpinner className="h-4 w-4 mr-3" />
+                          Recomposing Video...
+                        </>
+                      ) : activeVersion === regeneratedClip!.version_number ? (
+                        <>
+                          <RotateCcw className="h-4 w-4 mr-3" />
+                          Revert to Prior Version
+                        </>
+                      ) : (
+                        <>
+                          <RotateCcw className="h-4 w-4 mr-3 rotate-180" />
+                          Change clip to latest version
+                        </>
+                      )}
+                    </Button>
+                  ) : (
+                    <div className="w-[180px]" />
+                  )}
+                </div>
+                
+                {/* Playback controls centered */}
+                <div className="flex items-center gap-4">
+                  <Button onClick={handlePlay} variant="default">
+                    {isPlaying ? (
+                      <>
+                        <Pause className="h-4 w-4 mr-2" />
+                        Pause
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4 mr-2" />
+                        Play
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant={isSynced ? "default" : "outline"}
+                    onClick={() => setIsSynced(!isSynced)}
+                    disabled={!regeneratedClip}
+                  >
+                    {isSynced ? "Synchronized" : "Independent"}
+                  </Button>
+                </div>
+                
+                {/* Right spacer for symmetry */}
+                <div className="w-[180px] flex-shrink-0" />
+              </div>
             </div>
           </div>
         </div>

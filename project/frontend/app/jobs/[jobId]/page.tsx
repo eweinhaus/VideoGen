@@ -91,6 +91,11 @@ export default function JobProgressPage() {
     
     try {
       const data = await getClipComparison(jobId, clipIndex)
+      console.log("🎯 Received comparison data:", {
+        active_version_number: data.active_version_number,
+        originalVersion: data.original.version_number,
+        regeneratedVersion: data.regenerated?.version_number
+      })
       setComparisonData(data)
       setShowComparison(true)
     } catch (err) {
@@ -106,6 +111,13 @@ export default function JobProgressPage() {
       await revertClipToVersion(jobId, clipIndex, versionNumber)
       // Refresh job to get updated video URL
       await fetchJob(jobId)
+      
+      // Trigger ClipSelector refresh to update thumbnails (after 2s delay for backend thumbnail generation)
+      setTimeout(() => {
+        setClipRefreshTrigger(prev => prev + 1)
+        console.log("✅ ClipSelector refresh triggered after revert")
+      }, 2000)
+      
       // Show success message (you could add a toast notification here)
       console.log(`✅ Successfully reverted clip ${clipIndex} to version ${versionNumber}`)
     } catch (error) {
@@ -529,6 +541,12 @@ export default function JobProgressPage() {
                     <ClipChatbot
                       jobId={jobId}
                       audioUrl={job?.audioUrl ?? undefined}
+                      selectedClipIndex={selectedClipIndex}
+                      onClipSelect={(clipIndex, timestamp) => {
+                        // Allow undefined to clear selection
+                        setSelectedClipIndex(clipIndex === undefined ? undefined : clipIndex)
+                        setSelectedClipTimestamp(timestamp)
+                      }}
                       onRegenerationComplete={async (newVideoUrl) => {
                         // Refresh job to get updated video URL and trigger re-render
                         try {
@@ -568,6 +586,7 @@ export default function JobProgressPage() {
                         audioUrl={job?.audioUrl ?? undefined}
                         clipStartTime={comparisonData.clip_start_time ?? null}
                         clipEndTime={comparisonData.clip_end_time ?? null}
+                        activeVersionNumber={comparisonData.active_version_number}
                         onClose={() => {
                           setShowComparison(false)
                           setComparisonData(null)

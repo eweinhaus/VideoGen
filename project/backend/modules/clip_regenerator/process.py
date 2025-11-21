@@ -595,13 +595,8 @@ async def regenerate_clip(
             seed=None  # No seed for lipsync
         )
     
-    # Publish regeneration_started event (for non-lipsync requests)
-    if event_publisher:
-        await event_publisher("regeneration_started", {
-            "sequence": 1,
-            "clip_index": clip_index,
-            "instruction": user_instruction
-        })
+    # NOTE: regeneration_started event is published by the worker, not here
+    # This avoids duplicate "Regeneration started" messages in the UI
     
     # Step 1: Load original clip data from job_stages.metadata
     logger.debug(
