@@ -788,9 +788,17 @@ export function ClipChatbot({
     try {
       setLoadingComparison(true)
       const data = await getClipComparison(jobId, clipIndex)
+      console.log("🎯 ClipChatbot received comparison data:", {
+        active_version_number: data.active_version_number,
+        originalVersion: data.original.version_number,
+        regeneratedVersion: data.regenerated?.version_number
+      })
       setComparisonData({
         original: data.original,
         regenerated: data.regenerated,
+        clip_start_time: data.clip_start_time,
+        clip_end_time: data.clip_end_time,
+        active_version_number: data.active_version_number,  // CRITICAL: Pass through the active version
       })
       setShowComparison(true)
     } catch (err) {
