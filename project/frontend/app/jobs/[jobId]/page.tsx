@@ -379,7 +379,7 @@ export default function JobProgressPage() {
               </Alert>
             )}
             <VideoPlayer 
-              videoUrl={job.videoUrl} 
+              videoUrl={job.videoUrl!} 
               jobId={jobId} 
               seekTo={selectedClipTimestamp}
             />
