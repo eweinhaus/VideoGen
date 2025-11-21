@@ -135,17 +135,20 @@ async def get_job_clips(
         JSON response with clips array and total_clips count
         
     Raises:
-        HTTPException: 404 if job not found, 403 if access denied, 400 if job not completed
+        HTTPException: 404 if job not found, 403 if access denied, 400 if job not in allowed status
     """
     try:
         # Verify job ownership (includes admin bypass for etweinhaus@gmail.com)
         job = await verify_job_ownership(job_id, current_user)
         
-        # Check job status
-        if job.get("status") != "completed":
+        # Check job status - allow access during regeneration and processing
+        # This enables frontend to refresh thumbnails and metadata during regenerations
+        allowed_statuses = ["completed", "processing", "regenerating"]
+        current_status = job.get("status")
+        if current_status not in allowed_statuses:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Job not completed yet"
+                detail=f"Job not in allowed status. Current status: {current_status}"
             )
         
         # Load clips from job_stages
@@ -577,103 +580,121 @@ async def compare_clip_versions(
         )
         
         # Determine which version is currently active in the main video
-        # by comparing job_stages.metadata with clip_versions
+        # PRIORITY 1: Check clip_versions for is_current=True (most reliable)
+        # FALLBACK: Parse URL from job_stages.metadata
         active_version_number = 1  # Default to v1 (original)
         try:
-            # Get the current video URL from job_stages
-            result = await db.table("job_stages").select("metadata").eq(
+            # FIRST: Try to get active version from clip_versions.is_current flag
+            current_version_result = await db.table("clip_versions").select("version_number").eq(
                 "job_id", str(job_id)
-            ).eq("stage_name", "video_generator").limit(1).execute()
+            ).eq("clip_index", clip_index).eq("is_current", True).limit(1).execute()
             
-            if result.data and len(result.data) > 0:
-                metadata = result.data[0].get("metadata", {})
-                # Parse metadata if it's a string (JSON serialized)
-                if isinstance(metadata, str):
-                    import json
-                    metadata = json.loads(metadata)
-                
-                clips_wrapper = metadata.get("clips", {})
-                
-                # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
-                # We need to access the nested "clips" array
-                # After sorting in load_clips_from_job_stages, clip_index should match array position
-                if isinstance(clips_wrapper, dict):
-                    clips_list = clips_wrapper.get("clips", [])
-                    logger.info(
-                        f"📦 Extracted clips_list from dict wrapper",
-                        extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
-                    )
-                elif isinstance(clips_wrapper, list):
-                    # Backward compatibility: if clips is a list directly
-                    clips_list = clips_wrapper  # FIX: was incorrectly: clips_wrapper = clips_list
-                    logger.info(
-                        f"📦 Using clips_wrapper as clips_list (backward compat)",
-                        extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
-                    )
-                else:
-                    clips_list = []
-                    logger.warning(
-                        f"📦 clips_wrapper is neither dict nor list, defaulting to empty",
-                        extra={"job_id": job_id, "clip_index": clip_index, "type": type(clips_wrapper).__name__}
-                    )
-                
+            if current_version_result.data and len(current_version_result.data) > 0:
+                active_version_number = current_version_result.data[0].get("version_number", 1)
                 logger.info(
-                    f"🔍 About to check clip at index {clip_index}, clips_list length: {len(clips_list)}",
-                    extra={"job_id": job_id, "clip_index": clip_index, "clips_list_length": len(clips_list)}
+                    f"✅ Detected active version from clip_versions.is_current: v{active_version_number}",
+                    extra={"job_id": job_id, "clip_index": clip_index, "source": "clip_versions.is_current"}
                 )
-                
-                # Since clips should be sorted by clip_index, we can directly access by index
-                # But we still need to verify the clip_index matches
-                if clip_index < len(clips_list):
-                    current_clip_data = clips_list[clip_index]
+            else:
+                # FALLBACK: Parse URL from job_stages (less reliable due to timing issues)
+                logger.info(
+                    f"⚠️ No is_current=True found in clip_versions, falling back to URL parsing",
+                    extra={"job_id": job_id, "clip_index": clip_index}
+                )
+                # Get the current video URL from job_stages
+                result = await db.table("job_stages").select("metadata").eq(
+                    "job_id", str(job_id)
+                ).eq("stage_name", "video_generator").limit(1).execute()
+            
+                if result.data and len(result.data) > 0:
+                    metadata = result.data[0].get("metadata", {})
+                    # Parse metadata if it's a string (JSON serialized)
+                    if isinstance(metadata, str):
+                        import json
+                        metadata = json.loads(metadata)
+                    
+                    clips_wrapper = metadata.get("clips", {})
+                    
+                    # CRITICAL FIX: clips_wrapper is a dict with structure: {"clips": [...], "total_clips": X}
+                    # We need to access the nested "clips" array
+                    # After sorting in load_clips_from_job_stages, clip_index should match array position
+                    if isinstance(clips_wrapper, dict):
+                        clips_list = clips_wrapper.get("clips", [])
+                        logger.info(
+                            f"📦 Extracted clips_list from dict wrapper",
+                            extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
+                        )
+                    elif isinstance(clips_wrapper, list):
+                        # Backward compatibility: if clips is a list directly
+                        clips_list = clips_wrapper  # FIX: was incorrectly: clips_wrapper = clips_list
+                        logger.info(
+                            f"📦 Using clips_wrapper as clips_list (backward compat)",
+                            extra={"job_id": job_id, "clip_index": clip_index, "clips_count": len(clips_list)}
+                        )
+                    else:
+                        clips_list = []
+                        logger.warning(
+                            f"📦 clips_wrapper is neither dict nor list, defaulting to empty",
+                            extra={"job_id": job_id, "clip_index": clip_index, "type": type(clips_wrapper).__name__}
+                        )
+                    
                     logger.info(
-                        f"🔍 Retrieved clip data at position {clip_index}",
-                        extra={
-                            "job_id": job_id,
-                            "clip_index": clip_index,
-                            "clip_data_clip_index": current_clip_data.get("clip_index") if isinstance(current_clip_data, dict) else "not_dict",
-                            "has_video_url": "video_url" in current_clip_data if isinstance(current_clip_data, dict) else False
-                        }
+                        f"🔍 About to check clip at index {clip_index}, clips_list length: {len(clips_list)}",
+                        extra={"job_id": job_id, "clip_index": clip_index, "clips_list_length": len(clips_list)}
                     )
                     
-                    # Verify this is the right clip
-                    if isinstance(current_clip_data, dict) and current_clip_data.get("clip_index") == clip_index:
-                        current_clip_url = current_clip_data.get("video_url", "")
+                    # Since clips should be sorted by clip_index, we can directly access by index
+                    # But we still need to verify the clip_index matches
+                    if clip_index < len(clips_list):
+                        current_clip_data = clips_list[clip_index]
                         logger.info(
-                            f"🔍 Current clip URL from metadata: {current_clip_url[:100]}...",
-                            extra={"job_id": job_id, "clip_index": clip_index, "has_version_pattern": "_v" in current_clip_url}
+                            f"🔍 Retrieved clip data at position {clip_index}",
+                            extra={
+                                "job_id": job_id,
+                                "clip_index": clip_index,
+                                "clip_data_clip_index": current_clip_data.get("clip_index") if isinstance(current_clip_data, dict) else "not_dict",
+                                "has_video_url": "video_url" in current_clip_data if isinstance(current_clip_data, dict) else False
+                            }
                         )
                         
-                        # Check if this URL matches any clip_version
-                        if current_clip_url:
-                            # Extract the file path from the URL for comparison
-                            # URLs look like: https://.../video-clips/.../clip_1_v6.mp4?token=...
-                            if "_v" in current_clip_url:
-                                # Extract version from filename (e.g., clip_1_v6.mp4 → 6)
-                                import re
-                                version_match = re.search(r'clip_\d+_v(\d+)\.mp4', current_clip_url)
-                                if version_match:
-                                    active_version_number = int(version_match.group(1))
+                        # Verify this is the right clip
+                        if isinstance(current_clip_data, dict) and current_clip_data.get("clip_index") == clip_index:
+                            current_clip_url = current_clip_data.get("video_url", "")
+                            logger.info(
+                                f"🔍 Current clip URL from metadata: {current_clip_url[:100]}...",
+                                extra={"job_id": job_id, "clip_index": clip_index, "has_version_pattern": "_v" in current_clip_url}
+                            )
+                            
+                            # Check if this URL matches any clip_version
+                            if current_clip_url:
+                                # Extract the file path from the URL for comparison
+                                # URLs look like: https://.../video-clips/.../clip_1_v6.mp4?token=...
+                                if "_v" in current_clip_url:
+                                    # Extract version from filename (e.g., clip_1_v6.mp4 → 6)
+                                    import re
+                                    version_match = re.search(r'clip_\d+_v(\d+)\.mp4', current_clip_url)
+                                    if version_match:
+                                        active_version_number = int(version_match.group(1))
+                                        logger.info(
+                                            f"✅ Detected active version from URL: v{active_version_number}",
+                                            extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
+                                        )
+                                else:
+                                    # URL doesn't have _v pattern, it's likely v1 (original)
                                     logger.info(
-                                        f"✅ Detected active version from URL: v{active_version_number}",
+                                        f"✅ No version pattern in URL, defaulting to v1 (original)",
                                         extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
                                     )
-                            else:
-                                # URL doesn't have _v pattern, it's likely v1 (original)
-                                logger.info(
-                                    f"✅ No version pattern in URL, defaulting to v1 (original)",
-                                    extra={"job_id": job_id, "clip_index": clip_index, "url": current_clip_url}
-                                )
+                        else:
+                            logger.warning(
+                                f"Clip index mismatch at position {clip_index}: expected {clip_index}, got {current_clip_data.get('clip_index') if isinstance(current_clip_data, dict) else 'unknown'}",
+                                extra={"job_id": job_id, "clip_index": clip_index}
+                            )
                     else:
                         logger.warning(
-                            f"Clip index mismatch at position {clip_index}: expected {clip_index}, got {current_clip_data.get('clip_index') if isinstance(current_clip_data, dict) else 'unknown'}",
-                            extra={"job_id": job_id, "clip_index": clip_index}
+                            f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
+                            extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
                         )
-                else:
-                    logger.warning(
-                        f"Clip index {clip_index} out of range (total clips: {len(clips_list)})",
-                        extra={"job_id": job_id, "clip_index": clip_index, "total_clips": len(clips_list)}
-                    )
         except Exception as e:
             logger.warning(
                 f"Failed to determine active version, defaulting to v1: {e}",
