@@ -802,6 +802,53 @@ async def revert_clip_to_version(
                 detail=f"Clips not found for job {job_id}"
             )
         
+        # CRITICAL: Replace clips with their CURRENT versions from clip_versions
+        # This prevents reverting one clip from resetting other clips to v1
+        # (Same logic as recompose_after_regenerations)
+        db = DatabaseClient()
+        for i, clip in enumerate(clips.clips):
+            try:
+                # Query clip_versions for the current version of this clip (is_current=True)
+                current_version_result = await db.table("clip_versions").select("video_url", "version_number").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip.clip_index).eq("is_current", True).limit(1).execute()
+                
+                if current_version_result.data and len(current_version_result.data) > 0:
+                    current_url = current_version_result.data[0]["video_url"]
+                    current_version_number = current_version_result.data[0]["version_number"]
+                    
+                    if current_url != clip.video_url:
+                        logger.info(
+                            f"Replaced clip {clip.clip_index} with current version for revert operation",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip.clip_index,
+                                "old_url": clip.video_url,
+                                "new_url": current_url,
+                                "version_number": current_version_number
+                            }
+                        )
+                        clips.clips[i].video_url = current_url
+                    else:
+                        logger.debug(
+                            f"Clip {clip.clip_index} already has the current URL",
+                            extra={"job_id": str(job_id), "clip_index": clip.clip_index}
+                        )
+                else:
+                    # No current version in clip_versions - this clip was never regenerated
+                    # Keep the original from job_stages
+                    logger.debug(
+                        f"No current version found for clip {clip.clip_index}, using original",
+                        extra={"job_id": str(job_id), "clip_index": clip.clip_index}
+                    )
+            except Exception as e:
+                # Non-critical error - log and continue with original
+                logger.warning(
+                    f"Failed to load current version for clip {clip.clip_index}, using original: {e}",
+                    extra={"job_id": str(job_id), "clip_index": clip.clip_index},
+                    exc_info=True
+                )
+        
         # CRITICAL: Sort clips by clip_index to ensure correct ordering
         # The composer expects clips in sequential order (0, 1, 2, ...)
         clips.clips.sort(key=lambda c: c.clip_index)

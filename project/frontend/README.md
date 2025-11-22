@@ -7,7 +7,7 @@ User-facing web interface for uploading audio, entering creative prompts, tracki
 
 ## Key Features
 - Audio Upload (drag-and-drop, MP3/WAV/FLAC, max 10MB)
-- Creative Prompt input (50-500 characters)
+- Creative Prompt input (50-3000 characters)
 - Real-time Progress tracking via SSE
 - Video Player with progressive clip rendering
 - Authentication (Supabase Auth)

@@ -77,7 +77,7 @@ export default function UploadPage() {
   const isFormValid =
     audioFile !== null &&
     userPrompt.length >= 50 &&
-    userPrompt.length <= 500 &&
+    userPrompt.length <= 3000 &&
     !errors.audio &&
     !errors.prompt
 

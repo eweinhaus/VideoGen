@@ -18,6 +18,7 @@ import { useSSE } from "@/hooks/useSSE"
 import { ArrowLeft, GitCompare } from "lucide-react"
 import { getClipComparison, revertClipToVersion } from "@/lib/api"
 import { jobStore } from "@/stores/jobStore"
+import { uploadStore } from "@/stores/uploadStore"
 import type { StageUpdateEvent, RegenerationCompleteEvent } from "@/types/sse"
 
 export default function JobProgressPage() {
@@ -190,13 +191,9 @@ export default function JobProgressPage() {
   // Hide loading modal immediately once we're on the job page
   useEffect(() => {
     // Once the job page is loaded and we have the jobId, hide the modal immediately
-    if (jobId) {
-      import("@/stores/uploadStore").then(({ uploadStore }) => {
-        if (uploadStore.getState().isSubmitting) {
-          console.log("✅ On job page, hiding loading modal immediately")
-          uploadStore.getState().reset()
-        }
-      })
+    if (jobId && uploadStore.getState().isSubmitting) {
+      console.log("✅ On job page, hiding loading modal immediately")
+      uploadStore.getState().reset()
     }
   }, [jobId])
 

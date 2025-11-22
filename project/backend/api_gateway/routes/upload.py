@@ -44,7 +44,7 @@ async def upload_audio(
     
     Args:
         audio_file: Audio file (MP3/WAV/FLAC, ≤10MB)
-        user_prompt: Creative prompt (50-500 characters)
+        user_prompt: Creative prompt (50-3000 characters)
         stop_at_stage: Optional stage to stop at (for testing: audio_parser, scene_planner, reference_generator, prompt_generator, video_generator, composer)
         video_model: Video generation model to use (kling_v21, kling_v25_turbo, hailuo_23, wan_25_i2v, veo_31)
         aspect_ratio: Aspect ratio for video generation (default: "16:9")
@@ -67,7 +67,7 @@ async def upload_audio(
         validate_audio_file(file_obj, max_size_mb=10)
         
         # Validate prompt
-        validate_prompt(user_prompt, min_length=50, max_length=500)
+        validate_prompt(user_prompt, min_length=50, max_length=3000)
         
         # Extract audio duration using mutagen (metadata only, no full decode)
         audio_file.file.seek(0)
