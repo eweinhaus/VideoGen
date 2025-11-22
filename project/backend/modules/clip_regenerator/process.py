@@ -2280,6 +2280,41 @@ async def regenerate_clip_with_recomposition(
     
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
+    
+    # CRITICAL: For lipsync, ensure we're using the lipsynced clip URL
+    # Log before replacement for debugging
+    logger.info(
+        f"About to replace clip at position {clip_position}",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "clip_position": clip_position,
+            "old_clip_url": old_clip_url,
+            "new_clip_url": new_clip_url,
+            "new_clip_video_url": new_clip.video_url,
+            "template_used": regeneration_result.template_used,
+            "urls_match": new_clip.video_url == new_clip_url
+        }
+    )
+    
+    # Ensure new_clip has the correct clip_index
+    if new_clip.clip_index != clip_index:
+        logger.warning(
+            f"Correcting clip_index mismatch: {new_clip.clip_index} -> {clip_index}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "new_clip_index": new_clip.clip_index
+            }
+        )
+        # Create a copy with corrected clip_index
+        if hasattr(new_clip, 'model_copy'):
+            new_clip = new_clip.model_copy(update={'clip_index': clip_index})
+        else:
+            from copy import deepcopy
+            new_clip = deepcopy(new_clip)
+            new_clip.clip_index = clip_index
+    
     updated_clips[clip_position] = new_clip
     
     # Verify replacement worked
@@ -2291,7 +2326,8 @@ async def regenerate_clip_with_recomposition(
                 "job_id": str(job_id),
                 "clip_index": clip_index,
                 "expected_url": new_clip_url,
-                "actual_url": replaced_clip.video_url
+                "actual_url": replaced_clip.video_url,
+                "template_used": regeneration_result.template_used
             }
         )
         raise ValidationError(

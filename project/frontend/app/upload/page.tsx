@@ -9,9 +9,7 @@ import { AudioUploader } from "@/components/AudioUploader"
 import { PromptInput } from "@/components/PromptInput"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { StepSelector, type PipelineStage } from "@/components/StepSelector"
-import { ModelSelector } from "@/components/ModelSelector"
 import { AspectRatioSelector } from "@/components/AspectRatioSelector"
-import { TemplateSelector } from "@/components/TemplateSelector"
 import { useAuth } from "@/hooks/useAuth"
 import { uploadStore } from "@/stores/uploadStore"
 import { jobStore } from "@/stores/jobStore"
@@ -25,16 +23,13 @@ export default function UploadPage() {
     stopAtStage,
     videoModel,
     aspectRatio,
-    template,
     isSubmitting,
     errors,
     errorDetails,
     setAudioFile,
     setUserPrompt,
     setStopAtStage,
-    setVideoModel,
     setAspectRatio,
-    setTemplate,
     submit,
     reset,
   } = uploadStore()
@@ -150,22 +145,10 @@ export default function UploadPage() {
               disabled={isSubmitting}
             />
 
-            <ModelSelector
-              value={videoModel}
-              onChange={setVideoModel}
-              disabled={isSubmitting}
-            />
-
             <AspectRatioSelector
               value={aspectRatio}
               onChange={setAspectRatio}
               modelKey={videoModel}
-              disabled={isSubmitting}
-            />
-
-            <TemplateSelector
-              value={template}
-              onChange={setTemplate}
               disabled={isSubmitting}
             />
 
