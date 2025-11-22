@@ -273,6 +273,75 @@ class StorageClient:
                 ) from e
             raise RetryableError(f"Failed to download file: {error_msg}") from e
     
+    async def file_exists(self, bucket: str, path: str) -> bool:
+        """
+        Check if a file exists in Supabase Storage without downloading it.
+        
+        This method does NOT retry on 404 errors (file not found) since that's
+        the expected response when checking for file existence. It only retries
+        on connection errors or other transient failures.
+        
+        Args:
+            bucket: Storage bucket name
+            path: File path in bucket
+            
+        Returns:
+            True if file exists, False if it doesn't exist
+            
+        Note:
+            This method does not use the retry decorator to avoid unnecessary
+            retries on 404 (file not found) errors, which are expected when
+            checking for file existence.
+        """
+        try:
+            def _check_exists():
+                # Try to download a small chunk to check existence
+                # This is more reliable than list() for exact path matching
+                try:
+                    # Attempt to download - if file exists, this succeeds
+                    # We don't actually need the data, just to know it exists
+                    self.storage.from_(bucket).download(path)
+                    return True
+                except Exception as download_error:
+                    error_str = str(download_error).lower()
+                    # 404 means file doesn't exist - this is expected
+                    if "404" in error_str or "not found" in error_str or "not_found" in error_str:
+                        return False
+                    # Other errors should be raised
+                    raise
+            
+            result = await self._execute_sync(_check_exists, timeout=10.0)
+            return result
+            
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            error_str = error_msg.lower()
+            
+            # 404 means file doesn't exist - this is expected, return False
+            if "404" in error_str or "not found" in error_str or "not_found" in error_str:
+                logger.debug(
+                    f"File does not exist: {bucket}/{path}",
+                    extra={"bucket": bucket, "path": path}
+                )
+                return False
+            
+            # Connection errors - log but don't retry (this method doesn't use retry decorator)
+            if "connection" in error_str or "connect" in error_str:
+                logger.warning(
+                    f"Connection error checking file existence (assuming file doesn't exist): {error_msg}",
+                    extra={"bucket": bucket, "path": path, "error_type": "ConnectionError"}
+                )
+                # Return False on connection errors (safer than raising)
+                return False
+            
+            # Other errors - log but return False (safer than raising)
+            logger.warning(
+                f"Failed to check file existence for {bucket}/{path} (assuming file doesn't exist): {error_msg}",
+                extra={"bucket": bucket, "path": path, "error": error_msg, "error_type": error_type}
+            )
+            return False
+    
     async def get_signed_url(
         self,
         bucket: str,

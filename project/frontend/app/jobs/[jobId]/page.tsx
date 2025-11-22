@@ -611,7 +611,7 @@ export default function JobProgressPage() {
                         regeneratedClip={comparisonData.regenerated ?? null}
                         mode="side-by-side"
                         syncPlayback={true}
-                        audioUrl={job?.audioUrl ?? undefined}
+                        audioUrl={comparisonData.audio_url ?? job?.audioUrl ?? undefined}
                         clipStartTime={comparisonData.clip_start_time ?? null}
                         clipEndTime={comparisonData.clip_end_time ?? null}
                         activeVersionNumber={comparisonData.active_version_number}

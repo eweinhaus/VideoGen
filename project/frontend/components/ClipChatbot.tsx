@@ -80,7 +80,23 @@ export function ClipChatbot({
   const [lastError, setLastError] = useState<string | null>(null)
   const [isRetryable, setIsRetryable] = useState(false)
   const [costEstimate, setCostEstimate] = useState<number | null>(null)
-  const [progress, setProgress] = useState<number | null>(null)
+  const progressKey = `clip_chat_progress_${jobId}`
+  const [progress, setProgress] = useState<number | null>(() => {
+    // Restore progress from localStorage on mount
+    try {
+      const saved = localStorage.getItem(progressKey)
+      if (saved !== null) {
+        const parsed = JSON.parse(saved)
+        // Only restore if it's a valid number and less than 100 (don't restore completed progress)
+        if (typeof parsed === 'number' && parsed < 100 && parsed >= 0) {
+          return parsed
+        }
+      }
+    } catch (err) {
+      console.error("Failed to restore progress:", err)
+    }
+    return null
+  })
   const [templateMatched, setTemplateMatched] = useState<string | null>(null)
   const [lastInstruction, setLastInstruction] = useState<string | null>(null)
   const [lastClipIndices, setLastClipIndices] = useState<number[]>([])
@@ -90,13 +106,21 @@ export function ClipChatbot({
   
   // Track the last synced clip index to prevent infinite loops
   const lastSyncedClipRef = useRef<number | undefined>(undefined)
+  // Track when chatbot is actively selecting (to prevent external sync from overriding)
+  const isChatbotSelectingRef = useRef(false)
   
   // Sync external selection with internal selection
   // Sync selection state from parent if:
   // - Chatbot has 0 clips selected (empty state), OR
   // - Chatbot has exactly 1 clip selected (single selection mode)
   // Do NOT sync if chatbot has 2+ clips (multi-select mode - user is bulk editing)
+  // Do NOT sync if chatbot just made a selection (to prevent race conditions)
   useEffect(() => {
+    // Skip sync if chatbot is actively selecting (prevents race condition)
+    if (isChatbotSelectingRef.current) {
+      return
+    }
+    
     if (externalSelectedClipIndex !== undefined && 
         externalSelectedClipIndex !== lastSyncedClipRef.current &&
         selectedClipIndices.length <= 1) { // Allow sync when 0 or 1 clip selected
@@ -115,13 +139,22 @@ export function ClipChatbot({
   // Sync internal selection with parent
   // When internal selection changes, notify parent of the LAST selected clip
   // (the one the user just clicked, which is at the end of the array)
+  // NOTE: Direct clicks in the thumbnail handler bypass this sync to avoid race conditions
+  // This useEffect is mainly for programmatic changes (not direct user clicks)
   useEffect(() => {
+    // Skip sync if chatbot is actively selecting (direct clicks handle this themselves)
+    if (isChatbotSelectingRef.current) {
+      return
+    }
+    
     if (onClipSelect && clips.length > 0) {
       if (selectedClipIndices.length > 0) {
         // Use the LAST selected clip (most recently clicked)
         const lastSelectedIndex = selectedClipIndices[selectedClipIndices.length - 1]
         
         // Only sync if this is a new clip (different from last synced)
+        // This prevents infinite loops but allows re-seeking when clicking the same clip
+        // (which is handled directly in the click handler)
         if (lastSelectedIndex !== lastSyncedClipRef.current) {
           const lastSelectedClip = clips.find(c => c.clip_index === lastSelectedIndex)
           if (lastSelectedClip) {
@@ -144,6 +177,7 @@ export function ClipChatbot({
     clip_start_time?: number | null
     clip_end_time?: number | null
     active_version_number?: number  // NEW: which version is currently active in main video
+    audio_url?: string | null       // Audio URL for synchronized playback
   } | null>(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -267,6 +301,14 @@ export function ClipChatbot({
     isInitializedRef.current = false
     hasRestoredMessagesRef.current = false
     
+    // Clear progress when jobId changes (new job = new progress)
+    try {
+      localStorage.removeItem(progressKey)
+      setProgress(null)
+    } catch (err) {
+      console.error("Failed to clear progress:", err)
+    }
+    
     console.log(`[ClipChatbot] Loading messages for jobId: ${jobId}, storageKey: ${storageKey}`)
     
     try {
@@ -365,7 +407,7 @@ export function ClipChatbot({
       isInitializedRef.current = true
       console.log(`[ClipChatbot] Initialization complete for jobId: ${jobId}`)
     })
-  }, [jobId, storageKey, conversationHistoryKey, comparisonStateKey])
+  }, [jobId, storageKey, conversationHistoryKey, comparisonStateKey, progressKey])
 
   // Restore selected clip indices on mount (if not already set by clip fetch)
   // This is handled in the clip fetch useEffect, but this is a fallback
@@ -429,6 +471,23 @@ export function ClipChatbot({
     if (!isInitializedRef.current || isRestoringRef.current) return
     saveComparisonState(showComparison, comparisonData)
   }, [showComparison, comparisonData, saveComparisonState])
+
+  // Save progress to localStorage whenever it changes
+  useEffect(() => {
+    if (!isInitializedRef.current) return
+    
+    try {
+      if (progress !== null && progress < 100) {
+        // Only save progress if it's not complete (completed progress doesn't need persistence)
+        localStorage.setItem(progressKey, JSON.stringify(progress))
+      } else if (progress === null || progress >= 100) {
+        // Clear progress when complete or reset
+        localStorage.removeItem(progressKey)
+      }
+    } catch (err) {
+      console.error("Failed to save progress:", err)
+    }
+  }, [progress, progressKey])
 
   // Save messages to localStorage whenever they change
   useEffect(() => {
@@ -591,7 +650,10 @@ export function ClipChatbot({
       
       // CRITICAL FIX: Refresh clips to update thumbnails after regeneration
       // Thumbnails are generated during regeneration, but UI needs to refetch them
-      if (data.clip_index !== undefined && data.clip_index !== null) {
+      // Handle both single-clip (clip_index) and multi-clip (clip_indices) modes
+      const clipIndicesToRefresh = data.clip_indices || (data.clip_index !== undefined && data.clip_index !== null ? [data.clip_index] : [])
+      
+      if (clipIndicesToRefresh.length > 0) {
         // Refresh immediately - parent will handle triggering ClipSelector refresh
         // No delay needed - parent SSE listener triggers refresh immediately
         getJobClips(jobId).then((response) => {
@@ -604,13 +666,16 @@ export function ClipChatbot({
           }))
           
           setClips(clipsWithCacheBusting)
-          console.log("✅ Clips refreshed after regeneration, thumbnails updated")
+          console.log(`✅ Clips refreshed after regeneration, thumbnails updated for clips: ${clipIndicesToRefresh.join(', ')}`)
           
-          // Automatically refresh comparison for this clip if it's shown
-          if (showComparison && selectedClipIndices.includes(data.clip_index)) {
-            handleCompareClip(data.clip_index).catch((err) => {
-              console.warn("Failed to auto-refresh comparison after regeneration:", err)
-            })
+          // Automatically refresh comparison for any shown clips that were regenerated
+          if (showComparison && clipIndicesToRefresh.some(idx => selectedClipIndices.includes(idx))) {
+            const clipToRefresh = clipIndicesToRefresh.find(idx => selectedClipIndices.includes(idx))
+            if (clipToRefresh !== undefined) {
+              handleCompareClip(clipToRefresh).catch((err) => {
+                console.warn("Failed to auto-refresh comparison after regeneration:", err)
+              })
+            }
           }
         }).catch((err) => {
           console.warn("Failed to refresh clips after regeneration:", err)
@@ -813,6 +878,7 @@ export function ClipChatbot({
         clip_start_time: data.clip_start_time,
         clip_end_time: data.clip_end_time,
         active_version_number: data.active_version_number,  // CRITICAL: Pass through the active version
+        audio_url: data.audio_url,  // Audio URL from response (for synchronized playback)
       })
       setShowComparison(true)
     } catch (err) {
@@ -1076,7 +1142,7 @@ export function ClipChatbot({
         <ClipComparison
           originalClip={comparisonData.original}
           regeneratedClip={comparisonData.regenerated}
-          audioUrl={audioUrl ?? undefined}
+          audioUrl={comparisonData.audio_url ?? audioUrl ?? undefined}
           clipStartTime={comparisonData.clip_start_time ?? null}
           clipEndTime={comparisonData.clip_end_time ?? null}
           activeVersionNumber={comparisonData.active_version_number}
@@ -1222,7 +1288,7 @@ export function ClipChatbot({
                 variant="outline"
                 size="sm"
                 onClick={() => handleCompareClip(selectedClipIndices[0])}
-                disabled={loadingComparison || isProcessing}
+                disabled={loadingComparison}
                 className="flex-1"
               >
                 <GitCompare className="h-4 w-4 mr-2" />
@@ -1285,17 +1351,50 @@ export function ClipChatbot({
                   >
                     <button
                       type="button"
-                      onClick={() => {
-                        // Toggle selection
+                      onClick={(e) => {
+                        // Mark that chatbot is actively selecting to prevent external sync race condition
+                        isChatbotSelectingRef.current = true
+                        
+                        // Toggle selection: always seek to the appropriate clip
                         if (isSelected) {
+                          // If already selected, deselect it
                           const newSelection = selectedClipIndices.filter(i => i !== clip.clip_index)
                           setSelectedClipIndices(newSelection)
                           saveSelectedClips(newSelection)
+                          
+                          // After deselection, seek to the next selected clip (if any)
+                          if (newSelection.length > 0 && onClipSelect && clips.length > 0) {
+                            // Use the last remaining selected clip (most recently selected)
+                            const lastRemainingClip = clips.find(c => c.clip_index === newSelection[newSelection.length - 1])
+                            if (lastRemainingClip) {
+                              // Seek to the last remaining selected clip
+                              onClipSelect(lastRemainingClip.clip_index, lastRemainingClip.timestamp_start)
+                              lastSyncedClipRef.current = lastRemainingClip.clip_index
+                            }
+                          } else if (newSelection.length === 0 && onClipSelect) {
+                            // No clips selected, clear parent selection
+                            onClipSelect(undefined as any, undefined)
+                            lastSyncedClipRef.current = undefined
+                          }
                         } else {
+                          // If not selected, add to selection and seek to it
                           const newSelection = [...selectedClipIndices, clip.clip_index].sort((a, b) => a - b)
                           setSelectedClipIndices(newSelection)
                           saveSelectedClips(newSelection)
+                          
+                          // Seek to the newly selected clip and update parent
+                          if (onClipSelect && clips.length > 0) {
+                            onClipSelect(clip.clip_index, clip.timestamp_start)
+                            lastSyncedClipRef.current = clip.clip_index
+                          }
                         }
+                        
+                        // Reset flag after a short delay to allow parent state to update
+                        requestAnimationFrame(() => {
+                          requestAnimationFrame(() => {
+                            isChatbotSelectingRef.current = false
+                          })
+                        })
                       }}
                       className={cn(
                         "relative w-full rounded overflow-hidden transition-all",

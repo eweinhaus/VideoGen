@@ -292,15 +292,56 @@ async def generate_lipsync_clip(
                 )
                 # Continue with original video_bytes - composer will handle it with -map flags
             
-            # Upload to Supabase Storage
+            # Upload to Supabase Storage with versioned filename (like regular regenerations)
             storage = StorageClient()
-            clip_path = f"{job_id}/clip_{clip_index}_lipsync.mp4"
             
-            # Delete existing file if it exists
-            try:
-                await storage.delete_file("video-clips", clip_path)
-            except Exception:
-                pass
+            # Calculate next version number from clip_versions table
+            from shared.database import DatabaseClient
+            db_for_version = DatabaseClient()
+            version_result = await db_for_version.table("clip_versions").select("version_number").eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+            
+            # Calculate actual next version based on what's in DB right now
+            actual_next_version = 2  # Default to version 2 if no versions exist
+            if version_result.data and len(version_result.data) > 0:
+                actual_next_version = version_result.data[0].get("version_number", 1) + 1
+            
+            # CRITICAL: Keep incrementing until we find a version that doesn't exist in storage
+            # This handles cases where DB and storage are out of sync (e.g., failed uploads)
+            max_attempts = 10  # Prevent infinite loop
+            for attempt in range(max_attempts):
+                test_path = f"{job_id}/clip_{clip_index}_v{actual_next_version}.mp4"
+                
+                # Check if file exists in storage (using efficient file_exists method)
+                file_exists = await storage.file_exists("video-clips", test_path)
+                if file_exists:
+                    # File exists, increment and try next version
+                    logger.info(
+                        f"Version {actual_next_version} already exists in storage, trying v{actual_next_version + 1}",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "existing_version": actual_next_version,
+                            "next_version": actual_next_version + 1
+                        }
+                    )
+                    actual_next_version += 1
+                else:
+                    # File doesn't exist - we can use this version
+                    break
+            
+            # Use versioned filename (e.g., clip_4_v2.mp4, clip_4_v3.mp4)
+            clip_path = f"{job_id}/clip_{clip_index}_v{actual_next_version}.mp4"
+            logger.info(
+                f"Using versioned filename for lipsync (preserving previous versions)",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "version_number": actual_next_version,
+                    "clip_path": clip_path
+                }
+            )
             
             final_url = await storage.upload_file(
                 bucket="video-clips",

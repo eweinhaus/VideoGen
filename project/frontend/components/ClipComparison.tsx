@@ -5,7 +5,7 @@ import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
-import { X, RotateCcw, Play, Pause, Maximize, Minimize } from "lucide-react"
+import { X, RotateCcw, Play, Pause, Maximize, Minimize, Volume2, VolumeX } from "lucide-react"
 import { formatDuration } from "@/lib/utils"
 
 interface ClipVersion {
@@ -83,6 +83,26 @@ export function ClipComparison({
   const [regeneratedTime, setRegeneratedTime] = useState(0)
   const [originalVideoDuration, setOriginalVideoDuration] = useState<number | null>(null)
   const [regeneratedVideoDuration, setRegeneratedVideoDuration] = useState<number | null>(null)
+  const [audioVolume, setAudioVolume] = useState(1.0) // Volume range: 0.0 to 1.0
+  
+  // CRITICAL: Ensure audio is positioned at clip start time when component mounts or boundaries change
+  useEffect(() => {
+    const audio = audioRef.current
+    if (audio && clipStartTime !== null && clipStartTime !== undefined && audioUrl) {
+      // Reset audio to clip start time (beginning of this clip's audio segment)
+      // This ensures audio doesn't play from the beginning of the full track
+      audio.currentTime = clipStartTime
+      console.log(`🎵 Audio reset to clip start time: ${clipStartTime}s (clip ${clipIndex})`)
+    }
+  }, [clipStartTime, audioUrl, clipIndex])
+  
+  // Update audio volume when volume state changes
+  useEffect(() => {
+    const audio = audioRef.current
+    if (audio) {
+      audio.volume = audioVolume
+    }
+  }, [audioVolume])
   
   // Calculate duration mismatch - use video element duration if available, otherwise use clip duration
   const originalDuration = (originalVideoDuration ?? originalClip.duration) || 0
@@ -177,6 +197,11 @@ export function ClipComparison({
           regeneratedVideo.pause()
           if (audio) audio.pause()
         } else {
+          // CRITICAL: Ensure videos start at 0 for clip comparison
+          // Reset video positions to start of clip
+          originalVideo.currentTime = 0
+          regeneratedVideo.currentTime = 0
+          
           // Sync to shorter duration if different
           if (durationMismatch) {
             const syncTime = Math.min(
@@ -187,21 +212,31 @@ export function ClipComparison({
             regeneratedVideo.currentTime = syncTime
             // For audio with clip boundaries, sync relative to clip start
             if (audio && clipStartTime !== null && clipStartTime !== undefined) {
+              // CRITICAL: Audio should start at clipStartTime (beginning of this clip's audio segment)
               audio.currentTime = clipStartTime + syncTime
+              console.log(`🎵 Audio synced to clip start: ${clipStartTime}s + video time: ${syncTime}s = ${audio.currentTime}s`)
             } else if (audio) {
               audio.currentTime = syncTime
             }
           } else {
-            // Sync audio to video time
+            // Sync audio to video time (starting from clip start)
             const syncTime = originalVideo.currentTime || 0
             if (audio && clipStartTime !== null && clipStartTime !== undefined) {
+              // CRITICAL: Audio should start at clipStartTime (beginning of this clip's audio segment)
               audio.currentTime = clipStartTime + syncTime
+              console.log(`🎵 Audio synced to clip start: ${clipStartTime}s + video time: ${syncTime}s = ${audio.currentTime}s`)
             } else if (audio) {
               audio.currentTime = syncTime
             }
           }
           await Promise.all([originalVideo.play(), regeneratedVideo.play()])
-          if (audio) await audio.play()
+          if (audio) {
+            // Ensure audio is at correct position before playing
+            if (clipStartTime !== null && clipStartTime !== undefined) {
+              audio.currentTime = clipStartTime + (originalVideo.currentTime || 0)
+            }
+            await audio.play()
+          }
         }
       }
     } else {
@@ -215,6 +250,8 @@ export function ClipComparison({
         if (isPlaying) {
           originalVideo.pause()
         } else {
+          // Reset to start of clip when starting playback
+          originalVideo.currentTime = 0
           try {
             await originalVideo.play()
           } catch (e) {
@@ -226,6 +263,8 @@ export function ClipComparison({
         if (isPlaying) {
           regeneratedVideo.pause()
         } else {
+          // Reset to start of clip when starting playback
+          regeneratedVideo.currentTime = 0
           try {
             await regeneratedVideo.play()
           } catch (e) {
@@ -246,9 +285,11 @@ export function ClipComparison({
           const syncVideo = originalVideo || regeneratedVideo
           if (syncVideo) {
             try {
-              // If we have clip boundaries, sync audio to clip start + video time
+              // CRITICAL: If we have clip boundaries, audio should start at clipStartTime (beginning of clip's audio segment)
               if (clipStartTime !== null && clipStartTime !== undefined) {
-                audio.currentTime = clipStartTime + (syncVideo.currentTime || 0)
+                const videoTime = syncVideo.currentTime || 0
+                audio.currentTime = clipStartTime + videoTime
+                console.log(`🎵 Audio synced to clip start: ${clipStartTime}s + video time: ${videoTime}s = ${audio.currentTime}s`)
               } else {
                 audio.currentTime = syncVideo.currentTime || 0
               }
@@ -291,11 +332,25 @@ export function ClipComparison({
           )
           const targetTime = Math.min(sourceTime, maxTime)
           targetVideo.currentTime = targetTime
-          if (audio) audio.currentTime = targetTime
+          // CRITICAL: Sync audio to clip start + video time (not just video time)
+          if (audio) {
+            if (clipStartTime !== null && clipStartTime !== undefined) {
+              audio.currentTime = clipStartTime + targetTime
+            } else {
+              audio.currentTime = targetTime
+            }
+          }
         } else {
           // Sync to same time
           targetVideo.currentTime = sourceTime
-          if (audio) audio.currentTime = sourceTime
+          // CRITICAL: Sync audio to clip start + video time (not just video time)
+          if (audio) {
+            if (clipStartTime !== null && clipStartTime !== undefined) {
+              audio.currentTime = clipStartTime + sourceTime
+            } else {
+              audio.currentTime = sourceTime
+            }
+          }
         }
       } finally {
         // Use setTimeout to reset flag after sync completes
@@ -315,7 +370,7 @@ export function ClipComparison({
       originalVideo.removeEventListener("seeked", handleOriginalSeeked)
       regeneratedVideo.removeEventListener("seeked", handleRegeneratedSeeked)
     }
-  }, [isSynced, durationMismatch, regeneratedClip])
+  }, [isSynced, durationMismatch, regeneratedClip, clipStartTime])
   
   // Sync audio with video during playback (for independent mode)
   useEffect(() => {
@@ -331,34 +386,57 @@ export function ClipComparison({
       const regeneratedPlaying = regeneratedVideo && !regeneratedVideo.paused
       
       if (originalPlaying && !regeneratedPlaying) {
-        audio.currentTime = originalVideo.currentTime || 0
+        // CRITICAL: Sync audio to clip start + video time (not just video time)
+        if (clipStartTime !== null && clipStartTime !== undefined) {
+          audio.currentTime = clipStartTime + (originalVideo.currentTime || 0)
+        } else {
+          audio.currentTime = originalVideo.currentTime || 0
+        }
       } else if (regeneratedPlaying && !originalPlaying) {
-        audio.currentTime = regeneratedVideo.currentTime || 0
+        // CRITICAL: Sync audio to clip start + video time (not just video time)
+        if (clipStartTime !== null && clipStartTime !== undefined) {
+          audio.currentTime = clipStartTime + (regeneratedVideo.currentTime || 0)
+        } else {
+          audio.currentTime = regeneratedVideo.currentTime || 0
+        }
       }
     }
     
-    if (originalVideo) {
-      originalVideo.addEventListener("timeupdate", syncAudioToVideo)
-    }
-    if (regeneratedVideo) {
-      regeneratedVideo.addEventListener("timeupdate", syncAudioToVideo)
-    }
-    
-    return () => {
       if (originalVideo) {
-        originalVideo.removeEventListener("timeupdate", syncAudioToVideo)
+        originalVideo.addEventListener("timeupdate", syncAudioToVideo)
       }
       if (regeneratedVideo) {
-        regeneratedVideo.removeEventListener("timeupdate", syncAudioToVideo)
+        regeneratedVideo.addEventListener("timeupdate", syncAudioToVideo)
       }
-    }
-  }, [isSynced, audioUrl, regeneratedClip])
+      
+      return () => {
+        if (originalVideo) {
+          originalVideo.removeEventListener("timeupdate", syncAudioToVideo)
+        }
+        if (regeneratedVideo) {
+          regeneratedVideo.removeEventListener("timeupdate", syncAudioToVideo)
+        }
+      }
+    }, [isSynced, audioUrl, regeneratedClip, clipStartTime])
   
   // Update timestamps and enforce audio boundaries
   useEffect(() => {
     const originalVideo = originalVideoRef.current
     const regeneratedVideo = regeneratedClip ? regeneratedVideoRef.current : null
     const audio = audioRef.current
+    
+    const stopAudioAndVideos = () => {
+      if (audio) {
+        audio.pause()
+        // Reset to clip start if boundaries exist
+        if (clipStartTime !== null && clipStartTime !== undefined) {
+          audio.currentTime = clipStartTime
+        }
+      }
+      if (originalVideo) originalVideo.pause()
+      if (regeneratedVideo) regeneratedVideo.pause()
+      setIsPlaying(false)
+    }
     
     const updateTimestamps = () => {
       if (originalVideo) {
@@ -368,41 +446,59 @@ export function ClipComparison({
         setRegeneratedTime(regeneratedVideo.currentTime)
       }
       
-      // CRITICAL: Stop audio when video ends (audio might be longer than video clip)
+      // CRITICAL: Stop audio when video ends OR when audio reaches clip end time
       if (audio && isPlaying) {
         // Check if we've reached the end of either video
-        const originalEnded = originalVideo && originalVideo.currentTime >= originalVideo.duration - 0.1
-        const regeneratedEnded = regeneratedVideo && regeneratedVideo.currentTime >= regeneratedVideo.duration - 0.1
+        const originalEnded = originalVideo && originalVideo.ended
+        const regeneratedEnded = regeneratedVideo && regeneratedVideo.ended
+        const originalNearEnd = originalVideo && originalVideo.currentTime >= (originalVideo.duration - 0.1)
+        const regeneratedNearEnd = regeneratedVideo && regeneratedVideo.currentTime >= (regeneratedVideo.duration - 0.1)
         
-        if (originalEnded || regeneratedEnded) {
-          audio.pause()
-          // Reset to clip start if boundaries exist
-          if (clipStartTime !== null && clipStartTime !== undefined) {
-            audio.currentTime = clipStartTime
-          }
+        // Check if audio has reached clip end time
+        const audioAtClipEnd = clipEndTime !== null && clipEndTime !== undefined && audio.currentTime >= clipEndTime
+        
+        // Stop if any video has ended or if audio reached clip end
+        if (originalEnded || regeneratedEnded || originalNearEnd || regeneratedNearEnd || audioAtClipEnd) {
+          console.log(`🛑 Stopping playback: originalEnded=${originalEnded}, regeneratedEnded=${regeneratedEnded}, audioAtClipEnd=${audioAtClipEnd}`)
+          stopAudioAndVideos()
         }
       }
+    }
+    
+    // Handle video ended events (more reliable than timeupdate checks)
+    const handleOriginalEnded = () => {
+      console.log("🛑 Original video ended, stopping audio")
+      stopAudioAndVideos()
+    }
+    
+    const handleRegeneratedEnded = () => {
+      console.log("🛑 Regenerated video ended, stopping audio")
+      stopAudioAndVideos()
     }
     
     const interval = setInterval(updateTimestamps, 100) // Update every 100ms
     
     if (originalVideo) {
       originalVideo.addEventListener("timeupdate", updateTimestamps)
+      originalVideo.addEventListener("ended", handleOriginalEnded)
     }
     if (regeneratedVideo) {
       regeneratedVideo.addEventListener("timeupdate", updateTimestamps)
+      regeneratedVideo.addEventListener("ended", handleRegeneratedEnded)
     }
     
     return () => {
       clearInterval(interval)
       if (originalVideo) {
         originalVideo.removeEventListener("timeupdate", updateTimestamps)
+        originalVideo.removeEventListener("ended", handleOriginalEnded)
       }
       if (regeneratedVideo) {
         regeneratedVideo.removeEventListener("timeupdate", updateTimestamps)
+        regeneratedVideo.removeEventListener("ended", handleRegeneratedEnded)
       }
     }
-  }, [regeneratedClip, isPlaying, clipStartTime])
+  }, [regeneratedClip, isPlaying, clipStartTime, clipEndTime])
   
   // Fullscreen handling
   const enterFullscreen = useCallback(async () => {
@@ -486,28 +582,43 @@ export function ClipComparison({
             // This allows playing only the audio segment for this specific clip
             const audio = audioRef.current
             if (audio && clipStartTime !== null && clipStartTime !== undefined) {
-              // Set initial position to clip start time
+              // CRITICAL: Set initial position to clip start time (beginning of this clip's audio segment)
+              // This ensures audio is ready at the correct position when playback starts
               audio.currentTime = clipStartTime
               
               // Log for debugging
-              console.log(`Audio trimmed to clip boundaries: ${clipStartTime}s - ${clipEndTime || 'end'}s`)
+              console.log(`🎵 Audio initialized to clip boundaries: ${clipStartTime}s - ${clipEndTime || 'end'}s (clip ${clipIndex})`)
+            } else {
+              console.warn(`⚠️ No clip boundaries provided for audio trimming (clip ${clipIndex})`)
             }
           }}
           onTimeUpdate={() => {
-            // Stop audio when reaching clip end time
+            // Stop audio when reaching clip end time OR when videos end
             const audio = audioRef.current
-            if (audio && clipEndTime !== null && clipEndTime !== undefined) {
-              if (audio.currentTime >= clipEndTime) {
-                audio.pause()
-                // Reset to clip start for replay
-                if (clipStartTime !== null && clipStartTime !== undefined) {
-                  audio.currentTime = clipStartTime
-                }
-                // Also pause videos if they're playing
-                if (originalVideoRef.current) originalVideoRef.current.pause()
-                if (regeneratedVideoRef.current) regeneratedVideoRef.current.pause()
-                setIsPlaying(false)
+            const originalVideo = originalVideoRef.current
+            const regeneratedVideo = regeneratedVideoRef.current
+            
+            if (!audio) return
+            
+            // Check if audio reached clip end time
+            const audioAtClipEnd = clipEndTime !== null && clipEndTime !== undefined && audio.currentTime >= clipEndTime
+            
+            // Check if any video has ended
+            const originalEnded = originalVideo && originalVideo.ended
+            const regeneratedEnded = regeneratedVideo && regeneratedVideo.ended
+            
+            // Stop if audio reached clip end OR if any video ended
+            if (audioAtClipEnd || originalEnded || regeneratedEnded) {
+              console.log(`🛑 Audio stopping: audioAtClipEnd=${audioAtClipEnd}, originalEnded=${originalEnded}, regeneratedEnded=${regeneratedEnded}`)
+              audio.pause()
+              // Reset to clip start for replay
+              if (clipStartTime !== null && clipStartTime !== undefined) {
+                audio.currentTime = clipStartTime
               }
+              // Also pause videos if they're playing
+              if (originalVideo) originalVideo.pause()
+              if (regeneratedVideo) regeneratedVideo.pause()
+              setIsPlaying(false)
             }
           }}
           onError={(e) => {
@@ -525,6 +636,35 @@ export function ClipComparison({
         <div className="flex items-center justify-between p-4 border-b">
           <h2 className="text-xl font-semibold">Compare Clip Versions</h2>
           <div className="flex items-center gap-2">
+            {/* Audio Volume Control */}
+            {audioUrl && (
+              <div className="flex items-center gap-2 px-2">
+                <button
+                  onClick={() => setAudioVolume(audioVolume > 0 ? 0 : 1.0)}
+                  className="p-1 hover:bg-gray-100 rounded transition-colors"
+                  title={audioVolume > 0 ? "Mute audio" : "Unmute audio"}
+                >
+                  {audioVolume > 0 ? (
+                    <Volume2 className="h-4 w-4" />
+                  ) : (
+                    <VolumeX className="h-4 w-4" />
+                  )}
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={audioVolume}
+                  onChange={(e) => setAudioVolume(parseFloat(e.target.value))}
+                  className="w-20 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary"
+                  title={`Volume: ${Math.round(audioVolume * 100)}%`}
+                />
+                <span className="text-xs text-gray-500 w-8">
+                  {Math.round(audioVolume * 100)}%
+                </span>
+              </div>
+            )}
             <Button
               variant="outline"
               size="sm"

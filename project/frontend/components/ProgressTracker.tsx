@@ -1195,11 +1195,12 @@ export function ProgressTracker({
       setCurrentRegeneratingClip(data.clip_index)
     },
     onPromptModified: (data: PromptModifiedEvent) => {
-      // Store the modified prompt for the currently regenerating clip
-      if (currentRegeneratingClip !== null) {
+      // Store the modified prompt for the specific clip being regenerated
+      // Use clip_index from event data to ensure we update the correct clip
+      if (data.clip_index !== undefined && data.clip_index !== null) {
         setRegeneratedPrompts((prev) => ({
           ...prev,
-          [currentRegeneratingClip]: data.modified_prompt,
+          [data.clip_index]: data.modified_prompt,
         }))
       }
     },

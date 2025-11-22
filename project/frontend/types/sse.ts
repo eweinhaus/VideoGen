@@ -198,6 +198,7 @@ export interface TemplateMatchedEvent {
 
 export interface PromptModifiedEvent {
   sequence: number
+  clip_index: number
   modified_prompt: string
   template_used?: string | null
 }
@@ -230,12 +231,15 @@ export interface RecompositionFailedEvent {
 
 export interface RegenerationCompleteEvent {
   sequence: number
-  clip_index: number
-  new_clip_url: string
+  clip_index?: number  // Single clip mode
+  clip_indices?: number[]  // Multi-clip mode
+  new_clip_url?: string  // Single clip mode
   cost: number
-  video_url?: string  // Added for recomposition result
+  video_url?: string  // Added for recomposition result (always present after recomposition)
   temperature?: number | null  // Temperature used for video generation (Veo 3.1 only)
   seed?: number | null  // Seed used for video generation (Veo 3.1 only)
+  successful_count?: number  // Multi-clip mode
+  failed_count?: number  // Multi-clip mode
 }
 
 export interface RegenerationFailedEvent {

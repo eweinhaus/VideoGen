@@ -433,6 +433,7 @@ export interface ClipComparisonResponse {
   duration_mismatch: boolean
   duration_diff: number
   active_version_number?: number  // NEW: which version is currently active in main video
+  audio_url?: string | null       // Audio URL for synchronized playback
   clip_start_time?: number | null  // Start time of clip in full audio (for trimming)
   clip_end_time?: number | null    // End time of clip in full audio (for trimming)
 }

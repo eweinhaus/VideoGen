@@ -934,11 +934,32 @@ async def load_clips_with_latest_versions(job_id: UUID) -> Optional[Clips]:
         )
         
         # Step 2: Query clip_versions for all current versions
+        # CRITICAL: Query all versions, then for each clip_index, get the latest version
+        # This ensures we get the most recent version even if is_current flags have timing issues
         db = DatabaseClient()
         try:
-            result = await db.table("clip_versions").select("*").eq(
+            # Get all versions for this job, ordered by created_at desc (newest first)
+            all_versions_result = await db.table("clip_versions").select("*").eq(
                 "job_id", str(job_id)
-            ).eq("is_current", True).execute()
+            ).order("created_at", desc=True).execute()
+            
+            # Build a map of clip_index -> latest version (first one we see for each clip_index)
+            latest_versions = {}
+            if all_versions_result.data:
+                for version_data in all_versions_result.data:
+                    clip_index = version_data.get("clip_index")
+                    if clip_index is not None and clip_index not in latest_versions:
+                        # Since we ordered by created_at desc, first occurrence is the latest
+                        latest_versions[clip_index] = version_data
+            
+            # Use the latest versions as our result data
+            result_data = list(latest_versions.values()) if latest_versions else []
+            
+            # Create a result-like object for compatibility
+            class ResultLike:
+                def __init__(self, data):
+                    self.data = data
+            result = ResultLike(result_data)
             
             if result.data and len(result.data) > 0:
                 logger.info(
