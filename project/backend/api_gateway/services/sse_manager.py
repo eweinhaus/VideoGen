@@ -146,7 +146,7 @@ async def get_initial_state(job_id: str) -> dict:
     return {"progress": 0, "stage": None, "status": "queued", "total_cost": 0}
 
 
-async def cleanup_stale_connections(timeout_seconds: int = 60) -> int:
+async def cleanup_stale_connections(timeout_seconds: int = 30) -> int:
     """
     Remove connections with no heartbeat for >timeout_seconds.
     

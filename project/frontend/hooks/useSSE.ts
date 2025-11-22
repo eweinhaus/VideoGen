@@ -21,6 +21,7 @@ export function useSSE(
   const eventSourceRef = useRef<EventSource | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const lastErrorTimeRef = useRef<number | null>(null) // Track when errors occur to detect 503-like issues
   // Store handlers in ref to prevent re-connections when handlers change
   const handlersRef = useRef<SSEHandlers>(handlers)
   
@@ -80,15 +81,31 @@ export function useSSE(
       setIsConnected(false)
       eventSource.close()
 
+      const now = Date.now()
+      const lastErrorTime = lastErrorTimeRef.current
+      // If errors occur very quickly (within 2 seconds), likely a 503 (connection limit)
+      // Use longer delays for suspected 503 errors
+      const isLikely503 = lastErrorTime && (now - lastErrorTime) < 2000
+      lastErrorTimeRef.current = now
+
       if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-        const delay = Math.pow(2, reconnectAttemptsRef.current) * 1000 // 2s, 4s, 8s, 16s, 32s
+        // Use longer delays for suspected 503 errors (connection limit issues)
+        // Base delay: 2s, 4s, 8s, 16s, 32s
+        // For 503-like errors: 5s, 10s, 20s, 40s, 80s
+        const baseDelay = Math.pow(2, reconnectAttemptsRef.current) * 1000
+        const delay = isLikely503 ? baseDelay * 2.5 : baseDelay
         reconnectAttemptsRef.current++
+        
+        console.log(
+          `⏳ SSE reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})${isLikely503 ? ' [suspected 503 - using longer delay]' : ''}`
+        )
+        
         reconnectTimeoutRef.current = setTimeout(() => {
           connect()
         }, delay)
       } else {
-        console.error("❌ SSE connection failed after maximum attempts")
-        setError("Connection failed after multiple attempts")
+        console.error("❌ SSE connection failed after maximum attempts - falling back to polling")
+        setError("Connection failed after multiple attempts - using polling fallback")
       }
     }
 

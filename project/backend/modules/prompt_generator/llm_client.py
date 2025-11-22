@@ -4,6 +4,7 @@ LLM integration for prompt optimization.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from decimal import Decimal
@@ -100,12 +101,189 @@ Requirements:
     return instructions + "\n\n" + json.dumps(base_prompts, indent=2)
 
 
-@retry_with_backoff(max_attempts=3, base_delay=2)
+async def _optimize_batch(
+    job_id: UUID,
+    batch_prompts: List[Dict[str, Any]],
+    style_keywords: List[str],
+    model: str,
+) -> Optional[LLMResult]:
+    """
+    Optimize a single batch of prompts.
+    
+    Returns LLMResult if successful, None if failed (will use deterministic fallback).
+    """
+    if not batch_prompts:
+        return None
+    
+    # Retry logic: try up to 2 times, return None on final failure
+    for attempt in range(2):
+        try:
+            client = _get_client()
+            batch_size = len(batch_prompts)
+            first_clip_idx = batch_prompts[0].get("clip_index", 0)
+            last_clip_idx = batch_prompts[-1].get("clip_index", batch_size - 1)
+            
+            logger.info(
+                "Processing LLM batch",
+                extra={
+                    "job_id": str(job_id),
+                    "model": model,
+                    "batch_size": batch_size,
+                    "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                },
+            )
+            
+            system_prompt = _build_system_prompt(style_keywords, batch_size)
+            user_payload = _build_user_payload(batch_prompts)
+            
+            # Calculate max_tokens for this batch (roughly 100 tokens per prompt + overhead)
+            estimated_tokens = max(2000, batch_size * 100 + 500)
+            max_tokens = min(estimated_tokens, 8000)
+            
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.7,
+                max_tokens=max_tokens,
+                timeout=90.0,
+            )
+            
+            content = response.choices[0].message.content
+            if not content:
+                logger.warning(
+                    "LLM returned empty response for batch",
+                    extra={"job_id": str(job_id), "clip_indices": f"{first_clip_idx}-{last_clip_idx}"},
+                )
+                if attempt < 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                return None
+            
+            payload = json.loads(content)
+            prompts = payload.get("prompts")
+            
+            if not isinstance(prompts, list) or len(prompts) != batch_size:
+                logger.warning(
+                    "LLM returned invalid batch response",
+                    extra={
+                        "job_id": str(job_id),
+                        "expected_count": batch_size,
+                        "actual_count": len(prompts) if isinstance(prompts, list) else 0,
+                        "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                    },
+                )
+                if attempt < 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                return None
+            
+            # Extract prompts in order, matching clip_index
+            final_prompts = []
+            prompt_dict = {p.get("clip_index"): p.get("prompt", "") for p in prompts if isinstance(p, dict)}
+            
+            for base_prompt in batch_prompts:
+                clip_idx = base_prompt.get("clip_index")
+                text = prompt_dict.get(clip_idx, base_prompt.get("draft_prompt", ""))
+                final_prompts.append(text.strip() if text else "")
+            
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            cost = _calculate_llm_cost(model, input_tokens, output_tokens)
+            
+            await cost_tracker.track_cost(
+                job_id=job_id,
+                stage_name="prompt_generator",
+                api_name=model,
+                cost=cost,
+            )
+        
+            logger.info(
+                "Batch optimization completed",
+                extra={
+                    "job_id": str(job_id),
+                    "model": model,
+                    "batch_size": batch_size,
+                    "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost": float(cost),
+                },
+            )
+            
+            return LLMResult(
+                prompts=final_prompts,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        
+        except (RateLimitError, APITimeoutError) as exc:
+            # Retryable errors - wait and retry if not last attempt
+            if attempt < 1:  # 0-indexed, so attempt 0 means 1 more try
+                delay = 2 * (attempt + 1)  # 2s, 4s
+                logger.warning(
+                    "LLM batch retryable error, retrying",
+                    extra={
+                        "job_id": str(job_id),
+                        "error": str(exc),
+                        "attempt": attempt + 1,
+                        "delay": delay,
+                    },
+                )
+                await asyncio.sleep(delay)
+                continue
+            else:
+                logger.warning(
+                    "LLM batch failed after retries, will use deterministic fallback",
+                    extra={
+                        "job_id": str(job_id),
+                        "error": str(exc),
+                        "clip_indices": f"{batch_prompts[0].get('clip_index', 0)}-{batch_prompts[-1].get('clip_index', len(batch_prompts)-1)}",
+                    },
+                )
+                return None
+        except (APIError, RetryableError, GenerationError) as exc:
+            # Non-retryable or final failure
+            logger.warning(
+                "LLM batch failed, will use deterministic fallback",
+                extra={
+                    "job_id": str(job_id),
+                    "error": str(exc),
+                    "clip_indices": f"{batch_prompts[0].get('clip_index', 0)}-{batch_prompts[-1].get('clip_index', len(batch_prompts)-1)}",
+                },
+            )
+            return None
+        except Exception as exc:
+            logger.error(
+                "Unexpected error in batch optimization",
+                extra={"job_id": str(job_id), "attempt": attempt + 1},
+                exc_info=True,
+            )
+            if attempt < 1:
+                import asyncio
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            return None
+    
+    # If we get here, all attempts failed
+    return None
+
+
 async def optimize_prompts(
     job_id: UUID,
     base_prompts: List[Dict[str, Any]],
     style_keywords: List[str],
 ) -> LLMResult:
+    """
+    Optimize prompts using LLM with batching support.
+    
+    Splits prompts into batches of 15 (configurable) to avoid token limits and timeouts.
+    If a batch fails, uses deterministic prompts for that batch only.
+    """
     if not base_prompts:
         raise ValidationError("Base prompts are required for optimization", job_id=job_id)
 
@@ -116,124 +294,94 @@ async def optimize_prompts(
             model,
         )
         model = "gpt-4o"
-
-    system_prompt = _build_system_prompt(style_keywords, len(base_prompts))
-    user_payload = _build_user_payload(base_prompts)
-
-    try:
-        client = _get_client()
-        logger.info(
-            "Calling LLM for prompt optimization",
-            extra={"job_id": str(job_id), "model": model, "clip_count": len(base_prompts)},
-        )
-
-        # Calculate max_tokens based on clip count (roughly 100 tokens per prompt + overhead)
-        # For 30 clips, we need at least 3000 tokens, but add buffer for safety
-        estimated_tokens = max(3000, len(base_prompts) * 100 + 500)
-        max_tokens = min(estimated_tokens, 8000)  # Cap at 8k to avoid hitting model limits
+    
+    batch_size = settings.prompt_generator_batch_size or 15
+    total_clips = len(base_prompts)
+    
+    logger.info(
+        "Calling LLM for prompt optimization with batching",
+        extra={
+            "job_id": str(job_id),
+            "model": model,
+            "total_clips": total_clips,
+            "batch_size": batch_size,
+            "num_batches": (total_clips + batch_size - 1) // batch_size,
+        },
+    )
+    
+    # Split prompts into batches
+    batches = []
+    for i in range(0, total_clips, batch_size):
+        batches.append(base_prompts[i:i + batch_size])
+    
+    # Process batches sequentially (to avoid rate limits)
+    all_prompts = []
+    total_input_tokens = 0
+    total_output_tokens = 0
+    successful_batches = 0
+    failed_batches = 0
+    
+    for batch_idx, batch in enumerate(batches):
+        batch_result = await _optimize_batch(job_id, batch, style_keywords, model)
         
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-            max_tokens=max_tokens,
-            timeout=90.0,
-        )
-
-        content = response.choices[0].message.content
-        if not content:
-            raise GenerationError("LLM returned empty response", job_id=job_id)
-
-        payload = json.loads(content)
-        prompts = payload.get("prompts")
-        
-        # Log what we received for debugging
-        if not isinstance(prompts, list):
-            logger.error(
-                "LLM returned invalid prompts format",
+        if batch_result:
+            # LLM optimization succeeded for this batch
+            all_prompts.extend(batch_result.prompts)
+            total_input_tokens += batch_result.input_tokens
+            total_output_tokens += batch_result.output_tokens
+            successful_batches += 1
+        else:
+            # LLM failed for this batch, use deterministic prompts
+            logger.warning(
+                "Using deterministic prompts for failed batch",
                 extra={
                     "job_id": str(job_id),
-                    "expected_type": "list",
-                    "actual_type": type(prompts).__name__,
-                    "payload_keys": list(payload.keys()) if isinstance(payload, dict) else None,
-                }
+                    "batch_index": batch_idx,
+                    "clip_indices": f"{batch[0].get('clip_index', 0)}-{batch[-1].get('clip_index', len(batch)-1)}",
+                },
             )
-            raise RetryableError(
-                f"LLM returned invalid prompts format: expected list, got {type(prompts).__name__}",
-                job_id=job_id,
-            )
-        
-        if len(prompts) != len(base_prompts):
-            logger.error(
-                "LLM returned unexpected prompt count",
-                extra={
-                    "job_id": str(job_id),
-                    "expected_count": len(base_prompts),
-                    "actual_count": len(prompts),
-                    "prompts_received": [p.get("clip_index", "unknown") if isinstance(p, dict) else "invalid" for p in prompts[:5]],
-                }
-            )
-            raise RetryableError(
-                f"LLM returned unexpected prompt count: expected {len(base_prompts)}, got {len(prompts)}",
-                job_id=job_id,
-            )
-
-        final_prompts = []
-        for base, generated in zip(base_prompts, prompts):
-            text = generated.get("prompt")
-            if not text:
-                text = base.get("draft_prompt", "")
-            final_prompts.append(text.strip())
-
-        input_tokens = response.usage.prompt_tokens
-        output_tokens = response.usage.completion_tokens
-        cost = _calculate_llm_cost(model, input_tokens, output_tokens)
-
-        await cost_tracker.track_cost(
-            job_id=job_id,
-            stage_name="prompt_generator",
-            api_name=model,
-            cost=cost,
-        )
-
-        logger.info(
-            "Prompt optimization completed",
+            # Use draft_prompt from base templates as fallback
+            for base_prompt in batch:
+                fallback_prompt = base_prompt.get("draft_prompt", "")
+                all_prompts.append(fallback_prompt.strip() if fallback_prompt else "")
+            failed_batches += 1
+    
+    # Ensure we have the right number of prompts
+    if len(all_prompts) != total_clips:
+        logger.error(
+            "Prompt count mismatch after batching",
             extra={
                 "job_id": str(job_id),
-                "model": model,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost": float(cost),
+                "expected": total_clips,
+                "actual": len(all_prompts),
             },
         )
-
-        return LLMResult(
-            prompts=final_prompts,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
-
-    except RateLimitError as exc:
-        logger.warning("LLM rate limit", extra={"job_id": str(job_id)})
-        raise RetryableError(str(exc), job_id=job_id) from exc
-    except APITimeoutError as exc:
-        logger.warning("LLM timeout", extra={"job_id": str(job_id)})
-        raise RetryableError(str(exc), job_id=job_id) from exc
-    except APIError as exc:
-        logger.error("LLM API error", extra={"job_id": str(job_id), "status": getattr(exc, 'status_code', None)})
-        if getattr(exc, "status_code", 500) >= 500:
-            raise RetryableError(str(exc), job_id=job_id) from exc
-        raise GenerationError(str(exc), job_id=job_id) from exc
-    except RetryableError:
-        raise
-    except ValidationError:
-        raise
-    except Exception as exc:
-        logger.error("Unexpected LLM error", extra={"job_id": str(job_id)}, exc_info=True)
-        raise GenerationError(str(exc), job_id=job_id) from exc
+        # Fill missing prompts with deterministic fallbacks
+        while len(all_prompts) < total_clips:
+            idx = len(all_prompts)
+            if idx < len(base_prompts):
+                fallback = base_prompts[idx].get("draft_prompt", "")
+                all_prompts.append(fallback.strip() if fallback else "")
+            else:
+                all_prompts.append("")
+    
+    logger.info(
+        "Prompt optimization completed (batched)",
+        extra={
+            "job_id": str(job_id),
+            "model": model,
+            "total_clips": total_clips,
+            "successful_batches": successful_batches,
+            "failed_batches": failed_batches,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+        },
+    )
+    
+    return LLMResult(
+        prompts=all_prompts,
+        model=model,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+    )
 
