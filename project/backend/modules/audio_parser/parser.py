@@ -90,10 +90,22 @@ def ensure_full_coverage(
                 f"Fixed gap between boundaries: {gap:.2f}s "
                 f"({prev_boundary.end:.2f}s -> {boundary.start:.2f}s)"
             )
-            # Extend previous boundary to cover gap (if it won't exceed 8s too much)
-            # Or create a new boundary for the gap
-            if gap < 4.0:
-                # Small gap: extend previous boundary
+            # Minimum duration for ClipBoundary is 3 seconds (model validation constraint)
+            MIN_CLIP_DURATION = 3.0
+            
+            if gap < MIN_CLIP_DURATION:
+                # Gap is too small (< 3s) to create a separate boundary - must extend previous
+                # Even if it exceeds 8.5s, we must merge to avoid validation error
+                new_end = boundary.start
+                new_duration = new_end - prev_boundary.start
+                fixed_boundaries[-1] = ClipBoundary(
+                    start=prev_boundary.start,
+                    end=new_end,
+                    duration=new_duration,
+                    metadata={**(prev_boundary.metadata or {}), "fix": "extended_to_fill_small_gap"}
+                )
+            elif gap < 4.0:
+                # Gap is 3-4s: try to extend previous boundary if it won't exceed limits too much
                 new_end = boundary.start
                 new_duration = new_end - prev_boundary.start
                 if new_duration <= 8.5:  # Allow slight over 8s to fix gap
@@ -104,7 +116,7 @@ def ensure_full_coverage(
                         metadata={**(prev_boundary.metadata or {}), "fix": "extended_to_fill_gap"}
                     )
                 else:
-                    # Gap is too large to extend, create new boundary
+                    # Gap is large enough (>= 3s) but extending would exceed limits - create new boundary
                     fixed_boundaries.append(ClipBoundary(
                         start=prev_boundary.end,
                         end=boundary.start,
@@ -112,7 +124,7 @@ def ensure_full_coverage(
                         metadata={"fix": "created_to_fill_gap"}
                     ))
             else:
-                # Large gap: create new boundary
+                # Large gap (>= 4s): create new boundary
                 fixed_boundaries.append(ClipBoundary(
                     start=prev_boundary.end,
                     end=boundary.start,
@@ -129,14 +141,16 @@ def ensure_full_coverage(
             # Adjust current boundary to start where previous ends
             new_start = prev_boundary.end
             new_duration = boundary.end - new_start
-            if new_duration >= 4.0:  # Only keep if still valid
+            # Minimum duration for ClipBoundary is 3 seconds (model validation constraint)
+            # Production quality prefers >= 4.0s, so we use 4.0 as threshold here
+            if new_duration >= 4.0:  # Only keep if still valid (>= 4s for production quality)
                 fixed_boundaries.append(ClipBoundary(
                     start=new_start,
                     end=boundary.end,
                     duration=new_duration,
                     metadata={**(boundary.metadata or {}), "fix": "adjusted_for_overlap"}
                 ))
-            # Otherwise skip this boundary (it's been merged)
+            # Otherwise skip this boundary (it's been merged - duration would be < 4s)
         else:
             # No gap or overlap, add boundary as-is
             fixed_boundaries.append(boundary)
@@ -153,8 +167,21 @@ def ensure_full_coverage(
                 f"total duration is {total_duration:.2f}s)"
             )
             
-            if remaining < 4.0:
-                # Small remainder: extend last boundary
+            # Minimum duration for ClipBoundary is 3 seconds (model validation constraint)
+            MIN_CLIP_DURATION = 3.0
+            
+            if remaining < MIN_CLIP_DURATION:
+                # Very small remainder (< 3s): must extend last boundary to avoid validation error
+                new_end = total_duration
+                new_duration = new_end - last_boundary.start
+                fixed_boundaries[-1] = ClipBoundary(
+                    start=last_boundary.start,
+                    end=new_end,
+                    duration=new_duration,
+                    metadata={**(last_boundary.metadata or {}), "fix": "extended_to_end"}
+                )
+            elif remaining < 4.0:
+                # Small remainder (3-4s): extend last boundary (production quality prefers >4s)
                 new_end = total_duration
                 new_duration = new_end - last_boundary.start
                 fixed_boundaries[-1] = ClipBoundary(
@@ -164,7 +191,7 @@ def ensure_full_coverage(
                     metadata={**(last_boundary.metadata or {}), "fix": "extended_to_end"}
                 )
             else:
-                # Large remainder: create additional boundary
+                # Large remainder (>= 4s): create additional boundary
                 fixed_boundaries.append(ClipBoundary(
                     start=last_boundary.end,
                     end=total_duration,
