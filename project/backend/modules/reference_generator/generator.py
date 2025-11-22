@@ -217,7 +217,7 @@ async def generate_image(
             "different age, different gender, different ethnicity, "
             "multiple people, two people, different character, "
             "face swap, face change, identity swap, inconsistent features, "
-            # NEW: Prevent face warping/distortion (Face Clarity Enhancement)
+            # Prevent face warping/distortion (Face Clarity Enhancement)
             "warped face, distorted face, blurred face, fuzzy facial features, "
             "face morphing, inconsistent face, face changing, deformed facial features, "
             "asymmetric face, face distortion, face blur, low detail face, "
@@ -228,9 +228,12 @@ async def generate_image(
             "tiny body, miniature body, small body relative to head, "
             "head bigger than body, head-body proportion mismatch, "
             "doll proportions, bobblehead, caricature proportions, "
-            "zoomed in face, extreme close-up, only head and shoulders, "
-            "cropped body, partial body, missing body, headshot only, "
-            "portrait crop, tight crop, head fills frame, face fills frame"
+            "extreme close-up of only face, only showing face, head fills entire frame, face fills entire frame, "
+            # CRITICAL: Prevent full body shots (force head and shoulders framing)
+            "full body shot, full length portrait, entire body visible, full figure, "
+            "standing full body, feet visible, legs visible, full body standing, "
+            "waist visible, torso below chest, stomach visible, hips visible, "
+            "shot from waist down, below chest level, lower body"
         )
     elif image_type == "object":
         # Enhanced negative prompt for objects to prevent multiple objects or multiple views

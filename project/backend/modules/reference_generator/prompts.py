@@ -91,22 +91,22 @@ def get_character_variation_suffix(variation_index: int) -> str:
         Suffix string describing camera angle/pose for this variation
     """
     if variation_index == 0:
-        # Base variation: waist-up portrait for detailed facial features
+        # Base variation: head and shoulders close-up portrait for detailed facial features
         # CRITICAL: Emphasize PROPER PROPORTIONS to prevent disproportionately large heads
-        # Waist-up provides good facial detail while showing enough body for proportion reference
-        return "waist-up portrait, head and torso visible, upper body and face clearly shown, neutral expression, direct gaze, PROPER HUMAN PROPORTIONS, normal head size relative to body, anatomically correct proportions, natural human scale, balanced composition"
+        # Head and shoulders (from chest/midline up) provides excellent facial detail
+        return "head and shoulders portrait, close-up from chest up, upper chest and above visible, head neck and shoulders clearly shown, face is primary focus, neutral expression, direct gaze, PROPER HUMAN PROPORTIONS, normal head size, anatomically correct proportions, natural human scale, professional headshot style"
     elif variation_index == 1:
-        # Variation 1: profile view
-        return "SAME PERSON, profile view from left side, slight smile, side angle, EXACT SAME FEATURES"
+        # Variation 1: profile view (head and shoulders)
+        return "SAME PERSON, profile view from left side head and shoulders portrait, close-up from chest up, side angle, slight smile, upper chest and above visible, EXACT SAME FEATURES, PROPER HUMAN PROPORTIONS, normal head size"
     elif variation_index == 2:
-        # Variation 2: three-quarter view
-        return "SAME PERSON, three-quarter view, confident pose, slight angle, EXACT SAME FEATURES"
+        # Variation 2: three-quarter view (head and shoulders)
+        return "SAME PERSON, three-quarter view head and shoulders portrait, close-up from chest up, slight angle to camera, confident expression, upper chest and above visible, EXACT SAME FEATURES, PROPER HUMAN PROPORTIONS, normal head size"
     elif variation_index == 3:
-        # Variation 3: full body
-        return "SAME PERSON, full body shot, natural standing pose, full figure visible, EXACT SAME FEATURES"
+        # Variation 3: different lighting (head and shoulders)
+        return "SAME PERSON, head and shoulders portrait, close-up from chest up, dramatic lighting, upper chest and above visible, EXACT SAME FEATURES, PROPER HUMAN PROPORTIONS, normal head size"
     elif variation_index == 4:
-        # Variation 4: action pose
-        return "SAME PERSON, dynamic action shot, in motion, natural movement, EXACT SAME FEATURES"
+        # Variation 4: different expression (head and shoulders)
+        return "SAME PERSON, head and shoulders portrait, close-up from chest up, natural smile, upper chest and above visible, EXACT SAME FEATURES, PROPER HUMAN PROPORTIONS, normal head size"
     elif variation_index == 5:
         # Variation 5: close-up face portrait (for maximum face detail and clarity)
         return "SAME PERSON, extreme close-up portrait, face fills frame, sharp facial features, detailed eyes nose mouth, professional headshot quality, EXACT SAME FEATURES, high resolution face detail"

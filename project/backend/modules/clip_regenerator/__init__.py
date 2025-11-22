@@ -10,6 +10,7 @@ from modules.clip_regenerator.llm_modifier import modify_prompt_with_llm
 from modules.clip_regenerator.context_builder import build_llm_context
 from modules.clip_regenerator.data_loader import (
     load_clips_from_job_stages,
+    load_clips_with_latest_versions,
     load_clip_prompts_from_job_stages,
     load_scene_plan_from_job_stages,
     load_reference_images_from_job_stages
@@ -29,6 +30,7 @@ __all__ = [
     "modify_prompt_with_llm",
     "build_llm_context",
     "load_clips_from_job_stages",
+    "load_clips_with_latest_versions",
     "load_clip_prompts_from_job_stages",
     "load_scene_plan_from_job_stages",
     "load_reference_images_from_job_stages",

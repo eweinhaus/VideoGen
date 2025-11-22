@@ -893,3 +893,164 @@ async def load_clip_version(
         )
         return None
 
+
+async def load_clips_with_latest_versions(job_id: UUID) -> Optional[Clips]:
+    """
+    Load clips with their latest regenerated versions merged in.
+    
+    This function solves the issue where regenerating one clip reverts other clips
+    back to their originals. It loads the original clips from job_stages, then
+    replaces each clip with its latest version from clip_versions if available.
+    
+    Strategy:
+    1. Load original clips from job_stages (baseline)
+    2. Query clip_versions for all current versions (is_current=True)
+    3. For each clip, if a current version exists, replace it with the regenerated version
+    4. Return merged Clips object with all latest versions
+    
+    Args:
+        job_id: Job ID to load clips for
+        
+    Returns:
+        Clips object with latest versions merged, None if no clips found
+    """
+    try:
+        # Step 1: Load original clips from job_stages (baseline)
+        clips = await load_clips_from_job_stages(job_id)
+        if not clips:
+            logger.warning(
+                f"No clips found in job_stages for job {job_id}",
+                extra={"job_id": str(job_id)}
+            )
+            return None
+        
+        logger.info(
+            f"Loaded {len(clips.clips)} original clips from job_stages",
+            extra={
+                "job_id": str(job_id),
+                "total_clips": len(clips.clips),
+                "clip_indices": [c.clip_index for c in clips.clips]
+            }
+        )
+        
+        # Step 2: Query clip_versions for all current versions
+        db = DatabaseClient()
+        try:
+            result = await db.table("clip_versions").select("*").eq(
+                "job_id", str(job_id)
+            ).eq("is_current", True).execute()
+            
+            if result.data and len(result.data) > 0:
+                logger.info(
+                    f"Found {len(result.data)} regenerated version(s) in clip_versions",
+                    extra={
+                        "job_id": str(job_id),
+                        "regenerated_count": len(result.data),
+                        "regenerated_indices": [v.get("clip_index") for v in result.data]
+                    }
+                )
+                
+                # Create a map of clip_index -> regenerated version data
+                regenerated_versions = {}
+                for version_data in result.data:
+                    clip_index = version_data.get("clip_index")
+                    if clip_index is not None:
+                        regenerated_versions[clip_index] = version_data
+                
+                # Step 3: Replace clips with their regenerated versions
+                from shared.models.video import Clip
+                from decimal import Decimal
+                
+                updated_clips = []
+                replaced_count = 0
+                
+                for original_clip in clips.clips:
+                    clip_index = original_clip.clip_index
+                    
+                    if clip_index in regenerated_versions:
+                        # Replace with regenerated version
+                        regen_data = regenerated_versions[clip_index]
+                        
+                        # Create a new Clip object with regenerated data
+                        updated_clip = Clip(
+                            clip_index=clip_index,
+                            video_url=regen_data.get("video_url"),
+                            actual_duration=regen_data.get("duration") or original_clip.actual_duration,
+                            target_duration=original_clip.target_duration,
+                            original_target_duration=original_clip.original_target_duration,
+                            duration_diff=original_clip.duration_diff,
+                            status="success",  # Regenerated clips are always successful
+                            cost=Decimal(str(regen_data.get("cost", 0))),
+                            retry_count=original_clip.retry_count,
+                            generation_time=original_clip.generation_time,
+                            metadata={
+                                **original_clip.metadata,
+                                "is_regenerated": True,
+                                "version_number": regen_data.get("version_number"),
+                                "user_instruction": regen_data.get("user_instruction")
+                            }
+                        )
+                        
+                        updated_clips.append(updated_clip)
+                        replaced_count += 1
+                        
+                        logger.debug(
+                            f"Replaced clip {clip_index} with regenerated version",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_index,
+                                "version_number": regen_data.get("version_number"),
+                                "original_url": original_clip.video_url,
+                                "regenerated_url": regen_data.get("video_url")
+                            }
+                        )
+                    else:
+                        # Keep original
+                        updated_clips.append(original_clip)
+                
+                logger.info(
+                    f"Merged latest versions: {replaced_count} clip(s) replaced with regenerated versions",
+                    extra={
+                        "job_id": str(job_id),
+                        "total_clips": len(updated_clips),
+                        "replaced_count": replaced_count,
+                        "original_count": len(updated_clips) - replaced_count
+                    }
+                )
+                
+                # Step 4: Reconstruct Clips object with updated clips
+                merged_clips = Clips(
+                    job_id=clips.job_id,
+                    clips=updated_clips,
+                    total_clips=clips.total_clips,
+                    successful_clips=len([c for c in updated_clips if c.status == "success"]),
+                    failed_clips=len([c for c in updated_clips if c.status == "failed"]),
+                    total_cost=clips.total_cost,  # Keep original total_cost tracking
+                    total_generation_time=clips.total_generation_time
+                )
+                
+                return merged_clips
+            else:
+                # No regenerated versions, return original clips
+                logger.debug(
+                    f"No regenerated versions found, returning original clips",
+                    extra={"job_id": str(job_id)}
+                )
+                return clips
+                
+        except Exception as e:
+            # clip_versions table may not exist, return original clips
+            logger.debug(
+                f"clip_versions table not available, returning original clips: {e}",
+                extra={"job_id": str(job_id)}
+            )
+            return clips
+        
+    except Exception as e:
+        logger.error(
+            f"Failed to load clips with latest versions: {e}",
+            extra={"job_id": str(job_id)},
+            exc_info=True
+        )
+        return None
+
