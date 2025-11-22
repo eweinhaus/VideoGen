@@ -85,12 +85,12 @@ async def event_generator(job_id: str):
         
         listener_task = asyncio.create_task(pubsub_listener())
         
-        # Background cleanup task
+        # Background cleanup task - more frequent cleanup
         async def cleanup_task():
             try:
                 while True:
-                    await asyncio.sleep(30)  # Run every 30 seconds
-                    removed = await cleanup_stale_connections()
+                    await asyncio.sleep(15)  # Run every 15 seconds (reduced from 30)
+                    removed = await cleanup_stale_connections(timeout_seconds=30)  # More aggressive: 30s timeout
                     if removed > 0:
                         logger.info(f"Cleaned up {removed} stale SSE connections")
             except asyncio.CancelledError:
@@ -200,9 +200,21 @@ async def stream_progress(
     except HTTPException as e:
         raise
     
-    # Check connection limit
+    # Clean up stale connections before checking limit (more aggressive cleanup)
+    # This helps prevent 503 errors from stale connections
+    await cleanup_stale_connections(timeout_seconds=30)  # Reduced from 60 to 30 seconds
+    
+    # Check connection limit after cleanup
     connections_list = await get_connections(job_id)
     if len(connections_list) >= MAX_CONNECTIONS_PER_JOB:
+        logger.warning(
+            "Connection limit reached after cleanup",
+            extra={
+                "job_id": job_id,
+                "connection_count": len(connections_list),
+                "max_connections": MAX_CONNECTIONS_PER_JOB
+            }
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Maximum {MAX_CONNECTIONS_PER_JOB} connections per job exceeded"

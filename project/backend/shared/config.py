@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # Prompt Generator configuration
     prompt_generator_use_llm: bool = True
     prompt_generator_llm_model: Literal["gpt-4o", "claude-3-5-sonnet"] = "gpt-4o"
+    prompt_generator_batch_size: int = 15  # Number of clips per LLM batch
 
     # Reference Generator configuration
     # USE_REFERENCE_IMAGES: Enable/disable reference images (default: true for backward compatibility)
