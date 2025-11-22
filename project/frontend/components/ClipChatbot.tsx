@@ -898,6 +898,125 @@ export function ClipChatbot({
     }
   }
 
+  const handleLipsync = async () => {
+    if (selectedClipIndices.length === 0 || isProcessing) {
+      return
+    }
+
+    // Automatically send "make them lipsync" instruction
+    const lipsyncInstruction = "make them lipsync"
+    const clipIndices = selectedClipIndices
+    
+    setError(null)
+    setLastError(null)
+    setIsRetryable(false)
+    setIsProcessing(true)
+    setProgress(0)
+    setCostEstimate(null)
+    setTemplateMatched(null)
+    setLastInstruction(lipsyncInstruction)
+    setLastClipIndices(clipIndices)
+
+    // Add user message to conversation
+    const newUserMessage: Message = {
+      role: "user",
+      content: lipsyncInstruction,
+      timestamp: new Date(),
+    }
+    
+    setMessages((prev) => [...prev, newUserMessage])
+
+    // Add clip attachment messages for all selected clips
+    const clipAttachmentMessages: Message[] = clipIndices.map((clipIndex) => {
+      const selectedClip = clips.find((c) => c.clip_index === clipIndex)
+      return {
+        role: "user" as const,
+        content: `Clip ${clipIndex + 1} attached`,
+        timestamp: new Date(),
+        attachedClipIndex: clipIndex,
+        thumbnailUrl: selectedClip?.thumbnail_url || null,
+      }
+    })
+    
+    setMessages((prev) => [...prev, ...clipAttachmentMessages])
+
+    // Add to conversation history
+    conversationHistoryRef.current.push({
+      role: "user",
+      content: lipsyncInstruction,
+    })
+    saveConversationHistory()
+
+    try {
+      // Call regeneration API with all selected clip indices
+      const response = await regenerateClip(jobId, {
+        instruction: lipsyncInstruction,
+        conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 messages
+        clip_indices: clipIndices, // Send all selected clips
+      })
+
+      // Update cost estimate
+      setCostEstimate(response.estimated_cost)
+      setTemplateMatched(response.template_matched || null)
+
+      // Add assistant response
+      const clipText = clipIndices.length > 1 
+        ? `${clipIndices.length} clips` 
+        : "this clip"
+      const costText = response.estimated_cost != null ? `$${response.estimated_cost.toFixed(2)}` : null
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: costText
+          ? `I'll apply lipsync to ${clipText}. Estimated cost: ${costText}`
+          : `I'll apply lipsync to ${clipText}.`,
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, assistantMessage])
+
+      // Add to conversation history
+      conversationHistoryRef.current.push({
+        role: "assistant",
+        content: assistantMessage.content,
+      })
+      saveConversationHistory()
+
+      // Progress will be updated via SSE events
+    } catch (err) {
+      setIsProcessing(false)
+      setProgress(null)
+      
+      let errorMessage = "Failed to apply lipsync"
+      let isRetryable = false
+      
+      if (err instanceof APIError) {
+        errorMessage = err.message || "Failed to apply lipsync"
+        isRetryable = err.retryable
+        
+        if (err.statusCode === 409) {
+          if (!err.message || err.message === "Failed to apply lipsync") {
+            errorMessage = "A regeneration is already in progress. Please wait for it to complete."
+          }
+        } else if (err.statusCode === 400) {
+          if (!err.message || err.message === "Failed to apply lipsync") {
+            errorMessage = "Invalid request. Please check your instruction."
+          }
+        } else if (err.statusCode === 402) {
+          if (!err.message || err.message === "Failed to apply lipsync") {
+            errorMessage = "Budget limit exceeded. Please check your account limits."
+          }
+        } else if (err.statusCode >= 500) {
+          errorMessage = err.message || "Server error occurred. Please try again later."
+        }
+      } else if (err instanceof Error) {
+        errorMessage = err.message || "An unexpected error occurred."
+      }
+      
+      setError(errorMessage)
+      setIsRetryable(isRetryable)
+      addSystemMessage(errorMessage, "error")
+    }
+  }
+
   const handleRevert = async (clipIndex: number, versionNumber: number) => {
     try {
       const response = await revertClipToVersion(jobId, clipIndex, versionNumber)
@@ -1094,29 +1213,44 @@ export function ClipChatbot({
           </div>
         )}
 
-        {/* Compare Button - Prominent placement (above thumbnails) */}
-        {!loadingClips && clips.length > 0 && selectedClipIndices.length === 1 && (
-          <div className="border-t px-3 py-2 min-h-[56px] flex items-center">
+        {/* Quick Action Buttons - Prominent placement (above thumbnails) */}
+        {!loadingClips && clips.length > 0 && selectedClipIndices.length > 0 && (
+          <div className="border-t px-3 py-2 min-h-[56px] flex items-center gap-2">
+            {selectedClipIndices.length === 1 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => handleCompareClip(selectedClipIndices[0])}
+                disabled={loadingComparison || isProcessing}
+                className="flex-1"
+              >
+                <GitCompare className="h-4 w-4 mr-2" />
+                {loadingComparison ? "Loading..." : "Compare Versions"}
+              </Button>
+            )}
             <Button
               type="button"
-              variant="outline"
+              variant="default"
               size="sm"
-              onClick={() => handleCompareClip(selectedClipIndices[0])}
-              disabled={loadingComparison}
-              className="w-full"
+              onClick={handleLipsync}
+              disabled={isProcessing || selectedClipIndices.length === 0}
+              className={selectedClipIndices.length === 1 ? "flex-1" : "w-full"}
             >
-              <GitCompare className="h-4 w-4 mr-2" />
-              {loadingComparison ? "Loading..." : "Compare Versions"}
+              <svg
+                className="h-4 w-4 mr-2"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M6 12c0 3 2 5 5 5s5-2 5-5" />
+                <path d="M6 12c0-3 2-5 5-5s5 2 5 5" />
+              </svg>
+              {isProcessing ? "Processing..." : "Apply Lipsync"}
             </Button>
-          </div>
-        )}
-        
-        {/* Multi-clip compare hint (above thumbnails) */}
-        {!loadingClips && clips.length > 0 && selectedClipIndices.length > 1 && (
-          <div className="border-t px-3 py-2 min-h-[56px] flex items-center justify-center">
-            <p className="text-xs text-muted-foreground text-center">
-              Select a single clip to compare versions
-            </p>
           </div>
         )}
 

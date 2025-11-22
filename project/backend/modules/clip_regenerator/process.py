@@ -1793,6 +1793,41 @@ async def regenerate_clip_with_recomposition(
     
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()
+    
+    # CRITICAL: For lipsync, ensure we're using the lipsynced clip URL
+    # Log before replacement for debugging
+    logger.info(
+        f"About to replace clip at position {clip_position}",
+        extra={
+            "job_id": str(job_id),
+            "clip_index": clip_index,
+            "clip_position": clip_position,
+            "old_clip_url": old_clip_url,
+            "new_clip_url": new_clip_url,
+            "new_clip_video_url": new_clip.video_url,
+            "template_used": regeneration_result.template_used,
+            "urls_match": new_clip.video_url == new_clip_url
+        }
+    )
+    
+    # Ensure new_clip has the correct clip_index
+    if new_clip.clip_index != clip_index:
+        logger.warning(
+            f"Correcting clip_index mismatch: {new_clip.clip_index} -> {clip_index}",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "new_clip_index": new_clip.clip_index
+            }
+        )
+        # Create a copy with corrected clip_index
+        if hasattr(new_clip, 'model_copy'):
+            new_clip = new_clip.model_copy(update={'clip_index': clip_index})
+        else:
+            from copy import deepcopy
+            new_clip = deepcopy(new_clip)
+            new_clip.clip_index = clip_index
+    
     updated_clips[clip_position] = new_clip
     
     # Verify replacement worked
@@ -1804,7 +1839,8 @@ async def regenerate_clip_with_recomposition(
                 "job_id": str(job_id),
                 "clip_index": clip_index,
                 "expected_url": new_clip_url,
-                "actual_url": replaced_clip.video_url
+                "actual_url": replaced_clip.video_url,
+                "template_used": regeneration_result.template_used
             }
         )
         raise ValidationError(
@@ -1895,6 +1931,34 @@ async def regenerate_clip_with_recomposition(
     try:
         # Log the clip URLs that will be used for recomposition
         clip_urls = [clip.video_url for clip in updated_clips_obj.clips]
+        regenerated_clip_url = updated_clips_obj.clips[clip_position].video_url if clip_position is not None else None
+        
+        # CRITICAL: Verify lipsynced clip is in the array
+        if regeneration_result.template_used == "lipsync":
+            logger.info(
+                f"LIPSYNC VERIFICATION: Lipsynced clip should be at position {clip_position}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "clip_position": clip_position,
+                    "regenerated_clip_url": regenerated_clip_url,
+                    "expected_lipsync_pattern": f"clip_{clip_index}_lipsync.mp4",
+                    "url_contains_lipsync": "_lipsync" in (regenerated_clip_url or ""),
+                    "all_clip_urls": clip_urls
+                }
+            )
+            if "_lipsync" not in (regenerated_clip_url or ""):
+                logger.error(
+                    f"CRITICAL: Lipsynced clip URL not found at expected position!",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "clip_position": clip_position,
+                        "actual_url": regenerated_clip_url,
+                        "all_urls": clip_urls
+                    }
+                )
+        
         logger.info(
             f"Starting video recomposition",
             extra={
@@ -1902,7 +1966,8 @@ async def regenerate_clip_with_recomposition(
                 "total_clips": updated_clips_obj.total_clips,
                 "clip_urls": clip_urls,
                 "regenerated_clip_index": clip_index,
-                "regenerated_clip_url": updated_clips_obj.clips[clip_position].video_url if clip_position is not None else None
+                "regenerated_clip_url": regenerated_clip_url,
+                "template_used": regeneration_result.template_used
             }
         )
         
