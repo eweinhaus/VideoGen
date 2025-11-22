@@ -1439,23 +1439,37 @@ async def regenerate_clip_with_recomposition(
     
     # Step 6: Replace clip in Clips object
     logger.debug(
-        f"Reloading clips for recomposition",
+        f"Reloading clips for recomposition with latest versions",
         extra={"job_id": str(job_id), "clip_index": clip_index}
     )
-    clips = await load_clips_from_job_stages(job_id)
-    if not clips:
-        logger.error(
-            f"Failed to reload clips for recomposition",
-            extra={"job_id": str(job_id), "clip_index": clip_index, "stage": "recomposition"}
-        )
-        raise ValidationError(f"Failed to load clips for job {job_id}")
     
-    logger.debug(
-        f"Clips reloaded for recomposition",
+    # CRITICAL FIX: Load clips with their latest versions merged in
+    # This ensures that when regenerating one clip, other previously regenerated clips
+    # maintain their latest versions instead of reverting to originals.
+    from modules.clip_regenerator.data_loader import load_clips_with_latest_versions
+    
+    clips = await load_clips_with_latest_versions(job_id)
+    if not clips:
+        # Fallback to original loader if the new function fails
+        logger.warning(
+            f"Failed to load clips with latest versions, falling back to original loader",
+            extra={"job_id": str(job_id), "clip_index": clip_index}
+        )
+        clips = await load_clips_from_job_stages(job_id)
+        if not clips:
+            logger.error(
+                f"Failed to reload clips for recomposition",
+                extra={"job_id": str(job_id), "clip_index": clip_index, "stage": "recomposition"}
+            )
+            raise ValidationError(f"Failed to load clips for job {job_id}")
+    
+    logger.info(
+        f"Clips reloaded for recomposition with latest versions merged",
         extra={
             "job_id": str(job_id),
             "total_clips": len(clips.clips),
-            "clip_index": clip_index
+            "clip_index": clip_index,
+            "regenerated_clips": [c.metadata.get("is_regenerated", False) for c in clips.clips].count(True)
         }
     )
     
@@ -2232,66 +2246,32 @@ async def recompose_after_regenerations(
     )
     
     # Load latest clips (including all regenerated versions)
-    clips = await load_clips_from_job_stages(job_id)
+    # CRITICAL FIX: Use load_clips_with_latest_versions to merge all regenerated versions
+    # This ensures ALL previously regenerated clips maintain their latest versions
+    from modules.clip_regenerator.data_loader import load_clips_with_latest_versions
+    
+    clips = await load_clips_with_latest_versions(job_id)
     if not clips:
-        logger.error(
-            f"Failed to load clips for recomposition",
-            extra={"job_id": str(job_id), "stage": "recomposition"}
+        # Fallback to original loader if the new function fails
+        logger.warning(
+            f"Failed to load clips with latest versions, falling back to original loader",
+            extra={"job_id": str(job_id)}
         )
-        raise ValidationError(f"Failed to load clips for job {job_id}")
+        clips = await load_clips_from_job_stages(job_id)
+        if not clips:
+            logger.error(
+                f"Failed to load clips for recomposition",
+                extra={"job_id": str(job_id), "stage": "recomposition"}
+            )
+            raise ValidationError(f"Failed to load clips for job {job_id}")
     
-    # CRITICAL: Replace regenerated clips with their latest versions from clip_versions
-    db = DatabaseClient()
-    for clip_index in regenerated_clip_indices:
-        # Find the clip position in the clips list
-        clip_position = None
-        for i, clip in enumerate(clips.clips):
-            if clip.clip_index == clip_index:
-                clip_position = i
-                break
-        
-        if clip_position is None:
-            logger.warning(
-                f"Regenerated clip {clip_index} not found in clips list, skipping",
-                extra={"job_id": str(job_id), "clip_index": clip_index}
-            )
-            continue
-        
-        # Get the latest version from clip_versions table
-        version_result = await db.table("clip_versions").select("*").eq(
-            "job_id", str(job_id)
-        ).eq("clip_index", clip_index).eq("is_current", True).limit(1).execute()
-        
-        if version_result.data and len(version_result.data) > 0:
-            latest_version = version_result.data[0]
-            old_url = clips.clips[clip_position].video_url
-            new_url = latest_version["video_url"]
-            
-            # Update the clip URL to use the latest regenerated version
-            clips.clips[clip_position].video_url = new_url
-            
-            logger.info(
-                f"Replaced clip {clip_index} with latest version for recomposition",
-                extra={
-                    "job_id": str(job_id),
-                    "clip_index": clip_index,
-                    "old_url": old_url,
-                    "new_url": new_url,
-                    "version_number": latest_version["version_number"]
-                }
-            )
-        else:
-            logger.warning(
-                f"No current version found for regenerated clip {clip_index}, using original",
-                extra={"job_id": str(job_id), "clip_index": clip_index}
-            )
-    
-    logger.debug(
-        f"Loaded clips for recomposition (with regenerated versions replaced)",
+    logger.info(
+        f"Loaded clips for recomposition with latest versions merged",
         extra={
             "job_id": str(job_id),
             "total_clips": len(clips.clips),
             "regenerated_clip_indices": regenerated_clip_indices,
+            "regenerated_count": sum(c.metadata.get("is_regenerated", False) for c in clips.clips),
             "clip_urls": [clip.video_url for clip in clips.clips]
         }
     )
