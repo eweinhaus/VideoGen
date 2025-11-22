@@ -12,7 +12,7 @@ import { Progress } from "@/components/ui/progress"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { ClipComparison } from "@/components/ClipComparison"
 import { APIError } from "@/types/api"
-import { GitCompare } from "lucide-react"
+import { GitCompare, Music } from "lucide-react"
 import type {
   RegenerationStartedEvent,
   TemplateMatchedEvent,
@@ -1237,18 +1237,7 @@ export function ClipChatbot({
               disabled={isProcessing || selectedClipIndices.length === 0}
               className={selectedClipIndices.length === 1 ? "flex-1" : "w-full"}
             >
-              <svg
-                className="h-4 w-4 mr-2"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M6 12c0 3 2 5 5 5s5-2 5-5" />
-                <path d="M6 12c0-3 2-5 5-5s5 2 5 5" />
-              </svg>
+              <Music className="h-4 w-4 mr-2" />
               {isProcessing ? "Processing..." : "Apply Lipsync"}
             </Button>
           </div>
