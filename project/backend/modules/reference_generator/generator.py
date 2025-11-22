@@ -221,7 +221,16 @@ async def generate_image(
             "warped face, distorted face, blurred face, fuzzy facial features, "
             "face morphing, inconsistent face, face changing, deformed facial features, "
             "asymmetric face, face distortion, face blur, low detail face, "
-            "unclear face, hazy face, soft focus face, out of focus face"
+            "unclear face, hazy face, soft focus face, out of focus face, "
+            # CRITICAL: Prevent disproportionately large heads (MAIN FIX FOR ISSUE)
+            "oversized head, giant head, huge head, disproportionately large head, "
+            "big head, enlarged head, head too big, head too large, "
+            "tiny body, miniature body, small body relative to head, "
+            "head bigger than body, head-body proportion mismatch, "
+            "doll proportions, bobblehead, caricature proportions, "
+            "zoomed in face, extreme close-up, only head and shoulders, "
+            "cropped body, partial body, missing body, headshot only, "
+            "portrait crop, tight crop, head fills frame, face fills frame"
         )
     elif image_type == "object":
         # Enhanced negative prompt for objects to prevent multiple objects or multiple views

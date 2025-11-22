@@ -91,8 +91,10 @@ def get_character_variation_suffix(variation_index: int) -> str:
         Suffix string describing camera angle/pose for this variation
     """
     if variation_index == 0:
-        # Base variation: three-quarter body shot (not just head/portrait to ensure proper proportions)
-        return "three-quarter body shot, head and upper body visible, neutral expression, direct gaze, natural proportions, balanced composition"
+        # Base variation: FULL BODY SHOT to ensure proper head-to-body proportions
+        # CRITICAL: Must show FULL BODY to prevent disproportionately large heads
+        # The AI tends to zoom in when you say "head and upper body" which causes proportion issues
+        return "full body standing portrait, entire body from head to feet visible, full-length shot, standing pose, neutral expression, direct gaze, natural human proportions, balanced composition, normal head size relative to body, proper anatomical proportions"
     elif variation_index == 1:
         # Variation 1: profile view
         return "SAME PERSON, profile view from left side, slight smile, side angle, EXACT SAME FEATURES"
@@ -200,16 +202,17 @@ def build_character_features_block(character: Optional[Character]) -> str:
         # This ensures reference images match the character descriptions exactly
         # Emphasize realism and photography for lifelike results
         # Note: Realism keywords are added at prompt start, not here to avoid redundancy
+        # CRITICAL: Include body type and height BEFORE anatomy keywords to establish scale reference
         features_block = (
             f"{char_label}: "
+            f"Build: {features.build}. "  # MOVED TO START to establish scale first
             f"Hair: {features.hair}. "
             f"Face: {face_description}. "
             f"Eyes: {features.eyes}. "
             f"Clothing: {features.clothing}. "
             f"Accessories: {features.accessories}. "
-            f"Build: {features.build}. "
             f"Age: {features.age}. "
-            f"Anatomically correct human, proper human anatomy, natural body proportions, balanced head-to-body ratio, two arms, two legs, normal head size"
+            f"FULL BODY visible from head to feet, entire body in frame, standing full-length portrait, anatomically correct human, proper human anatomy, natural body proportions, normal head size relative to body, balanced head-to-body ratio, realistic human scale, two arms, two legs"
         )
         return features_block
     
@@ -287,8 +290,8 @@ def synthesize_prompt(
     # For character images: START with strong realism keywords (order matters in SDXL)
     if image_type == "character":
         # Put realism FIRST to override any style tendencies
-        # Balance face detail with proper body proportions to avoid disproportionately large heads
-        fragments.append("photorealistic photograph of a real person, hyperrealistic, lifelike human, natural body proportions, proper human anatomy, balanced head-to-body ratio, sharp facial features, professional photography quality")
+        # CRITICAL: Emphasize FULL BODY and PROPER PROPORTIONS to avoid disproportionately large heads
+        fragments.append("photorealistic photograph of a real person, hyperrealistic, lifelike human, FULL BODY SHOT, entire body visible from head to feet, natural body proportions, proper human anatomy, normal head size, balanced head-to-body ratio, anatomically correct proportions, professional full-length portrait photography")
     
     # For character images, use enhanced character features if available
     # CRITICAL: Always prefer structured features from scene planner over raw description
@@ -330,18 +333,19 @@ def synthesize_prompt(
     # Add style information (for characters, this reinforces realism)
     if image_type == "character":
         # For characters: emphasize photography and realism with proper body proportions
-        # Balance face detail with body proportions to prevent disproportionately large heads
+        # CRITICAL: Use WIDE-ANGLE lens to capture full body and prevent head zoom-in
         style_fragments = [
-            "professional photography, natural body proportions, anatomically correct proportions",
+            "professional full-length photography, natural body proportions, anatomically correct proportions",
+            "full body portrait, standing pose, entire body visible from head to feet",
             "natural lighting, studio quality",
             f"mood: {mood}",
             f"{color_palette_str} color tones",
-            "DSLR camera, 50mm lens, f/4 aperture, medium depth of field",
+            "DSLR camera, 35mm wide-angle lens, f/4 aperture, full-body framing, medium depth of field",  # Changed from 50mm to 35mm wide-angle
             "natural skin texture, realistic skin pores, natural colors",
             "highly detailed, professional quality, 4K, sharp focus, crisp details",
             "sharp facial features, clear face definition, no face blur, no face distortion",
             "preserve exact facial structure, consistent face, no face warping",
-            "normal head size, proportional head to body, natural human proportions"
+            "normal head size, proportional head to body, natural human proportions, realistic human scale"
         ]
     else:
         # For scenes: use scene plan style
