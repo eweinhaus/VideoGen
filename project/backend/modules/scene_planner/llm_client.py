@@ -644,7 +644,7 @@ def _build_user_prompt(
     Build user prompt with audio context and clip boundaries.
     
     Args:
-        user_prompt: User's creative prompt (50-1500 characters)
+        user_prompt: User's creative prompt (50-3000 characters)
         audio_data: AudioAnalysis with structure and boundaries
         
     Returns:
@@ -757,7 +757,7 @@ async def generate_scene_plan(
     
     Args:
         job_id: Job ID for cost tracking
-        user_prompt: User's creative prompt (50-1500 characters)
+        user_prompt: User's creative prompt (50-3000 characters)
         audio_data: AudioAnalysis with BPM, mood, structure, boundaries
         director_knowledge: Director knowledge base text
         

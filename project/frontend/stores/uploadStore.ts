@@ -124,7 +124,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   setUserPrompt: (prompt: string) => {
     set({ userPrompt: prompt })
     const { errors } = get()
-    if (prompt.length >= 50 && prompt.length <= 500) {
+    if (prompt.length >= 50 && prompt.length <= 3000) {
       set({ errors: { ...errors, prompt: undefined } })
     }
   },
@@ -164,8 +164,8 @@ export const uploadStore = create<UploadState>((set, get) => ({
     // Validate prompt
     if (userPrompt.length < 50) {
       errors.prompt = "Prompt must be at least 50 characters"
-    } else if (userPrompt.length > 500) {
-      errors.prompt = "Prompt must be at most 500 characters"
+    } else if (userPrompt.length > 3000) {
+      errors.prompt = "Prompt must be at most 3000 characters"
     }
 
     set({ errors })

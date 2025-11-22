@@ -29,7 +29,7 @@ async def process_scene_planning(
     
     Args:
         job_id: Job ID
-        user_prompt: User's creative prompt (50-1500 characters)
+        user_prompt: User's creative prompt (50-3000 characters)
         audio_data: AudioAnalysis from Module 3 (Audio Parser)
         
     Returns:
@@ -48,7 +48,7 @@ async def process_scene_planning(
             raise ValidationError(f"Invalid job_id: {job_id}", job_id=job_id)
         
         # Validate prompt
-        validate_prompt(user_prompt, min_length=50, max_length=1500)
+        validate_prompt(user_prompt, min_length=50, max_length=3000)
         
         if not audio_data:
             raise ValidationError("audio_data is required", job_id=job_id)
