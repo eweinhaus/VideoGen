@@ -116,6 +116,9 @@ async def _optimize_batch(
         return None
     
     # Retry logic: try up to 2 times, return None on final failure
+    # Track if we need to use max tokens due to truncation
+    use_max_tokens = False
+    
     for attempt in range(2):
         try:
             client = _get_client()
@@ -130,15 +133,23 @@ async def _optimize_batch(
                     "model": model,
                     "batch_size": batch_size,
                     "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                    "attempt": attempt + 1,
+                    "using_max_tokens": use_max_tokens,
                 },
             )
             
             system_prompt = _build_system_prompt(style_keywords, batch_size)
             user_payload = _build_user_payload(batch_prompts)
             
-            # Calculate max_tokens for this batch (roughly 100 tokens per prompt + overhead)
-            estimated_tokens = max(2000, batch_size * 100 + 500)
-            max_tokens = min(estimated_tokens, 8000)
+            # Calculate max_tokens for this batch
+            # Each prompt can be up to 500 words (~650 tokens), plus JSON structure overhead
+            # For 15 clips: 15 * 650 = 9750 tokens for prompts + ~2000 for JSON = ~12k minimum
+            # Use higher estimate to avoid truncation
+            if use_max_tokens:
+                max_tokens = 16000  # Use maximum on retry after truncation
+            else:
+                estimated_tokens = max(12000, batch_size * 700 + 2000)
+                max_tokens = min(estimated_tokens, 16000)  # Cap at 16k for gpt-4o
             
             response = await client.chat.completions.create(
                 model=model,
@@ -153,6 +164,8 @@ async def _optimize_batch(
             )
             
             content = response.choices[0].message.content
+            finish_reason = response.choices[0].finish_reason
+            
             if not content:
                 logger.warning(
                     "LLM returned empty response for batch",
@@ -163,7 +176,76 @@ async def _optimize_batch(
                     continue
                 return None
             
-            payload = json.loads(content)
+            # Check if response was truncated
+            if finish_reason == "length":
+                logger.warning(
+                    "LLM response truncated (hit max_tokens limit)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                        "max_tokens": max_tokens,
+                        "content_length": len(content),
+                    },
+                )
+                # Retry with higher max_tokens if we have attempts left
+                if attempt < 1:
+                    logger.info(
+                        "Retrying batch with higher max_tokens",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                            "old_max_tokens": max_tokens,
+                            "new_max_tokens": 16000,
+                        },
+                    )
+                    # Mark to use max tokens on retry
+                    use_max_tokens = True
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                # If no retries left, try to parse what we have (will likely fail gracefully)
+            
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError as json_err:
+                # Check if error suggests truncation (unterminated string, unexpected EOF, etc.)
+                error_str = str(json_err).lower()
+                is_truncation = (
+                    finish_reason == "length" or
+                    "unterminated" in error_str or
+                    "unexpected eof" in error_str or
+                    (content and not content.rstrip().endswith("}") and not content.rstrip().endswith("]"))
+                )
+                
+                logger.warning(
+                    "Failed to parse LLM JSON response",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                        "error": str(json_err),
+                        "finish_reason": finish_reason,
+                        "content_length": len(content),
+                        "likely_truncation": is_truncation,
+                    },
+                )
+                # If truncated and we have retries, retry with maximum max_tokens
+                if is_truncation and attempt < 1:
+                    logger.info(
+                        "Retrying with maximum max_tokens due to JSON truncation",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_indices": f"{first_clip_idx}-{last_clip_idx}",
+                            "old_max_tokens": max_tokens,
+                            "finish_reason": finish_reason,
+                        },
+                    )
+                    use_max_tokens = True
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                # Otherwise, retry or fail
+                if attempt < 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                return None
             prompts = payload.get("prompts")
             
             if not isinstance(prompts, list) or len(prompts) != batch_size:
