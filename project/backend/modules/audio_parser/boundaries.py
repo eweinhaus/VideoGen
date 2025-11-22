@@ -148,7 +148,9 @@ def generate_boundaries(
             return _create_equal_segments(total_duration, 3)
         
         logger.info(f"No beats detected, created {len(boundaries)} tempo-based boundaries")
-        return boundaries[:max_clips]
+        # CRITICAL: Do NOT slice to max_clips here - we need full coverage
+        # max_clips is only a soft limit during generation, not a hard cap that leaves gaps
+        return boundaries
     
     # Normal case: Beat-aligned boundaries
     # PHASE 2.4: Use content-based duration selection
@@ -496,7 +498,9 @@ def generate_boundaries(
             boundaries = [last_boundary]
     
     logger.info(f"Generated {len(boundaries)} beat-aligned clip boundaries")
-    return boundaries[:max_clips]
+    # CRITICAL: Do NOT slice to max_clips here - we need full coverage
+    # max_clips is only a soft limit during generation, not a hard cap that leaves gaps
+    return boundaries
 
 
 def _create_equal_segments(duration: float, num_segments: int) -> List[ClipBoundary]:
@@ -1205,7 +1209,10 @@ def generate_boundaries_with_breakpoints(
         f"durations: {[f'{b.duration:.1f}s' for b in validated_boundaries]})"
     )
     
-    return validated_boundaries[:max_clips]
+    # CRITICAL: Do NOT slice to max_clips here - we need full coverage
+    # max_clips is only a soft limit during generation, not a hard cap that leaves gaps
+    # The continuation loop ensures full coverage, which may exceed max_clips
+    return validated_boundaries
 
 
 def validate_boundaries(
