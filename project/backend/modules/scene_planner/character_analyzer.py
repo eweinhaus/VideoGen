@@ -35,6 +35,9 @@ def analyze_clips_for_implicit_characters(
 
     Scans all clip visual descriptions for mentions of character roles (bartender, crowd, etc.)
     and generates character profiles for any that don't already exist.
+    
+    PRIORITY: Only creates background characters if they don't conflict with main characters.
+    Main characters (from LLM/user input) always take priority over auto-generated background characters.
 
     Args:
         clip_scripts: List of ClipScript objects with visual descriptions
@@ -46,6 +49,9 @@ def analyze_clips_for_implicit_characters(
     # Get existing character IDs and roles
     existing_ids = {char.id for char in existing_characters}
     existing_roles = {char.role.lower() for char in existing_characters}
+    
+    # Get existing character names (case-insensitive) to prevent conflicts
+    existing_names = {char.name.lower() for char in existing_characters if char.name}
 
     # Scan all clips for character mentions
     character_mentions = _scan_clips_for_characters(clip_scripts)
@@ -53,13 +59,22 @@ def analyze_clips_for_implicit_characters(
     # Generate new characters for implicit roles
     new_characters = []
     for role, mention_count in character_mentions.items():
+        # PRIORITY CHECK: Skip if this role conflicts with main character names
+        # Example: If user specified "Jake the bartender", don't auto-create a bartender
+        if _conflicts_with_main_characters(role, existing_names, existing_characters):
+            logger.info(
+                f"Skipping background character '{role}' - conflicts with main character",
+                extra={"role": role, "reason": "main_character_priority"}
+            )
+            continue
+        
         # Check if we already have a character for this role
         if role in existing_roles:
             logger.debug(f"Character role '{role}' already exists, skipping")
             continue
 
         # Only create characters for roles mentioned in 2+ clips (recurring)
-        # Exception: bartender, band members always created if mentioned
+        # Exception: bartender, band members always created if mentioned (and no conflict)
         always_create = role in ["bartender", "band_guitarist", "band_drummer", "band_bassist"]
         if mention_count < 2 and not always_create:
             logger.debug(
@@ -120,6 +135,61 @@ def _scan_clips_for_characters(clip_scripts: List[ClipScript]) -> Dict[str, int]
                     character_mentions[role] = character_mentions.get(role, 0) + 1
 
     return character_mentions
+
+
+def _conflicts_with_main_characters(
+    role: str, 
+    existing_names: Set[str], 
+    existing_characters: List[Character]
+) -> bool:
+    """
+    Check if a background character role conflicts with main characters.
+    
+    This ensures main characters (explicitly mentioned by user) always take priority
+    over auto-generated background characters.
+    
+    Examples of conflicts:
+    - Role "bartender" conflicts if there's a main character named "Jake" who is a bartender
+    - Role "waiter" conflicts if there's a main character who works as a waiter
+    
+    Args:
+        role: Background character role to check (e.g., "bartender", "crowd")
+        existing_names: Set of main character names (lowercase)
+        existing_characters: List of all main Character objects
+        
+    Returns:
+        True if the role conflicts with a main character, False otherwise
+    """
+    # If there are very few main characters (≤2), don't block background characters
+    # This prevents blocking bartenders when user only specified 2 main characters
+    if len(existing_characters) <= 2:
+        return False
+    
+    # Check if role name appears in any main character's name
+    # Example: "Jake the Bartender" would conflict with role "bartender"
+    role_lower = role.lower().replace("_", " ")
+    for name in existing_names:
+        if role_lower in name or name in role_lower:
+            logger.debug(
+                f"Background role '{role}' conflicts with main character name '{name}'",
+                extra={"role": role, "conflicting_name": name}
+            )
+            return True
+    
+    # Check if any main character has this role in their description
+    for char in existing_characters:
+        if not char.description:
+            continue
+        desc_lower = char.description.lower()
+        # Check for role keywords in character description
+        if role in desc_lower or role.replace("_", " ") in desc_lower:
+            logger.debug(
+                f"Background role '{role}' conflicts with main character '{char.name}' description",
+                extra={"role": role, "character": char.name}
+            )
+            return True
+    
+    return False
 
 
 def _generate_character_id(role: str, existing_ids: Set[str]) -> str:

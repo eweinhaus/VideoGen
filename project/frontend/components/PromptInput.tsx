@@ -18,9 +18,9 @@ export function PromptInput({
   disabled,
 }: PromptInputProps) {
   const length = value.length
-  const isValid = length >= 50 && length <= 500
+  const isValid = length >= 50 && length <= 1500
   const isTooShort = length > 0 && length < 50
-  const isTooLong = length > 500
+  const isTooLong = length > 1500
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     onChange(e.target.value)
@@ -32,7 +32,7 @@ export function PromptInput({
         <Textarea
           value={value}
           onChange={handleChange}
-          placeholder="Describe your vision for the music video... (50-500 characters)"
+          placeholder="Describe your vision for the music video... (50-1500 characters)"
           disabled={disabled}
           className={cn(
             "min-h-[120px] resize-y",
@@ -48,7 +48,7 @@ export function PromptInput({
             !isValid && length === 0 && "text-muted-foreground"
           )}
         >
-          {length} / 500
+          {length} / 1500
         </div>
       </div>
 
@@ -63,7 +63,7 @@ export function PromptInput({
       {isTooLong && !error && (
         <Alert variant="destructive">
           <AlertDescription>
-            Prompt must be at most 500 characters
+            Prompt must be at most 1500 characters
           </AlertDescription>
         </Alert>
       )}

@@ -53,7 +53,7 @@ async def plan_scenes(
     
     Args:
         job_id: Job ID
-        user_prompt: User's creative prompt (50-500 characters)
+        user_prompt: User's creative prompt (50-1500 characters)
         audio_data: AudioAnalysis with BPM, mood, structure, boundaries
         
     Returns:
