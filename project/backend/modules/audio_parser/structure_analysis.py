@@ -5,12 +5,12 @@ Analyze song structure (intro/verse/chorus/bridge/outro) using chroma features a
 """
 
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 
 import librosa
 from sklearn.cluster import AgglomerativeClustering
 
-from shared.models.audio import SongStructure, ClipBoundary
+from shared.models.audio import SongStructure, ClipBoundary, Lyric
 from shared.logging import get_logger
 
 logger = get_logger("audio_parser")
@@ -881,4 +881,234 @@ def analyze_structure_from_clips(
             
             song_structure.append(segment_obj)
         return (song_structure, True)
+
+
+def analyze_segment_appropriateness(
+    segment: SongStructure,
+    audio: np.ndarray,
+    sr: int,
+    beat_timestamps: List[float],
+    lyrics: List[Lyric],
+    total_duration: float
+) -> Dict[str, Any]:
+    """
+    Analyze if a long segment (e.g., 26s) is musically appropriate.
+    
+    A long segment is appropriate if:
+    1. It has consistent energy/pattern (not a clustering failure)
+    2. It has natural musical structure (verse, chorus, etc.)
+    3. It has sufficient breakpoints for subdivision
+    4. It's not just a single repetitive pattern
+    
+    A long segment is problematic if:
+    1. Clustering failed to detect structure (all frames same label)
+    2. Very low energy variation (monotonous)
+    3. No breakpoints detected (can't be subdivided naturally)
+    4. Extremely long (>30s) without clear structure
+    
+    Args:
+        segment: SongStructure segment to analyze
+        audio: Full audio signal
+        sr: Sample rate
+        beat_timestamps: All beat timestamps
+        lyrics: All lyrics (if available)
+        total_duration: Total song duration
+        
+    Returns:
+        Dict with:
+        - is_appropriate: bool
+        - confidence: float (0.0-1.0)
+        - reasons: List[str] (why it's appropriate/problematic)
+        - metrics: Dict with analysis metrics
+    """
+    segment_duration = segment.end - segment.start
+    metrics = {}
+    reasons = []
+    
+    # Extract segment audio
+    start_idx = int(segment.start * sr)
+    end_idx = int(segment.end * sr)
+    if end_idx > len(audio):
+        end_idx = len(audio)
+    if start_idx >= end_idx:
+        # Invalid segment
+        return {
+            "is_appropriate": False,
+            "confidence": 0.0,
+            "reasons": ["Invalid segment (start >= end)"],
+            "metrics": {},
+            "segment_duration": segment_duration,
+            "recommendation": "review"
+        }
+    
+    segment_audio = audio[start_idx:end_idx]
+    
+    if len(segment_audio) == 0:
+        return {
+            "is_appropriate": False,
+            "confidence": 0.0,
+            "reasons": ["Empty segment audio"],
+            "metrics": {},
+            "segment_duration": segment_duration,
+            "recommendation": "review"
+        }
+    
+    # Metric 1: Energy variation (appropriate if has variation)
+    try:
+        rms = librosa.feature.rms(y=segment_audio)[0]
+        energy_std = float(np.std(rms))
+        energy_mean = float(np.mean(rms))
+        energy_variation = energy_std / (energy_mean + 1e-10)  # Coefficient of variation
+        metrics['energy_variation'] = energy_variation
+    except Exception as e:
+        logger.warning(f"Failed to calculate energy variation: {e}")
+        energy_variation = 0.0
+        metrics['energy_variation'] = 0.0
+    
+    # Metric 2: Spectral variation (appropriate if has harmonic changes)
+    try:
+        chroma = librosa.feature.chroma_stft(y=segment_audio, sr=sr)
+        chroma_std = float(np.std(chroma))
+        chroma_mean = float(np.mean(chroma))
+        spectral_variation = chroma_std / (chroma_mean + 1e-10)
+        metrics['spectral_variation'] = spectral_variation
+    except Exception as e:
+        logger.warning(f"Failed to calculate spectral variation: {e}")
+        spectral_variation = 0.0
+        metrics['spectral_variation'] = 0.0
+    
+    # Metric 3: Beat density (appropriate if has consistent beats)
+    beats_in_segment = [b for b in beat_timestamps if segment.start <= b <= segment.end]
+    beat_density = len(beats_in_segment) / segment_duration if segment_duration > 0 else 0
+    metrics['beat_density'] = beat_density
+    
+    # Metric 4: Breakpoint density (appropriate if has natural breakpoints)
+    # Count potential breakpoints: lyrics, energy changes, silence
+    breakpoint_count = 0
+    
+    # Lyrics breakpoints
+    if lyrics:
+        lyrics_in_segment = [l for l in lyrics 
+                            if segment.start <= l.timestamp <= segment.end]
+        # Count distinct phrases (gaps > 0.5s between words)
+        if len(lyrics_in_segment) > 1:
+            for i in range(len(lyrics_in_segment) - 1):
+                gap = lyrics_in_segment[i+1].timestamp - lyrics_in_segment[i].timestamp
+                if gap > 0.5:  # Potential phrase break
+                    breakpoint_count += 1
+    
+    # Energy breakpoints (significant changes)
+    try:
+        if len(rms) > 1:
+            rms_diff = np.diff(rms)
+            significant_changes = np.sum(np.abs(rms_diff) > (energy_mean * 0.3))
+            breakpoint_count += int(significant_changes)
+    except:
+        pass
+    
+    breakpoint_density = breakpoint_count / segment_duration if segment_duration > 0 else 0
+    metrics['breakpoint_density'] = breakpoint_density
+    
+    # Metric 5: Segment type appropriateness
+    # Long verses/chorus are more appropriate than long bridges/outros
+    type_appropriateness = {
+        "verse": 0.8,  # Verses can be long
+        "chorus": 0.7,  # Choruses can be long
+        "bridge": 0.4,  # Bridges usually shorter
+        "intro": 0.3,  # Intros usually short
+        "outro": 0.3   # Outros usually short
+    }
+    segment_type = segment.type.value if hasattr(segment.type, 'value') else segment.type
+    type_score = type_appropriateness.get(str(segment_type).lower(), 0.5)
+    metrics['type_score'] = type_score
+    
+    # Calculate appropriateness score
+    # Weighted combination of metrics
+    scores = []
+    
+    # Energy variation: higher is better (shows structure)
+    if energy_variation > 0.2:
+        scores.append(0.8)
+        reasons.append("Good energy variation detected")
+    elif energy_variation > 0.1:
+        scores.append(0.6)
+        reasons.append("Moderate energy variation")
+    else:
+        scores.append(0.3)
+        reasons.append("Low energy variation (may be monotonous)")
+    
+    # Spectral variation: higher is better
+    if spectral_variation > 0.15:
+        scores.append(0.8)
+        reasons.append("Good harmonic variation")
+    elif spectral_variation > 0.08:
+        scores.append(0.6)
+    else:
+        scores.append(0.4)
+        reasons.append("Low harmonic variation")
+    
+    # Beat density: should be reasonable (not too sparse)
+    if 1.0 <= beat_density <= 3.0:  # 60-180 BPM range
+        scores.append(0.9)
+        reasons.append("Normal beat density")
+    elif beat_density < 0.5:
+        scores.append(0.3)
+        reasons.append("Very sparse beats")
+    else:
+        scores.append(0.7)
+    
+    # Breakpoint density: higher is better (can be subdivided)
+    if breakpoint_density > 0.5:  # At least one breakpoint every 2 seconds
+        scores.append(0.9)
+        reasons.append("Good breakpoint density for subdivision")
+    elif breakpoint_density > 0.2:
+        scores.append(0.7)
+        reasons.append("Moderate breakpoint density")
+    else:
+        scores.append(0.4)
+        reasons.append("Low breakpoint density (may be hard to subdivide)")
+    
+    # Type appropriateness
+    scores.append(type_score)
+    if type_score >= 0.7:
+        reasons.append(f"Segment type '{segment_type}' typically allows longer duration")
+    else:
+        reasons.append(f"Segment type '{segment_type}' is usually shorter")
+    
+    # Duration factor: very long segments (>30s) are less appropriate
+    if segment_duration > 30.0:
+        duration_penalty = 0.3
+        reasons.append(f"Very long segment ({segment_duration:.1f}s) may indicate clustering failure")
+    elif segment_duration > 20.0:
+        duration_penalty = 0.6
+        reasons.append(f"Long segment ({segment_duration:.1f}s) - verify structure")
+    else:
+        duration_penalty = 1.0
+    
+    # Calculate final score
+    base_score = float(np.mean(scores)) if scores else 0.5
+    final_score = base_score * duration_penalty
+    confidence = final_score
+    
+    # Determine if appropriate
+    is_appropriate = confidence >= 0.6
+    
+    if not is_appropriate:
+        reasons.append(
+            f"Low appropriateness score ({confidence:.2f}) - "
+            f"consider forcing subdivision or re-clustering"
+        )
+    
+    return {
+        "is_appropriate": is_appropriate,
+        "confidence": float(confidence),
+        "reasons": reasons,
+        "metrics": metrics,
+        "segment_duration": segment_duration,
+        "recommendation": (
+            "appropriate" if is_appropriate else 
+            "force_subdivision" if segment_duration > 20.0 else
+            "review"
+        )
+    }
 
