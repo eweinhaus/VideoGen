@@ -269,6 +269,29 @@ async def generate_lipsync_clip(
             )
             video_bytes = await download_video_from_url(video_output_url)
             
+            # CRITICAL: Strip embedded audio from lipsynced video
+            # The Replicate model generates video with embedded audio (trimmed segment starting at 0:00)
+            # We need to remove this audio so the composer can use the full audio track
+            # at the correct timestamp (boundary.start to boundary.end in the full track)
+            # The video's lip movements are already synchronized correctly, we just need to remove the audio track
+            logger.info(
+                f"Stripping embedded audio from lipsynced video for clip {clip_index}",
+                extra={"job_id": str(job_id), "clip_index": clip_index}
+            )
+            try:
+                from modules.video_generator.generator import strip_audio_from_video_bytes
+                video_bytes = await strip_audio_from_video_bytes(video_bytes, job_id=job_id)
+                logger.info(
+                    f"Successfully stripped audio from lipsynced video",
+                    extra={"job_id": str(job_id), "clip_index": clip_index}
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to strip audio from lipsynced video, continuing with embedded audio: {e}",
+                    extra={"job_id": str(job_id), "clip_index": clip_index, "error": str(e)}
+                )
+                # Continue with original video_bytes - composer will handle it with -map flags
+            
             # Upload to Supabase Storage
             storage = StorageClient()
             clip_path = f"{job_id}/clip_{clip_index}_lipsync.mp4"
