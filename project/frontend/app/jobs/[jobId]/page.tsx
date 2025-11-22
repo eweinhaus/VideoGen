@@ -389,7 +389,47 @@ export default function JobProgressPage() {
         </div>
       )}
       
-      <div className="container mx-auto px-4 py-8 md:pl-[440px] md:max-w-none">
+      {/* ClipChatbot - always visible, full height on left side */}
+      <ClipChatbot
+        jobId={jobId}
+        audioUrl={job?.audioUrl ?? undefined}
+        selectedClipIndex={selectedClipIndex}
+        videoLoaded={!!job?.videoUrl}
+        onClipSelect={(clipIndex, timestamp) => {
+          // Allow undefined to clear selection
+          setSelectedClipIndex(clipIndex === undefined ? undefined : clipIndex)
+          setSelectedClipTimestamp(timestamp)
+        }}
+        onRegenerationComplete={async (newVideoUrl) => {
+          // Refresh job to get updated video URL and trigger re-render
+          try {
+            await fetchJob(jobId)
+            console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
+            
+            // Trigger ClipSelector refresh to show new thumbnails
+            setClipRefreshTrigger(prev => prev + 1)
+            console.log("✅ ClipSelector refresh triggered")
+            
+            // CRITICAL FIX: If comparison view is open for the regenerated clip,
+            // refresh it to show old vs. new (not new vs. new)
+            if (showComparison && selectedClipIndex !== undefined) {
+              // Give backend a moment to save the new version
+              setTimeout(async () => {
+                try {
+                  await handleCompare(selectedClipIndex)
+                  console.log("✅ Comparison refreshed after regeneration")
+                } catch (error) {
+                  console.error("Failed to refresh comparison after regeneration:", error)
+                }
+              }, 500)
+            }
+          } catch (error) {
+            console.error("Failed to refresh job after regeneration:", error)
+          }
+        }}
+      />
+      
+      <div className="container mx-auto px-4 py-8 md:pl-[432px] md:max-w-none">
       <div className="mb-6">
         <Button
           variant="ghost"
@@ -565,45 +605,6 @@ export default function JobProgressPage() {
               <div className="space-y-6">
                 {showVideoUI ? (
                   <>
-                    {/* Floating ClipChatbot - positioned fixed at bottom-left */}
-                    <ClipChatbot
-                      jobId={jobId}
-                      audioUrl={job?.audioUrl ?? undefined}
-                      selectedClipIndex={selectedClipIndex}
-                      onClipSelect={(clipIndex, timestamp) => {
-                        // Allow undefined to clear selection
-                        setSelectedClipIndex(clipIndex === undefined ? undefined : clipIndex)
-                        setSelectedClipTimestamp(timestamp)
-                      }}
-                      onRegenerationComplete={async (newVideoUrl) => {
-                        // Refresh job to get updated video URL and trigger re-render
-                        try {
-                          await fetchJob(jobId)
-                          console.log("✅ Regeneration complete! New video URL:", newVideoUrl)
-                          
-                          // Trigger ClipSelector refresh to show new thumbnails
-                          setClipRefreshTrigger(prev => prev + 1)
-                          console.log("✅ ClipSelector refresh triggered")
-                          
-                          // CRITICAL FIX: If comparison view is open for the regenerated clip,
-                          // refresh it to show old vs. new (not new vs. new)
-                          if (showComparison && selectedClipIndex !== undefined) {
-                            // Give backend a moment to save the new version
-                            setTimeout(async () => {
-                              try {
-                                await handleCompare(selectedClipIndex)
-                                console.log("✅ Comparison refreshed after regeneration")
-                              } catch (error) {
-                                console.error("Failed to refresh comparison after regeneration:", error)
-                              }
-                            }, 500)
-                          }
-                        } catch (error) {
-                          console.error("Failed to refresh job after regeneration:", error)
-                        }
-                      }}
-                    />
-                    
                     {/* Comparison Modal */}
                     {showComparison && comparisonData && selectedClipIndex !== undefined && (
                       <ClipComparison

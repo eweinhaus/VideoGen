@@ -58,6 +58,8 @@ interface ClipChatbotProps {
   // NEW: Shared clip selection state (synchronized with main ClipSelector)
   selectedClipIndex?: number
   onClipSelect?: (clipIndex: number, timestamp?: number) => void
+  // NEW: Whether the main video file is loaded (disables input until true)
+  videoLoaded?: boolean
 }
 
 export function ClipChatbot({
@@ -66,6 +68,7 @@ export function ClipChatbot({
   audioUrl,
   selectedClipIndex: externalSelectedClipIndex,
   onClipSelect,
+  videoLoaded = false,
 }: ClipChatbotProps) {
   // Generate unique storage key for this job (unified chat)
   const storageKey = `clip_chat_${jobId}`
@@ -714,7 +717,7 @@ export function ClipChatbot({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!input.trim() || isProcessing || selectedClipIndices.length === 0) {
+    if (!input.trim() || isProcessing || selectedClipIndices.length === 0 || !videoLoaded) {
       return
     }
 
@@ -1155,7 +1158,7 @@ export function ClipChatbot({
           clipIndex={selectedClipIndices[0]}
         />
       )}
-      <FloatingChat title="AI Assistant" jobId={jobId} defaultMinimized={true}>
+      <FloatingChat title="AI Assistant" jobId={jobId} defaultMinimized={false}>
         <div className="flex flex-col h-full" style={{ maxHeight: "calc(80vh - 60px)" }}>
         {/* Scrollable Messages Area */}
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -1300,7 +1303,7 @@ export function ClipChatbot({
               variant="default"
               size="sm"
               onClick={handleLipsync}
-              disabled={isProcessing || selectedClipIndices.length === 0}
+              disabled={isProcessing || selectedClipIndices.length === 0 || !videoLoaded}
               className={selectedClipIndices.length === 1 ? "flex-1" : "w-full"}
             >
               <Music className="h-4 w-4 mr-2" />
@@ -1479,14 +1482,20 @@ export function ClipChatbot({
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={selectedClipIndices.length > 0 ? "Enter instruction..." : "Select clips first..."}
-              disabled={isProcessing || selectedClipIndices.length === 0}
+              placeholder={
+                !videoLoaded 
+                  ? "Waiting for video generation to complete..." 
+                  : selectedClipIndices.length > 0 
+                    ? "Enter instruction..." 
+                    : "Select clips first..."
+              }
+              disabled={isProcessing || selectedClipIndices.length === 0 || !videoLoaded}
               rows={2}
               className="resize-none text-sm font-medium min-h-[60px] max-h-[120px]"
             />
             <Button
               type="submit"
-              disabled={!input.trim() || isProcessing || selectedClipIndices.length === 0}
+              disabled={!input.trim() || isProcessing || selectedClipIndices.length === 0 || !videoLoaded}
               size="sm"
               className="h-[60px] px-4 self-end"
             >
