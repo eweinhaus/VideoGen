@@ -20,6 +20,11 @@ FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT", "300"))  # 5 minutes
 FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "fast")  # Fast encoding for both dev and prod
 FFMPEG_CRF = int(os.getenv("FFMPEG_CRF", "23"))  # High quality
 
+# Concurrency control for parallel FFmpeg processing
+# Limits number of concurrent normalizations to prevent resource exhaustion
+# With 5 concurrent processes × 4 threads each = 20 threads max (safe for most systems)
+MAX_CONCURRENT_NORMALIZATIONS = int(os.getenv("MAX_CONCURRENT_NORMALIZATIONS", "5"))
+
 # Video output settings
 OUTPUT_WIDTH = 1920
 OUTPUT_HEIGHT = 1080

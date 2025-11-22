@@ -266,6 +266,7 @@ async def process(
         settings_dict: dict,
         environment: str,
         aspect_ratio: str,
+        job_id: UUID,
         progress_callback: Optional[Callable] = None,
         event_publisher: Optional[Callable] = None
     ) -> Optional[Clip]:
@@ -284,6 +285,7 @@ async def process(
             settings_dict: Generation settings
             environment: Environment name
             aspect_ratio: Aspect ratio for video
+            job_id: Job ID for logging and tracking
             progress_callback: Optional progress callback
             event_publisher: Optional event publisher
             
@@ -872,6 +874,7 @@ async def process(
                                     settings_dict=settings_dict,
                                     environment=environment,
                                     aspect_ratio=aspect_ratio,
+                                    job_id=job_id,
                                     progress_callback=progress_callback,
                                     event_publisher=event_publisher
                                 )
@@ -1218,6 +1221,7 @@ async def process(
                             settings_dict=settings_dict,
                             environment=environment,
                             aspect_ratio=aspect_ratio,
+                            job_id=job_id,
                             progress_callback=None,  # Skip progress updates for batch retries
                             event_publisher=None  # Skip events for batch retries
                         )

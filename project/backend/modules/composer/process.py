@@ -25,7 +25,7 @@ from api_gateway.services.sse_manager import broadcast_event
 from shared.database import DatabaseClient
 from shared.redis_client import RedisClient
 
-from .config import VIDEO_OUTPUTS_BUCKET, get_output_dimensions_from_aspect_ratio
+from .config import VIDEO_OUTPUTS_BUCKET, get_output_dimensions_from_aspect_ratio, MAX_CONCURRENT_NORMALIZATIONS
 from .utils import check_ffmpeg_available, get_video_duration
 from .downloader import download_all_clips, download_audio
 from .normalizer import normalize_clip
@@ -99,6 +99,39 @@ async def publish_progress(job_id: UUID, message: str, progress: Optional[int] =
             await redis_client.client.delete(cache_key)
         except Exception as e:
             logger.warning(f"Failed to update progress in database: {e}", extra={"job_id": str(job_id)})
+
+
+async def normalize_clip_with_concurrency_limit(
+    semaphore: asyncio.Semaphore,
+    clip_bytes: bytes,
+    clip_index: int,
+    temp_dir: Path,
+    job_id: UUID,
+    output_width: int,
+    output_height: int
+) -> Path:
+    """
+    Wrapper for normalize_clip that uses a semaphore to limit concurrency.
+    
+    This prevents resource exhaustion when processing many clips by ensuring
+    only a limited number of FFmpeg processes run simultaneously.
+    
+    Args:
+        semaphore: Asyncio semaphore for concurrency control
+        clip_bytes: Clip file bytes
+        clip_index: Clip index for naming
+        temp_dir: Temporary directory for output
+        job_id: Job ID for logging
+        output_width: Target output width in pixels
+        output_height: Target output height in pixels
+        
+    Returns:
+        Path to normalized clip file
+    """
+    async with semaphore:
+        return await normalize_clip(
+            clip_bytes, clip_index, temp_dir, job_id, output_width, output_height
+        )
 
 
 async def process(
@@ -264,15 +297,32 @@ async def process(
                 }
             )
             
-            # Step 3: Normalize all clips - 88-91% (PARALLEL OPTIMIZATION)
+            # Step 3: Normalize all clips - 88-91% (PARALLEL OPTIMIZATION WITH CONCURRENCY LIMIT)
             # Performance: Parallel normalization reduces time from ~30s (sequential) to ~10-15s (parallel)
             # for 6 clips. All clips are independent operations with separate temp files, so safe to parallelize.
+            # IMPORTANT: Uses semaphore to limit concurrency and prevent resource exhaustion with many clips.
+            # With MAX_CONCURRENT_NORMALIZATIONS=5, system runs max 5 FFmpeg processes × 4 threads = 20 threads.
             await publish_progress(job_id_uuid, f"Normalizing clips to {output_width}x{output_height}, 30fps...", 88)
             step_start = time.time()
-            # Parallel normalization for better performance (30-50% faster)
+            
+            # Create semaphore to limit concurrent normalizations
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
+            
+            # Log concurrency settings
+            logger.info(
+                f"Starting clip normalization with concurrency limit: {MAX_CONCURRENT_NORMALIZATIONS} concurrent processes",
+                extra={
+                    "job_id": str(job_id_uuid),
+                    "clips_count": len(clip_bytes_list),
+                    "max_concurrent": MAX_CONCURRENT_NORMALIZATIONS,
+                    "ffmpeg_threads": os.getenv("FFMPEG_THREADS", "4")
+                }
+            )
+            
+            # Parallel normalization with concurrency control (prevents resource exhaustion)
             normalize_tasks = [
-                normalize_clip(
-                    clip_bytes, clip.clip_index, temp_dir, job_id_uuid, output_width, output_height
+                normalize_clip_with_concurrency_limit(
+                    semaphore, clip_bytes, clip.clip_index, temp_dir, job_id_uuid, output_width, output_height
                 )
                 for clip_bytes, clip in zip(clip_bytes_list, sorted_clips)
             ]
@@ -281,11 +331,13 @@ async def process(
             await publish_progress(job_id_uuid, "Clips normalized", 91)
             
             logger.info(
-                f"Normalized {len(normalized_paths)} clips in {timings['normalize_clips']:.2f}s",
+                f"Normalized {len(normalized_paths)} clips in {timings['normalize_clips']:.2f}s "
+                f"({timings['normalize_clips']/len(normalized_paths):.2f}s per clip avg)",
                 extra={
                     "job_id": str(job_id_uuid),
                     "clips_count": len(normalized_paths),
-                    "normalize_time": timings["normalize_clips"]
+                    "normalize_time": timings["normalize_clips"],
+                    "avg_time_per_clip": timings["normalize_clips"] / len(normalized_paths) if len(normalized_paths) > 0 else 0
                 }
             )
             
