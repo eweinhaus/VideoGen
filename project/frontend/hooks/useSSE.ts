@@ -142,11 +142,18 @@ export function useSSE(
 
     eventSource.addEventListener("error", (e: MessageEvent) => {
       try {
-        const data = JSON.parse(e.data)
-        handlersRef.current.onError?.(data)
+        // Only parse if data exists and is not empty
+        if (e.data && typeof e.data === 'string' && e.data.trim() !== '') {
+          const data = JSON.parse(e.data)
+          handlersRef.current.onError?.(data)
+        } else {
+          // No data in error event - this is likely a connection error (handled by onerror)
+          // Don't try to parse undefined/empty data
+          console.debug("Error event received without data (likely connection error)")
+        }
       } catch (err) {
         // If parsing fails, it might be a connection error
-        console.error("Failed to parse error event:", err)
+        console.error("Failed to parse error event:", err, "Data:", e.data)
       }
     })
 
