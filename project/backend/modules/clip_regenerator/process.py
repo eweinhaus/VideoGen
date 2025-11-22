@@ -6,6 +6,7 @@ Handles template matching, LLM modification, and video generation.
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 from uuid import UUID
@@ -263,7 +264,8 @@ async def save_clip_version_to_database(
     regeneration_result: RegenerationResult,
     user_instruction: str,
     db: Optional[DatabaseClient] = None,
-    raise_on_error: bool = True
+    raise_on_error: bool = True,
+    version_number: Optional[int] = None
 ) -> int:
     """
     Save clip version to clip_versions table.
@@ -272,7 +274,7 @@ async def save_clip_version_to_database(
     - Saving original clip as version 1 (if not already saved)
     - Saving regenerated clip as new version
     - Retry logic for database operations
-    - Version number calculation
+    - Version number calculation (or use provided version_number)
     - Marking versions as current/not current
     
     Args:
@@ -284,6 +286,7 @@ async def save_clip_version_to_database(
         user_instruction: User's instruction that triggered regeneration
         db: Optional DatabaseClient (creates new if not provided)
         raise_on_error: If True, raise error on failure. If False, log and return 0.
+        version_number: Optional version number to use (if provided, uses this instead of recalculating)
         
     Returns:
         Version number of saved clip (0 if failed and raise_on_error=False)
@@ -414,23 +417,38 @@ async def save_clip_version_to_database(
         return 0
     
     # Step 2: Save the regenerated clip as a new version WITH RETRY LOGIC
-    # Get the next version number
-    version_result_for_save = await db.table("clip_versions").select("version_number").eq(
-        "job_id", str(job_id)
-    ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
-    
-    next_version = 2  # Default to version 2 if no versions exist
-    if version_result_for_save.data and len(version_result_for_save.data) > 0:
-        next_version = version_result_for_save.data[0].get("version_number", 1) + 1
-    
-    logger.info(
-        f"Determined next version number: {next_version} for saving to clip_versions",
-        extra={
-            "job_id": str(job_id),
-            "clip_index": clip_index,
-            "next_version": next_version
-        }
-    )
+    # Use provided version_number if available, otherwise calculate it
+    if version_number is not None:
+        # Use the provided version number (ensures consistency with file path)
+        next_version = version_number
+        logger.info(
+            f"Using provided version number: {next_version} for saving to clip_versions",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "next_version": next_version,
+                "source": "provided_parameter"
+            }
+        )
+    else:
+        # Calculate next version number (fallback for backward compatibility)
+        version_result_for_save = await db.table("clip_versions").select("version_number").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+        
+        next_version = 2  # Default to version 2 if no versions exist
+        if version_result_for_save.data and len(version_result_for_save.data) > 0:
+            next_version = version_result_for_save.data[0].get("version_number", 1) + 1
+        
+        logger.info(
+            f"Determined next version number: {next_version} for saving to clip_versions",
+            extra={
+                "job_id": str(job_id),
+                "clip_index": clip_index,
+                "next_version": next_version,
+                "source": "calculated"
+            }
+        )
     
     # Mark all previous versions as not current
     await db.table("clip_versions").update({"is_current": False}).eq(
@@ -479,6 +497,140 @@ async def save_clip_version_to_database(
             )
             break  # Success!
         except Exception as e:
+            error_str = str(e)
+            error_lower = error_str.lower()
+            
+            # Check if it's a duplicate key error (race condition)
+            is_duplicate_key = (
+                "23505" in error_str or  # PostgreSQL duplicate key error code
+                "duplicate key" in error_lower or
+                "unique constraint" in error_lower
+            )
+            
+            if is_duplicate_key and attempt < version_save_max_retries:
+                # Race condition: another process inserted this version number
+                # Check if the existing version has the same URL (idempotent case)
+                logger.warning(
+                    f"⚠️ Duplicate key error for version {next_version} (race condition detected, attempt {attempt})",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "version_number": next_version,
+                        "attempt": attempt,
+                        "error": error_str
+                    }
+                )
+                
+                try:
+                    # Check if existing version has the same URL (idempotent)
+                    existing_result = await db.table("clip_versions").select("*").eq(
+                        "job_id", str(job_id)
+                    ).eq("clip_index", clip_index).eq("version_number", next_version).limit(1).execute()
+                    
+                    if existing_result.data and len(existing_result.data) > 0:
+                        existing_version = existing_result.data[0]
+                        existing_url = existing_version.get("video_url")
+                        
+                        if existing_url == new_clip.video_url:
+                            # Idempotent case: same version number and same URL
+                            # Just update is_current flags and return
+                            logger.info(
+                                f"✅ Version {next_version} already exists with same URL (idempotent), updating is_current flags",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_index,
+                                    "version_number": next_version,
+                                    "video_url": new_clip.video_url
+                                }
+                            )
+                            
+                            # Mark all previous versions as not current
+                            await db.table("clip_versions").update({"is_current": False}).eq(
+                                "job_id", str(job_id)
+                            ).eq("clip_index", clip_index).execute()
+                            
+                            # Mark this version as current
+                            await db.table("clip_versions").update({"is_current": True}).eq(
+                                "job_id", str(job_id)
+                            ).eq("clip_index", clip_index).eq("version_number", next_version).execute()
+                            
+                            # Success - return the version number
+                            return next_version
+                        else:
+                            # Conflict: same version number but different URL
+                            # This can happen in race conditions where two processes calculate the same version
+                            # Since we just generated this clip, we should update the existing record with our URL
+                            logger.warning(
+                                f"⚠️ Version {next_version} exists with different URL - updating with latest URL (race condition)",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_index,
+                                    "existing_url": existing_url,
+                                    "new_url": new_clip.video_url,
+                                    "version_number": next_version
+                                }
+                            )
+                            
+                            # Mark all previous versions as not current
+                            await db.table("clip_versions").update({"is_current": False}).eq(
+                                "job_id", str(job_id)
+                            ).eq("clip_index", clip_index).execute()
+                            
+                            # Update the existing version with our new data (we're the latest)
+                            await db.table("clip_versions").update({
+                                "video_url": new_clip.video_url,
+                                "thumbnail_url": thumbnail_url,
+                                "prompt": regeneration_result.modified_prompt,
+                                "user_instruction": user_instruction,
+                                "cost": float(regeneration_result.cost) if regeneration_result.cost else 0.0,
+                                "duration": float(new_clip.actual_duration) if new_clip.actual_duration else None,
+                                "is_current": True
+                            }).eq(
+                                "job_id", str(job_id)
+                            ).eq("clip_index", clip_index).eq("version_number", next_version).execute()
+                            
+                            logger.info(
+                                f"✅ Updated existing version {next_version} with new URL (resolved race condition)",
+                                extra={
+                                    "job_id": str(job_id),
+                                    "clip_index": clip_index,
+                                    "version_number": next_version,
+                                    "video_url": new_clip.video_url
+                                }
+                            )
+                            
+                            # Success - return the version number
+                            return next_version
+                    else:
+                        # Version doesn't exist (shouldn't happen, but handle it)
+                        logger.warning(
+                            f"⚠️ Duplicate key error but version {next_version} not found - retrying",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_index,
+                                "version_number": next_version,
+                                "attempt": attempt
+                            }
+                        )
+                        await asyncio.sleep(version_save_retry_delay * attempt)
+                        continue
+                        
+                except Exception as check_error:
+                    # Error checking existing version - retry
+                    logger.warning(
+                        f"⚠️ Error checking existing version, retrying: {str(check_error)}",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "version_number": next_version,
+                            "attempt": attempt,
+                            "check_error": str(check_error)
+                        }
+                    )
+                    await asyncio.sleep(version_save_retry_delay * attempt)
+                    continue
+            
+            # Not a duplicate key error, or last attempt
             if attempt < version_save_max_retries:
                 logger.warning(
                     f"⚠️ Failed to save regenerated version (attempt {attempt}/{version_save_max_retries}), retrying...",
@@ -909,22 +1061,41 @@ async def regenerate_clip(
         
         # Save clip version to database (for clip compare feature)
         try:
-            version_number = await save_clip_version_to_database(
+            # Extract version number from the lipsynced clip URL to ensure consistency
+            # URL format: .../clip_{index}_v{version}.mp4
+            version_from_url = None
+            if lipsynced_clip.video_url:
+                version_match = re.search(r'clip_\d+_v(\d+)\.mp4', lipsynced_clip.video_url)
+                if version_match:
+                    version_from_url = int(version_match.group(1))
+                    logger.info(
+                        f"Extracted version number {version_from_url} from lipsynced clip URL",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "video_url": lipsynced_clip.video_url,
+                            "extracted_version": version_from_url
+                        }
+                    )
+            
+            saved_version_number = await save_clip_version_to_database(
                 job_id=job_id,
                 clip_index=clip_index,
                 old_clip=original_clip,
                 new_clip=lipsynced_clip,
                 regeneration_result=regeneration_result,
                 user_instruction=user_instruction,
-                raise_on_error=False  # Don't fail regeneration if version save fails
+                raise_on_error=False,  # Don't fail regeneration if version save fails
+                version_number=version_from_url  # Use version number from file path
             )
-            if version_number > 0:
+            if saved_version_number > 0:
                 logger.info(
-                    f"Saved lipsync regeneration to clip_versions as version {version_number}",
+                    f"Saved lipsync regeneration to clip_versions as version {saved_version_number}",
                     extra={
                         "job_id": str(job_id),
                         "clip_index": clip_index,
-                        "version_number": version_number,
+                        "version_number": saved_version_number,
+                        "file_path_version": version_from_url,
                         "template_used": "lipsync"
                     }
                 )
@@ -1504,23 +1675,68 @@ async def regenerate_clip(
                         break
             
             if old_clip:
-                version_number = await save_clip_version_to_database(
+                # Extract version number from the new clip URL to ensure consistency
+                # This handles cases where generate_video_clip incremented the version due to file existence check
+                version_from_url = None
+                if new_clip.video_url:
+                    version_match = re.search(r'clip_\d+_v(\d+)\.mp4', new_clip.video_url)
+                    if version_match:
+                        version_from_url = int(version_match.group(1))
+                        logger.info(
+                            f"Extracted version number {version_from_url} from generated clip URL",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_index,
+                                "video_url": new_clip.video_url,
+                                "extracted_version": version_from_url,
+                                "calculated_version": next_version
+                            }
+                        )
+                    else:
+                        # No version pattern in URL - might be original (v1) or error
+                        logger.warning(
+                            f"No version pattern found in clip URL, using calculated version {next_version}",
+                            extra={
+                                "job_id": str(job_id),
+                                "clip_index": clip_index,
+                                "video_url": new_clip.video_url,
+                                "calculated_version": next_version
+                            }
+                        )
+                        version_from_url = next_version
+                else:
+                    # No URL - use calculated version as fallback
+                    logger.warning(
+                        f"No video URL in new_clip, using calculated version {next_version}",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "calculated_version": next_version
+                        }
+                    )
+                    version_from_url = next_version
+                
+                # Use the version number from the actual file path (may differ from calculated if incremented)
+                saved_version_number = await save_clip_version_to_database(
                     job_id=job_id,
                     clip_index=clip_index,
                     old_clip=old_clip,
                     new_clip=new_clip,
                     regeneration_result=regeneration_result,
                     user_instruction=user_instruction,
-                    raise_on_error=False  # Don't fail regeneration if version save fails
+                    raise_on_error=False,  # Don't fail regeneration if version save fails
+                    version_number=version_from_url  # Use version number from actual file path
                 )
-                if version_number > 0:
+                if saved_version_number > 0:
                     logger.info(
-                        f"Saved regeneration to clip_versions as version {version_number}",
+                        f"Saved regeneration to clip_versions as version {saved_version_number}",
                         extra={
                             "job_id": str(job_id),
                             "clip_index": clip_index,
-                            "version_number": version_number,
-                            "template_used": regeneration_result.template_used
+                            "version_number": saved_version_number,
+                            "template_used": regeneration_result.template_used,
+                            "file_path_version": version_from_url,
+                            "calculated_version": next_version
                         }
                     )
             else:
@@ -1630,22 +1846,31 @@ async def regenerate_clip(
                                     break
                         
                         if old_clip:
-                            version_number = await save_clip_version_to_database(
+                            # Extract version number from the new clip URL to ensure consistency
+                            version_from_url = None
+                            if new_clip.video_url:
+                                version_match = re.search(r'clip_\d+_v(\d+)\.mp4', new_clip.video_url)
+                                if version_match:
+                                    version_from_url = int(version_match.group(1))
+                            
+                            saved_version_number = await save_clip_version_to_database(
                                 job_id=job_id,
                                 clip_index=clip_index,
                                 old_clip=old_clip,
                                 new_clip=new_clip,
                                 regeneration_result=regeneration_result,
                                 user_instruction=user_instruction,
-                                raise_on_error=False  # Don't fail regeneration if version save fails
+                                raise_on_error=False,  # Don't fail regeneration if version save fails
+                                version_number=version_from_url  # Use version number from file path
                             )
-                            if version_number > 0:
+                            if saved_version_number > 0:
                                 logger.info(
-                                    f"Saved regeneration to clip_versions as version {version_number} (after content moderation retry)",
+                                    f"Saved regeneration to clip_versions as version {saved_version_number} (after content moderation retry)",
                                     extra={
                                         "job_id": str(job_id),
                                         "clip_index": clip_index,
-                                        "version_number": version_number,
+                                        "version_number": saved_version_number,
+                                        "file_path_version": version_from_url,
                                         "template_used": regeneration_result.template_used
                                     }
                                 )
@@ -2015,6 +2240,22 @@ async def regenerate_clip_with_recomposition(
     # (job_stages may already have a regenerated clip from a previous regeneration)
     original_clip = clips.clips[clip_position]
     
+    # Extract version number from the new clip URL to ensure consistency
+    version_from_url = None
+    if new_clip.video_url:
+        version_match = re.search(r'clip_\d+_v(\d+)\.mp4', new_clip.video_url)
+        if version_match:
+            version_from_url = int(version_match.group(1))
+            logger.info(
+                f"Extracted version number {version_from_url} from new clip URL for recomposition",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "video_url": new_clip.video_url,
+                    "extracted_version": version_from_url
+                }
+            )
+    
     db = DatabaseClient()
     version_number = await save_clip_version_to_database(
             job_id=job_id,
@@ -2024,7 +2265,8 @@ async def regenerate_clip_with_recomposition(
         regeneration_result=regeneration_result,
         user_instruction=user_instruction,
         db=db,
-        raise_on_error=True  # For recomposition path, we want to fail if version save fails
+        raise_on_error=True,  # For recomposition path, we want to fail if version save fails
+        version_number=version_from_url  # Use version number from file path
     )
     
     logger.info(
@@ -2438,6 +2680,11 @@ async def recompose_after_regenerations(
         }
     )
     
+    # CRITICAL: Wait a brief moment to ensure all database saves from parallel regenerations are committed
+    # This prevents race conditions where we query before all is_current flags are updated
+    import asyncio
+    await asyncio.sleep(0.5)  # Small delay to ensure database commits complete
+    
     # Load latest clips (including all regenerated versions)
     # CRITICAL FIX: Use load_clips_with_latest_versions to merge all regenerated versions
     # This ensures ALL previously regenerated clips maintain their latest versions
@@ -2458,6 +2705,12 @@ async def recompose_after_regenerations(
             )
             raise ValidationError(f"Failed to load clips for job {job_id}")
     
+    # Verify that all regenerated clips are using their latest versions
+    regenerated_clip_urls = {}
+    for clip in clips.clips:
+        if clip.clip_index in regenerated_clip_indices:
+            regenerated_clip_urls[clip.clip_index] = clip.video_url
+    
     logger.info(
         f"Loaded clips for recomposition with latest versions merged",
         extra={
@@ -2465,9 +2718,40 @@ async def recompose_after_regenerations(
             "total_clips": len(clips.clips),
             "regenerated_clip_indices": regenerated_clip_indices,
             "regenerated_count": sum(c.metadata.get("is_regenerated", False) for c in clips.clips),
-            "clip_urls": [clip.video_url for clip in clips.clips]
+            "clip_urls": [clip.video_url for clip in clips.clips],
+            "regenerated_clip_urls": regenerated_clip_urls,
+            "clip_indices": [c.clip_index for c in clips.clips]
         }
     )
+    
+    # CRITICAL: Verify all regenerated clips are using latest versions (not originals)
+    for clip_index in regenerated_clip_indices:
+        clip = next((c for c in clips.clips if c.clip_index == clip_index), None)
+        if clip:
+            # Check if this is a versioned filename (should contain _v{number}.mp4)
+            import re
+            version_match = re.search(r'_v(\d+)\.mp4', clip.video_url or "")
+            if not version_match:
+                logger.warning(
+                    f"⚠️ Regenerated clip {clip_index} may not be using latest version (no version in URL)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "video_url": clip.video_url,
+                        "note": "This might indicate the clip is using the original version instead of regenerated version"
+                    }
+                )
+            else:
+                version_number = int(version_match.group(1))
+                logger.debug(
+                    f"✅ Clip {clip_index} using version {version_number}",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "version_number": version_number,
+                        "video_url": clip.video_url
+                    }
+                )
     
     # Load required data for Composer
     try:
@@ -2587,23 +2871,18 @@ async def recompose_after_regenerations(
             raise CompositionError(f"Recomposition failed: {str(e)}") from e
     
     # Track regeneration cost and update job
-    from modules.clip_regenerator.cost_tracker import track_regeneration_cost
-    for clip_index in regenerated_clip_indices:
-        try:
-            await track_regeneration_cost(
-                job_id=job_id,
-                clip_index=clip_index,
-                cost=Decimal("0"),  # Cost already tracked during regeneration
-                status="completed"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to track cost for clip {clip_index}",
-                extra={"job_id": str(job_id), "clip_index": clip_index, "error": str(e)}
-            )
+    # NOTE: Cost is already tracked during individual clip regeneration, so we skip cost tracking here
+    # to avoid duplicate entries. The cost tracking happens in regenerate_clip() function.
+    logger.debug(
+        f"Skipping cost tracking in recompose_after_regenerations (costs already tracked during regeneration)",
+        extra={
+            "job_id": str(job_id),
+            "regenerated_clip_indices": regenerated_clip_indices
+        }
+    )
     
     # Update job status and video URL
-    from modules.clip_regenerator.status_manager import update_job_status_and_video_url
+    from modules.clip_regenerator.status_manager import update_job_status
     try:
         logger.info(
             f"Updating job status and video_url",
@@ -2613,7 +2892,7 @@ async def recompose_after_regenerations(
                 "new_video_url": video_output.video_url
             }
         )
-        await update_job_status_and_video_url(
+        await update_job_status(
             job_id=job_id,
             status="completed",
             video_url=video_output.video_url

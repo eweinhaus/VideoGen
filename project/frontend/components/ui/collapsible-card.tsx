@@ -96,16 +96,16 @@ export function CollapsibleCard({
     const wasOpen = isOpen
     const willOpen = !wasOpen
     
-    // Only track position when opening (not closing)
-    if (willOpen && headerRef.current) {
-      // Get header position before opening
+    // Track position for both opening and closing
+    if (headerRef.current) {
+      // Get header position before state change
       const headerRect = headerRef.current.getBoundingClientRect()
       const headerViewportTop = headerRect.top
       
       // Toggle the state
       setIsOpen(willOpen)
       
-      // After opening, scroll to keep header in same viewport position
+      // After state change, scroll to keep header in same viewport position
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           if (headerRef.current) {
@@ -114,6 +114,8 @@ export function CollapsibleCard({
             const difference = newHeaderViewportTop - headerViewportTop
             
             // Scroll to compensate for the difference to keep header in same viewport position
+            // When opening: content expands below, header moves down, so we scroll up (negative difference)
+            // When closing: content collapses, header moves up, so we scroll down (positive difference)
             if (Math.abs(difference) > 1) {
               window.scrollBy({
                 top: -difference,
@@ -124,7 +126,7 @@ export function CollapsibleCard({
         })
       })
     } else {
-      // Just toggle when closing
+      // Fallback: just toggle if header ref isn't available
       setIsOpen(willOpen)
     }
   }

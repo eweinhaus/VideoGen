@@ -169,13 +169,9 @@ async def process_regeneration_job(job_data: dict) -> None:
         """Wrapper for event publishing."""
         await publish_event(job_id, event_type, data)
     
-    # Publish start event for each clip being regenerated
-    for clip_index in clip_indices:
-        await event_pub("regeneration_started", {
-            "sequence": 1,
-            "clip_index": clip_index,
-            "instruction": user_instruction
-        })
+    # NOTE: Don't publish regeneration_started here - it's published by the individual
+    # regeneration functions (regenerate_single_clip_only or _regenerate_single_clip_with_recomposition)
+    # to avoid duplicate messages in the UI
     
     try:
         total_clips = len(clip_indices)
@@ -206,12 +202,11 @@ async def process_regeneration_job(job_data: dict) -> None:
             # Wait for all clips to regenerate
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Process results and collect modified prompts
+            # Process results
             successful_count = 0
             failed_count = 0
             total_cost = Decimal("0")
             successful_clip_indices = []
-            modified_prompts = {}  # {clip_index: modified_prompt}
             
             for i, result in enumerate(results):
                 clip_index = clip_indices[i]
@@ -233,21 +228,9 @@ async def process_regeneration_job(job_data: dict) -> None:
                     cost = result.get("cost", Decimal("0"))
                     if cost:
                         total_cost += Decimal(str(cost))
-                    
-                    # Collect modified prompt for batch sending
-                    if "modified_prompt" in result:
-                        modified_prompts[clip_index] = result["modified_prompt"]
             
-            # Send ALL modified prompts at once (after all clips processed)
-            if modified_prompts:
-                await event_pub("prompts_modified_batch", {
-                    "prompts": modified_prompts,  # {clip_index: modified_prompt}
-                    "clip_indices": list(modified_prompts.keys())
-                })
-                logger.info(
-                    f"Sent batch prompt modifications for {len(modified_prompts)} clips",
-                    extra={"job_id": job_id, "clip_indices": list(modified_prompts.keys())}
-                )
+            # NOTE: prompt_modified events are now sent immediately after prompt modification
+            # (before video generation starts) - no need to batch them here
             
             # Step 2: If any clips succeeded, recompose the video ONCE
             if successful_count > 0:
@@ -460,7 +443,7 @@ async def regenerate_single_clip_only(
         user_id=user_id,
         conversation_history=conversation_history,
         event_publisher=event_pub,
-        suppress_prompt_modified_event=True  # Suppress individual events in multi-clip mode
+        suppress_prompt_modified_event=False  # Send prompt_modified events immediately (before video generation)
     )
     
     # Extract cost, URLs, and modified_prompt from result

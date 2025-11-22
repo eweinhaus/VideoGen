@@ -444,52 +444,287 @@ async def compare_clip_versions(
         # Step 2: Load regenerated (current/latest) version from clip_versions table
         # If no versions exist in clip_versions, that means no regeneration has happened yet
         try:
-            # Get the latest TWO versions (highest version_numbers) from clip_versions
-            # We need both to show: previous (second-to-last) vs latest
-            versions_result = await db.table("clip_versions").select("*").eq(
+            # Get the current version (is_current=True) - this is the latest regenerated version
+            # Also check for multiple current versions (data integrity issue)
+            current_version_result = await db.table("clip_versions").select("*").eq(
                 "job_id", str(job_id)
-            ).eq("clip_index", clip_index).order("version_number", desc=True).limit(2).execute()
+            ).eq("clip_index", clip_index).eq("is_current", True).order("version_number", desc=True).limit(1).execute()
             
-            if versions_result.data and len(versions_result.data) > 0:
-                # Latest version (v5, v2, etc.)
-                latest_version = versions_result.data[0]
-                regenerated_data = {
-                    "video_url": latest_version.get("video_url"),
-                    "thumbnail_url": latest_version.get("thumbnail_url"),
-                    "prompt": latest_version.get("prompt", ""),
-                    "version_number": latest_version.get("version_number"),
-                    "duration": float(latest_version.get("duration")) if latest_version.get("duration") is not None else None,
-                    "user_instruction": latest_version.get("user_instruction"),
-                    "cost": float(latest_version.get("cost", 0)) if latest_version.get("cost") else None,
-                    "created_at": latest_version.get("created_at")
-                }
-                
-                # If there's a second version, use it as "original" (previous version)
-                # This allows users to compare v4 vs v5, not v1 vs v5
-                if len(versions_result.data) > 1:
-                    previous_version = versions_result.data[1]
-                    # Override original_data with the previous version from clip_versions
-                    original_data = {
-                        "video_url": previous_version.get("video_url"),
-                        "thumbnail_url": previous_version.get("thumbnail_url"),
-                        "prompt": previous_version.get("prompt", ""),
-                        "version_number": previous_version.get("version_number"),
-                        "duration": float(previous_version.get("duration")) if previous_version.get("duration") is not None else None,
-                        "user_instruction": previous_version.get("user_instruction"),
-                        "cost": float(previous_version.get("cost", 0)) if previous_version.get("cost") else None,
-                        "created_at": previous_version.get("created_at")
+            # Check for data integrity: multiple versions with is_current=True
+            all_current_versions = await db.table("clip_versions").select("version_number").eq(
+                "job_id", str(job_id)
+            ).eq("clip_index", clip_index).eq("is_current", True).execute()
+            
+            if all_current_versions.data and len(all_current_versions.data) > 1:
+                logger.warning(
+                    "🚨 DATA INTEGRITY ISSUE: Multiple versions with is_current=True found!",
+                    extra={
+                        "job_id": job_id,
+                        "clip_index": clip_index,
+                        "current_versions": [v.get("version_number") for v in all_current_versions.data],
+                        "action": "Using highest version_number"
                     }
+                )
+            
+            if current_version_result.data and len(current_version_result.data) > 0:
+                # Current version (is_current=True) - this is what's active now (may be a reverted version)
+                current_version = current_version_result.data[0]
+                current_version_number = current_version.get("version_number")
+                
+                # CRITICAL: Get the HIGHEST version number (regardless of is_current)
+                # This is needed for revert scenarios where user reverted to an earlier version
+                # Example: User has v5, reverts to v3. Current=v3, but highest=v5
+                # We want to show: current (v3) vs highest (v5) so user can revert back to v5
+                highest_version_result = await db.table("clip_versions").select("*").eq(
+                    "job_id", str(job_id)
+                ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+                
+                highest_version = None
+                highest_version_number = current_version_number
+                if highest_version_result.data and len(highest_version_result.data) > 0:
+                    highest_version = highest_version_result.data[0]
+                    highest_version_number = highest_version.get("version_number")
+                
+                # Determine which version to show as "regenerated" (the one to compare against)
+                # If highest > current, user reverted to an earlier version - show current vs highest
+                # If highest == current, normal case - show previous vs current
+                if highest_version_number > current_version_number:
+                    # REVERT SCENARIO: User reverted to an earlier version
+                    # Show: current (reverted version) vs highest (the version they reverted from)
                     logger.info(
-                        "Loaded previous version from clip_versions (showing previous vs latest)",
+                        "Revert scenario detected: current version is lower than highest version",
                         extra={
                             "job_id": job_id,
                             "clip_index": clip_index,
-                            "previous_version": original_data.get("version_number"),
-                            "latest_version": regenerated_data.get("version_number"),
-                            "source": "clip_versions"
+                            "current_version": current_version_number,
+                            "highest_version": highest_version_number,
+                            "interpretation": f"User reverted from v{highest_version_number} to v{current_version_number}"
                         }
                     )
-                # else: Keep original_data from job_stages (v1) if only one version exists
+                    
+                    # Original = current version (the reverted/active version)
+                    original_data = {
+                        "video_url": current_version.get("video_url"),
+                        "thumbnail_url": current_version.get("thumbnail_url"),
+                        "prompt": current_version.get("prompt", ""),
+                        "version_number": current_version_number,
+                        "duration": float(current_version.get("duration")) if current_version.get("duration") is not None else None,
+                        "user_instruction": current_version.get("user_instruction"),
+                        "cost": float(current_version.get("cost", 0)) if current_version.get("cost") else None,
+                        "created_at": current_version.get("created_at")
+                    }
+                    
+                    # Regenerated = highest version (the one they can revert back to)
+                    regenerated_data = {
+                        "video_url": highest_version.get("video_url"),
+                        "thumbnail_url": highest_version.get("thumbnail_url"),
+                        "prompt": highest_version.get("prompt", ""),
+                        "version_number": highest_version_number,
+                        "duration": float(highest_version.get("duration")) if highest_version.get("duration") is not None else None,
+                        "user_instruction": highest_version.get("user_instruction"),
+                        "cost": float(highest_version.get("cost", 0)) if highest_version.get("cost") else None,
+                        "created_at": highest_version.get("created_at")
+                    }
+                    
+                    # Set flag to skip the previous version logic below
+                    previous_version_set = True
+                    
+                    logger.info(
+                        "Showing reverted version vs latest version (revert scenario)",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "original_version": current_version_number,
+                            "regenerated_version": highest_version_number,
+                            "original_url": current_version.get("video_url")[:100] if current_version.get("video_url") else None,
+                            "regenerated_url": highest_version.get("video_url")[:100] if highest_version.get("video_url") else None
+                        }
+                    )
+                else:
+                    # NORMAL SCENARIO: Current version is the highest (no revert)
+                    # Show: previous version vs current version
+                    regenerated_data = {
+                        "video_url": current_version.get("video_url"),
+                        "thumbnail_url": current_version.get("thumbnail_url"),
+                        "prompt": current_version.get("prompt", ""),
+                        "version_number": current_version_number,
+                        "duration": float(current_version.get("duration")) if current_version.get("duration") is not None else None,
+                        "user_instruction": current_version.get("user_instruction"),
+                        "cost": float(current_version.get("cost", 0)) if current_version.get("cost") else None,
+                        "created_at": current_version.get("created_at")
+                    }
+                    
+                    # Get the previous version (the one that was current before this regeneration)
+                    # Query for the version with the highest version_number that is LESS than the current version
+                    logger.info(
+                        "Querying for previous version (normal scenario)",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "current_version_number": current_version_number,
+                            "query": f"version_number < {current_version_number}"
+                        }
+                    )
+                    
+                    previous_version_result = await db.table("clip_versions").select("*").eq(
+                        "job_id", str(job_id)
+                    ).eq("clip_index", clip_index).lt("version_number", current_version_number).order("version_number", desc=True).limit(1).execute()
+                    
+                    logger.info(
+                        "Previous version query result",
+                        extra={
+                            "job_id": job_id,
+                            "clip_index": clip_index,
+                            "found_count": len(previous_version_result.data) if previous_version_result.data else 0,
+                            "result_versions": [v.get("version_number") for v in previous_version_result.data] if previous_version_result.data else []
+                        }
+                    )
+                    
+                    if previous_version_result.data and len(previous_version_result.data) > 0:
+                        # Found a previous version - use it for comparison (e.g., v6 vs v7)
+                        previous_version = previous_version_result.data[0]
+                        previous_version_number = previous_version.get("version_number")
+                        previous_video_url = previous_version.get("video_url")
+                        current_video_url = current_version.get("video_url")
+                    
+                        # CRITICAL VALIDATION: Ensure versions are actually different
+                        if previous_version_number == current_version_number:
+                            logger.error(
+                                "🚨 CRITICAL: Previous and current versions have the same version_number!",
+                                extra={
+                                    "job_id": job_id,
+                                    "clip_index": clip_index,
+                                    "version_number": previous_version_number,
+                                    "action": "Will try to find another previous version"
+                                }
+                            )
+                            # Try to get an even earlier version
+                            earlier_version_result = await db.table("clip_versions").select("*").eq(
+                                "job_id", str(job_id)
+                            ).eq("clip_index", clip_index).lt("version_number", previous_version_number).order("version_number", desc=True).limit(1).execute()
+                            if earlier_version_result.data and len(earlier_version_result.data) > 0:
+                                previous_version = earlier_version_result.data[0]
+                                previous_version_number = previous_version.get("version_number")
+                                previous_video_url = previous_version.get("video_url")
+                                logger.info(
+                                    "Found earlier version after duplicate version_number check",
+                                    extra={
+                                        "job_id": job_id,
+                                        "clip_index": clip_index,
+                                        "earlier_version": previous_version_number
+                                    }
+                                )
+                        
+                        # ALWAYS use the previous version if version numbers are different
+                        # (Even if URLs match, version numbers being different means they're different edits)
+                        if previous_version_number != current_version_number:
+                            # Versions are different (by version number) - safe to use
+                            original_data = {
+                                "video_url": previous_video_url,
+                                "thumbnail_url": previous_version.get("thumbnail_url"),
+                                "prompt": previous_version.get("prompt", ""),
+                                "version_number": previous_version_number,
+                                "duration": float(previous_version.get("duration")) if previous_version.get("duration") is not None else None,
+                                "user_instruction": previous_version.get("user_instruction"),
+                                "cost": float(previous_version.get("cost", 0)) if previous_version.get("cost") else None,
+                                "created_at": previous_version.get("created_at")
+                            }
+                            previous_version_set = True
+                            
+                            # Log warning if URLs match (data integrity issue, but still use the version)
+                            if previous_video_url == current_video_url:
+                                logger.warning(
+                                    "⚠️ Previous and current versions have the same video_url, but version numbers differ",
+                                    extra={
+                                        "job_id": job_id,
+                                        "clip_index": clip_index,
+                                        "previous_version": previous_version_number,
+                                        "current_version": current_version_number,
+                                        "video_url": previous_video_url,
+                                        "action": "Using previous version anyway (version numbers are different)"
+                                    }
+                                )
+                        else:
+                            logger.error(
+                                "🚨 CRITICAL: Could not find a valid previous version (version numbers still match after retry)",
+                                extra={
+                                    "job_id": job_id,
+                                    "clip_index": clip_index,
+                                    "version_number": previous_version_number,
+                                    "action": "Will fall back to v1 from job_stages"
+                                }
+                            )
+                        logger.info(
+                            "Loaded previous version from clip_versions (showing previous vs current)",
+                            extra={
+                                "job_id": job_id,
+                                "clip_index": clip_index,
+                                "previous_version": previous_version_number,
+                                "current_version": current_version_number,
+                                "previous_url": previous_video_url[:100] if previous_video_url else None,
+                                "current_url": current_video_url[:100] if current_video_url else None,
+                                "urls_different": previous_video_url != current_video_url,
+                                "source": "clip_versions"
+                            }
+                        )
+                
+                    # Only fall back to job_stages if we truly couldn't find a previous version
+                    if not previous_version_set:
+                        # FALLBACK: Query all versions and manually find the one just before current
+                        logger.info(
+                            "Previous version query returned no results, trying fallback: query all versions",
+                            extra={
+                                "job_id": job_id,
+                                "clip_index": clip_index,
+                                "current_version": current_version_number
+                            }
+                        )
+                        
+                        all_versions_result = await db.table("clip_versions").select("*").eq(
+                            "job_id", str(job_id)
+                        ).eq("clip_index", clip_index).order("version_number", desc=True).execute()
+                        
+                        if all_versions_result.data and len(all_versions_result.data) > 0:
+                            # Find the version just before current_version_number
+                            for version in all_versions_result.data:
+                                version_num = version.get("version_number")
+                                if version_num is not None and version_num < current_version_number:
+                                    # Found the previous version!
+                                    original_data = {
+                                        "video_url": version.get("video_url"),
+                                        "thumbnail_url": version.get("thumbnail_url"),
+                                        "prompt": version.get("prompt", ""),
+                                        "version_number": version_num,
+                                        "duration": float(version.get("duration")) if version.get("duration") is not None else None,
+                                        "user_instruction": version.get("user_instruction"),
+                                        "cost": float(version.get("cost", 0)) if version.get("cost") else None,
+                                        "created_at": version.get("created_at")
+                                    }
+                                    previous_version_set = True
+                                    logger.info(
+                                        "Found previous version using fallback query (all versions)",
+                                        extra={
+                                            "job_id": job_id,
+                                            "clip_index": clip_index,
+                                            "previous_version": version_num,
+                                            "current_version": current_version_number,
+                                            "all_versions": [v.get("version_number") for v in all_versions_result.data]
+                                        }
+                                    )
+                                    break
+                        
+                        if not previous_version_set:
+                            # No previous version found - keep original_data from job_stages (v1)
+                            logger.info(
+                                "No previous version found in clip_versions, using original from job_stages (v1) for comparison",
+                                extra={
+                                    "job_id": job_id,
+                                    "clip_index": clip_index,
+                                    "current_version": current_version_number,
+                                    "all_versions_found": [v.get("version_number") for v in all_versions_result.data] if all_versions_result.data else [],
+                                    "reason": "No previous version exists in clip_versions (this is the first regeneration)"
+                                }
+                            )
                 
                 logger.info(
                     "Loaded regenerated clip from clip_versions",
@@ -545,20 +780,26 @@ async def compare_clip_versions(
             }
         )
         
-        if urls_match:
-            logger.error(
-                "🚨 CRITICAL BUG: Original and regenerated video URLs are the SAME! "
-                "This indicates the original was not preserved correctly in the database.",
+        if urls_match and regenerated_data:
+            # Data integrity issue: versions have same URL but different version numbers
+            # This indicates v9 was saved with v8's URL (bug in version saving)
+            # However, we should still show v8 vs v9 (not v1 vs v9) so user can see the issue
+            logger.warning(
+                "⚠️ DATA INTEGRITY ISSUE: Previous and latest versions have the same video_url but different version numbers. "
+                "This indicates a bug in version saving (v9 was saved with v8's URL). "
+                "Showing v8 vs v9 anyway so user can see the data issue.",
                 extra={
                     "job_id": job_id,
                     "clip_index": clip_index,
                     "video_url": original_url,
                     "original_version": original_data.get("version_number"),
-                    "regenerated_version": regenerated_data.get("version_number") if regenerated_data else None,
-                    "action_required": "Check clip_versions table for version integrity",
+                    "regenerated_version": regenerated_data.get("version_number"),
+                    "action_required": "Check clip_versions table - v9 should have clip_5_v9.mp4, not clip_5_v8.mp4",
                     "database_query": f"SELECT * FROM clip_versions WHERE job_id = '{job_id}' AND clip_index = {clip_index} ORDER BY version_number"
                 }
             )
+            # DO NOT fall back to v1 - keep showing v8 vs v9 even if URLs match
+            # This allows the user to see the data integrity issue and investigate
         
         # Graceful degradation: if video URLs missing, return thumbnail-only comparison
         if not original_data.get("video_url") or (regenerated_data and not regenerated_data.get("video_url")):
@@ -702,6 +943,27 @@ async def compare_clip_versions(
                 exc_info=True
             )
         
+        # Get audio URL from job (for synchronized playback in comparison)
+        audio_url = job.get("audio_url")
+        if not audio_url:
+            logger.warning(
+                f"Audio URL not found in job data for clip comparison",
+                extra={
+                    "job_id": job_id,
+                    "clip_index": clip_index,
+                    "job_keys": list(job.keys()) if isinstance(job, dict) else "not_a_dict"
+                }
+            )
+        else:
+            logger.debug(
+                f"Retrieved audio URL for clip comparison",
+                extra={
+                    "job_id": job_id,
+                    "clip_index": clip_index,
+                    "audio_url_present": True
+                }
+            )
+        
         # Build response
         response = {
             "original": {
@@ -716,6 +978,7 @@ async def compare_clip_versions(
             "duration_mismatch": duration_mismatch,
             "duration_diff": duration_diff,
             "active_version_number": active_version_number,  # NEW: indicates which version is in main video
+            "audio_url": audio_url,  # Audio URL for synchronized playback
             # Add clip boundary info for audio trimming in frontend
             "clip_start_time": clip_start_time,
             "clip_end_time": clip_end_time

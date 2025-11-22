@@ -313,10 +313,9 @@ async def generate_lipsync_clip(
             for attempt in range(max_attempts):
                 test_path = f"{job_id}/clip_{clip_index}_v{actual_next_version}.mp4"
                 
-                # Check if file exists in storage
-                try:
-                    # Try to get file info - if it exists, this won't error
-                    await storage.download_file("video-clips", test_path)
+                # Check if file exists in storage (using efficient file_exists method)
+                file_exists = await storage.file_exists("video-clips", test_path)
+                if file_exists:
                     # File exists, increment and try next version
                     logger.info(
                         f"Version {actual_next_version} already exists in storage, trying v{actual_next_version + 1}",
@@ -328,7 +327,7 @@ async def generate_lipsync_clip(
                         }
                     )
                     actual_next_version += 1
-                except Exception:
+                else:
                     # File doesn't exist - we can use this version
                     break
             
