@@ -1207,8 +1207,17 @@ export function ProgressTracker({
     onRegenerationComplete: (data: RegenerationCompleteEvent) => {
       // Clear the current regenerating clip
       setCurrentRegeneratingClip(null)
-      // Fetch the regenerated prompt from API to ensure we have the latest
-      fetchRegeneratedPrompt(data.clip_index)
+      // Fetch the regenerated prompts from API to ensure we have the latest
+      // Handle both single-clip mode and multi-clip mode
+      if (data.clip_index !== undefined) {
+        // Single clip mode
+        fetchRegeneratedPrompt(data.clip_index)
+      } else if (data.clip_indices && data.clip_indices.length > 0) {
+        // Multi-clip mode: fetch prompts for all regenerated clips
+        data.clip_indices.forEach(clipIndex => {
+          fetchRegeneratedPrompt(clipIndex)
+        })
+      }
     },
   })
 
