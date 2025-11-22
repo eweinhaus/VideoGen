@@ -109,9 +109,17 @@ def generate_boundaries(
 
     # Edge case 1: Very short segments (<4s) → Should be merged by parser
     # If we get here, it means parser didn't merge properly - create single clip anyway
+    # Minimum duration for ClipBoundary is 3 seconds (model validation constraint)
+    MIN_CLIP_DURATION = 3.0
     if total_duration < 4.0:
-        logger.warning(f"Segment too short ({total_duration:.1f}s < 4s production minimum), creating single clip anyway")
-        # Use the full segment duration
+        if total_duration < MIN_CLIP_DURATION:
+            logger.warning(
+                f"Segment extremely short ({total_duration:.1f}s < {MIN_CLIP_DURATION}s model minimum). "
+                f"This should have been caught earlier. Creating boundary anyway (may fail validation)."
+            )
+        else:
+            logger.warning(f"Segment too short ({total_duration:.1f}s < 4s production minimum), creating single clip anyway")
+        # Use the full segment duration (even if < 3s, we must create it for coverage)
         boundaries = [ClipBoundary(
             start=0.0,
             end=total_duration,
@@ -302,9 +310,16 @@ def generate_boundaries(
     if len(boundaries) < 1:
         # Fallback: create at least 1 clip, but respect 8s Veo limit
         MAX_DURATION = 8.0  # Veo 3.1 limit
+        MIN_CLIP_DURATION = 3.0  # Model validation constraint
         if total_duration < 4.0:
             # Too short for production quality - should have been merged by parser
-            logger.warning(f"Fallback: segment too short ({total_duration:.1f}s < 4s production minimum), creating clip anyway")
+            if total_duration < MIN_CLIP_DURATION:
+                logger.warning(
+                    f"Fallback: segment extremely short ({total_duration:.1f}s < {MIN_CLIP_DURATION}s model minimum). "
+                    f"This should have been caught earlier. Creating boundary anyway (may fail validation)."
+                )
+            else:
+                logger.warning(f"Fallback: segment too short ({total_duration:.1f}s < 4s production minimum), creating clip anyway")
             return [ClipBoundary(
                 start=0.0,
                 end=total_duration,
