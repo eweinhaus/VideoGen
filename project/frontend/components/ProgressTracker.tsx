@@ -190,7 +190,7 @@ export function ProgressTracker({
   const [timerStarted, setTimerStarted] = useState<boolean>(false)
   const [hasStarted, setHasStarted] = useState<boolean>(false)
 
-  const { updateJob } = jobStore()
+  const { updateJob, fetchJob } = jobStore()
   // Removed truncatePrompt - show full prompt text as requested
   
   // Sync state when job data updates (for SSE updates to work correctly)
@@ -1220,6 +1220,25 @@ export function ProgressTracker({
       }
     },
   })
+
+  // Polling fallback when SSE fails
+  useEffect(() => {
+    // Only poll if SSE failed and job is still processing
+    if (sseError && !isConnected && currentJob && currentJob.status !== "completed" && currentJob.status !== "failed") {
+      console.log("🔄 SSE failed, starting polling fallback for job:", jobId)
+      
+      const pollInterval = setInterval(() => {
+        fetchJob(jobId, { timeout: 10000, allowPartial: true }).catch((err) => {
+          console.error("❌ Polling fetch failed:", err)
+        })
+      }, 5000) // Poll every 5 seconds
+      
+      return () => {
+        clearInterval(pollInterval)
+        console.log("🛑 Stopped polling fallback for job:", jobId)
+      }
+    }
+  }, [sseError, isConnected, currentJob, jobId, fetchJob])
 
   // Check if job is completed and video has loaded
   const isCompletedWithVideo = currentJob?.status === "completed" && currentJob?.videoUrl && displayProgress === 100
