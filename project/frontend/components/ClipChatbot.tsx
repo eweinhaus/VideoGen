@@ -1159,9 +1159,9 @@ export function ClipChatbot({
         />
       )}
       <FloatingChat title="AI Assistant" jobId={jobId} defaultMinimized={false}>
-        <div className="flex flex-col h-full" style={{ maxHeight: "calc(80vh - 60px)" }}>
-        {/* Scrollable Messages Area */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        <div className="flex flex-col h-full">
+        {/* Scrollable Messages Area - takes up all available space */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
           {messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-8">
               <p className="text-base font-medium">Start a conversation to modify a clip.</p>
@@ -1233,7 +1233,7 @@ export function ClipChatbot({
 
         {/* Error Alert */}
         {error && (
-          <div className="px-3 pb-2">
+          <div className="px-3 pb-2 flex-shrink-0">
             <Alert variant="destructive" className="py-2">
               <AlertDescription className="flex items-center justify-between text-sm font-medium">
                 <span className="flex-1">{error}</span>
@@ -1255,7 +1255,7 @@ export function ClipChatbot({
 
         {/* Cost Estimate & Progress */}
         {(costEstimate != null || progress !== null) && (
-          <div className="px-3 pb-2 space-y-1.5">
+          <div className="px-3 pb-2 space-y-1.5 flex-shrink-0">
             {costEstimate != null && typeof costEstimate === "number" && (
               <div className="text-sm text-muted-foreground font-medium">
                 Estimated cost: <span className="font-semibold">${costEstimate.toFixed(2)}</span>
@@ -1284,7 +1284,7 @@ export function ClipChatbot({
 
         {/* Quick Action Buttons - Prominent placement (above thumbnails) */}
         {!loadingClips && clips.length > 0 && selectedClipIndices.length > 0 && (
-          <div className="border-t px-3 py-2 min-h-[56px] flex items-center gap-2">
+          <div className="border-t px-3 py-2 min-h-[56px] flex items-center gap-2 flex-shrink-0">
             {selectedClipIndices.length === 1 && (
               <Button
                 type="button"
@@ -1314,7 +1314,7 @@ export function ClipChatbot({
 
         {/* Clip Thumbnails Row */}
         {!loadingClips && clips.length > 0 && (
-          <div className="border-t px-3 py-3">
+          <div className="border-t px-3 py-3 flex-shrink-0">
             {/* Select All Checkbox */}
             <div className="flex items-center justify-between mb-2">
               <label className="flex items-center gap-2 text-sm font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
@@ -1457,7 +1457,7 @@ export function ClipChatbot({
 
         {/* Loading Clips */}
         {loadingClips && (
-          <div className="border-t px-3 py-2">
+          <div className="border-t px-3 py-2 flex-shrink-0">
             <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
               <LoadingSpinner className="h-4 w-4" />
               <span>Loading clips...</span>
@@ -1467,7 +1467,7 @@ export function ClipChatbot({
 
         {/* No Clips Available */}
         {!loadingClips && clips.length === 0 && (
-          <div className="border-t px-3 py-2">
+          <div className="border-t px-3 py-2 flex-shrink-0">
             <Alert className="py-2">
               <AlertDescription className="text-sm font-medium">
                 No clips available. The video may not have completed generation yet.
@@ -1476,8 +1476,19 @@ export function ClipChatbot({
           </div>
         )}
 
-        {/* Input Area */}
-        <div className="border-t p-2">
+        {/* SSE Connection Status */}
+        {!isConnected && (
+          <div className="border-t px-3 py-1.5 flex-shrink-0">
+            <Alert className="py-1.5">
+              <AlertDescription className="text-sm font-medium">
+                Connecting to server...
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
+        {/* Input Area - Fixed at bottom */}
+        <div className="border-t p-2 flex-shrink-0 bg-card">
           <form onSubmit={handleSubmit} className="flex gap-2">
             <Textarea
               value={input}
@@ -1507,17 +1518,6 @@ export function ClipChatbot({
             </Button>
           </form>
         </div>
-
-        {/* SSE Connection Status */}
-        {!isConnected && (
-          <div className="border-t px-3 py-1.5">
-            <Alert className="py-1.5">
-              <AlertDescription className="text-sm font-medium">
-                Connecting to server...
-              </AlertDescription>
-            </Alert>
-          </div>
-        )}
       </div>
     </FloatingChat>
     </>
