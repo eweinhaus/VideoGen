@@ -1208,7 +1208,10 @@ export function ProgressTracker({
       // Clear the current regenerating clip
       setCurrentRegeneratingClip(null)
       // Fetch the regenerated prompt from API to ensure we have the latest
-      fetchRegeneratedPrompt(data.clip_index)
+      // Only fetch if clip_index is defined (single clip mode)
+      if (data.clip_index !== undefined) {
+        fetchRegeneratedPrompt(data.clip_index)
+      }
     },
   })
 
