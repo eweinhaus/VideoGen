@@ -8,7 +8,7 @@ import json
 import time
 from datetime import datetime
 from uuid import UUID
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from decimal import Decimal
 from shared.database import DatabaseClient
 from shared.redis_client import RedisClient
@@ -32,6 +32,77 @@ logger = get_logger(__name__)
 db_client = DatabaseClient()
 redis_client = RedisClient()
 cost_tracker = CostTracker()
+
+
+async def load_user_reference_images(job_id: UUID) -> Optional[List[Dict[str, Any]]]:
+    """
+    Load user-uploaded reference images from database.
+    
+    Args:
+        job_id: Job ID (UUID)
+        
+    Returns:
+        List of user-uploaded image data, or None if no images found
+    """
+    try:
+        # Check if table exists by attempting to query it
+        # If table doesn't exist, return None (migration not run yet)
+        result = await db_client.table("user_reference_images").select("*").eq("job_id", str(job_id)).execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.info(
+                f"No user-uploaded reference images found for job {job_id}",
+                extra={"job_id": str(job_id)}
+            )
+            return None
+        
+        images = []
+        for row in result.data:
+            images.append({
+                "id": row["id"],
+                "job_id": row["job_id"],
+                "image_type": row["image_type"],
+                "user_title": row["user_title"],
+                "original_filename": row["original_filename"],
+                "storage_path": row["storage_path"],
+                "final_storage_path": row.get("final_storage_path"),
+                "image_url": row["image_url"],
+                "matched_character_id": row.get("matched_character_id"),
+                "matched_character_name": row.get("matched_character_name"),
+                "matched_scene_id": row.get("matched_scene_id"),
+                "matched_object_id": row.get("matched_object_id"),
+            })
+        
+        logger.info(
+            f"Loaded {len(images)} user-uploaded reference images for job {job_id}",
+            extra={
+                "job_id": str(job_id),
+                "image_count": len(images),
+                "image_types": [img["image_type"] for img in images]
+            }
+        )
+        
+        return images
+        
+    except Exception as e:
+        error_str = str(e).lower()
+        # Check if error is due to table not existing
+        if "could not find the table" in error_str or "pgrst205" in error_str or "does not exist" in error_str:
+            logger.warning(
+                f"user_reference_images table does not exist - migration may not have been run",
+                extra={"job_id": str(job_id)}
+            )
+            # Return None - this is expected if migration hasn't been run
+            return None
+        
+        logger.error(
+            f"Failed to load user-uploaded reference images for job {job_id}",
+            exc_info=e,
+            extra={"job_id": str(job_id)}
+        )
+        # Don't fail the pipeline if we can't load user images
+        # Just log and continue without them
+        return None
 
 
 async def check_cancellation(job_id: str) -> bool:
@@ -1001,8 +1072,33 @@ async def execute_pipeline(job_id: str, audio_url: str, user_prompt: str, stop_a
             # Convert job_id to UUID and pass duration_seconds for budget checks
             job_id_uuid = UUID(job_id)
             duration_seconds = audio_data.duration if hasattr(audio_data, 'duration') else None
+            
+            # Load user-uploaded reference images
+            user_uploaded_images = await load_user_reference_images(job_id_uuid)
+            
+            logger.info(
+                f"Loaded user-uploaded images for job {job_id}",
+                extra={
+                    "job_id": job_id,
+                    "user_images_count": len(user_uploaded_images) if user_uploaded_images else 0,
+                    "user_images": [
+                        {
+                            "type": img.get("image_type"),
+                            "title": img.get("user_title"),
+                            "id": img.get("id")
+                        }
+                        for img in (user_uploaded_images or [])
+                    ]
+                }
+            )
+            
             # Reference generator returns tuple: (Optional[ReferenceImages], List[Dict[str, Any]])
-            references, reference_events = await generate_references(job_id_uuid, plan, duration_seconds)
+            references, reference_events = await generate_references(
+                job_id_uuid,
+                plan,
+                duration_seconds,
+                user_uploaded_images=user_uploaded_images if user_uploaded_images else None
+            )
             
             # Track progress as images complete (for more frequent updates)
             reference_progress_tracker = {

@@ -118,35 +118,47 @@ async def get_job_status(
         # For old jobs without metadata, try to reconstruct from Supabase Storage
         # This handles jobs created before metadata storage was implemented
         # Use shorter timeout and non-blocking approach to avoid hanging
+        # Overall timeout: 3 seconds for entire reconstruction to prevent blocking
         if not stages.get("reference_generator", {}).get("metadata", {}).get("reference_images"):
             try:
                 from shared.storage import storage
                 import re
                 
-                # List files in reference-images bucket for this job
-                # Use shorter timeout (5s) to avoid blocking the endpoint
-                def _list_reference_files():
-                    return storage.storage.from_("reference-images").list(job_id)
-                
-                try:
+                # Wrap entire reconstruction in overall timeout (3 seconds)
+                async def _reconstruct_reference_images():
+                    # List files in reference-images bucket for this job
+                    # Use shorter timeout (2s) to avoid blocking the endpoint
+                    def _list_reference_files():
+                        return storage.storage.from_("reference-images").list(job_id)
+                    
                     reference_files = await asyncio.wait_for(
-                        storage._execute_sync(_list_reference_files, timeout=5.0),
-                        timeout=5.0
+                        storage._execute_sync(_list_reference_files, timeout=2.0),
+                        timeout=2.0
                     )
                     if reference_files and len(reference_files) > 0:
                         scene_refs = []
                         char_refs = []
                         
-                        for file_info in reference_files:
+                        # Limit to first 10 files to avoid timeout (process most important ones)
+                        for file_info in reference_files[:10]:
                             if not isinstance(file_info, dict):
                                 continue
                             file_name = file_info.get("name", "")
-                            # Generate signed URL for the file
+                            
+                            # Skip directories (user_uploaded folder, etc.) - only process actual image files
+                            # Directories don't have file extensions, or might be indicated differently
+                            if not file_name or "/" in file_name or not file_name.endswith((".png", ".jpg", ".jpeg")):
+                                continue
+                            
+                            # Generate signed URL for the file (with timeout)
                             try:
-                                signed_url = await storage.get_signed_url(
-                                    bucket="reference-images",
-                                    path=f"{job_id}/{file_name}",
-                                    expires_in=3600
+                                signed_url = await asyncio.wait_for(
+                                    storage.get_signed_url(
+                                        bucket="reference-images",
+                                        path=f"{job_id}/{file_name}",
+                                        expires_in=3600
+                                    ),
+                                    timeout=0.5  # 500ms per URL generation
                                 )
                                 
                                 # Determine if it's a scene or character reference based on filename
@@ -168,6 +180,9 @@ async def get_job_status(
                                         "generation_time": 0,
                                         "cost": "0"
                                     })
+                            except asyncio.TimeoutError:
+                                logger.debug(f"Timeout generating signed URL for {file_name}, skipping")
+                                continue
                             except Exception as url_error:
                                 logger.warning(f"Failed to generate signed URL for {file_name}", exc_info=url_error)
                         
@@ -188,34 +203,37 @@ async def get_job_status(
                                 "status": "success"
                             }
                             logger.info(f"Reconstructed reference images metadata from storage for job {job_id}")
-                except asyncio.TimeoutError:
-                    logger.debug(f"Timeout listing reference images from storage for job {job_id}")
-                except Exception as storage_error:
-                    logger.debug(f"Could not list reference images from storage (may not exist): {storage_error}")
+                    return None
+                
+                # Execute with overall 3-second timeout
+                await asyncio.wait_for(_reconstruct_reference_images(), timeout=3.0)
             except asyncio.TimeoutError:
-                logger.debug(f"Timeout during reference images reconstruction for job {job_id}")
+                logger.debug(f"Timeout during reference images reconstruction for job {job_id} (overall timeout)")
             except Exception as e:
                 logger.debug(f"Failed to reconstruct reference images from storage: {e}")
         
         # Reconstruct video clips from storage if metadata is missing
         # Use shorter timeout to avoid blocking the endpoint
+        # Overall timeout: 3 seconds for entire reconstruction to prevent blocking
         if not stages.get("video_generator", {}).get("metadata", {}).get("clips"):
             try:
                 from shared.storage import storage
                 
-                def _list_video_clips():
-                    return storage.storage.from_("video-clips").list(job_id)
-                
-                try:
+                # Wrap entire reconstruction in overall timeout (3 seconds)
+                async def _reconstruct_video_clips():
+                    def _list_video_clips():
+                        return storage.storage.from_("video-clips").list(job_id)
+                    
                     clip_files = await asyncio.wait_for(
-                        storage._execute_sync(_list_video_clips, timeout=5.0),
-                        timeout=5.0
+                        storage._execute_sync(_list_video_clips, timeout=2.0),
+                        timeout=2.0
                     )
                     if clip_files and len(clip_files) > 0:
                         clips = []
                         completed = 0
                         
-                        for file_info in clip_files:
+                        # Limit to first 20 clips to avoid timeout (process most important ones)
+                        for file_info in clip_files[:20]:
                             if not isinstance(file_info, dict):
                                 continue
                             file_name = file_info.get("name", "")
@@ -224,10 +242,13 @@ async def get_job_status(
                             if match:
                                 clip_index = int(match.group(1))
                                 try:
-                                    signed_url = await storage.get_signed_url(
-                                        bucket="video-clips",
-                                        path=f"{job_id}/{file_name}",
-                                        expires_in=3600
+                                    signed_url = await asyncio.wait_for(
+                                        storage.get_signed_url(
+                                            bucket="video-clips",
+                                            path=f"{job_id}/{file_name}",
+                                            expires_in=3600
+                                        ),
+                                        timeout=0.5  # 500ms per URL generation
                                     )
                                     clips.append({
                                         "clip_index": clip_index,
@@ -241,6 +262,9 @@ async def get_job_status(
                                         "generation_time": 0
                                     })
                                     completed += 1
+                                except asyncio.TimeoutError:
+                                    logger.debug(f"Timeout generating signed URL for {file_name}, skipping")
+                                    continue
                                 except Exception as url_error:
                                     logger.warning(f"Failed to generate signed URL for {file_name}", exc_info=url_error)
                         
@@ -264,12 +288,12 @@ async def get_job_status(
                                 "total_generation_time": 0
                             }
                             logger.info(f"Reconstructed video clips metadata from storage for job {job_id}")
-                except asyncio.TimeoutError:
-                    logger.debug(f"Timeout listing video clips from storage for job {job_id}")
-                except Exception as storage_error:
-                    logger.debug(f"Could not list video clips from storage (may not exist): {storage_error}")
+                    return None
+                
+                # Execute with overall 3-second timeout
+                await asyncio.wait_for(_reconstruct_video_clips(), timeout=3.0)
             except asyncio.TimeoutError:
-                logger.debug(f"Timeout during video clips reconstruction for job {job_id}")
+                logger.debug(f"Timeout during video clips reconstruction for job {job_id} (overall timeout)")
             except Exception as e:
                 logger.debug(f"Failed to reconstruct video clips from storage: {e}")
         

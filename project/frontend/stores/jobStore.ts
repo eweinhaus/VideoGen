@@ -58,7 +58,7 @@ export const jobStore = create<JobState>((set, get) => ({
   },
 
   fetchJob: async (jobId: string, options?: { timeout?: number; allowPartial?: boolean }) => {
-    const { timeout = 15000, allowPartial = true } = options || {}
+    const { timeout = 30000, allowPartial = true } = options || {}
     
     // If we already have this job in store, use it immediately (don't block rendering)
     const { currentJob } = get()

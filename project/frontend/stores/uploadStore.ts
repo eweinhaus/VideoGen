@@ -3,6 +3,7 @@ import { uploadAudio } from "@/lib/api"
 import type { PipelineStage } from "@/components/StepSelector"
 import type { VideoModel } from "@/components/ModelSelector"
 import type { Template } from "@/components/TemplateSelector"
+import type { ReferenceImageUpload } from "@/components/ReferenceImageUploader"
 
 interface ErrorDetails {
   category?: string
@@ -21,6 +22,7 @@ interface UploadState {
   videoModel: VideoModel
   aspectRatio: string
   template: Template
+  referenceImages: ReferenceImageUpload[]
   isSubmitting: boolean
   errors: { audio?: string; prompt?: string }
   errorDetails: ErrorDetails | null
@@ -30,6 +32,9 @@ interface UploadState {
   setVideoModel: (model: VideoModel) => void
   setAspectRatio: (aspectRatio: string) => void
   setTemplate: (template: Template) => void
+  setReferenceImages: (images: ReferenceImageUpload[]) => void
+  addReferenceImage: (image: ReferenceImageUpload) => void
+  removeReferenceImage: (id: string) => void
   validate: () => boolean
   submit: () => Promise<string>
   reset: () => void
@@ -80,6 +85,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   videoModel: "veo_31", // Default model
   aspectRatio: "16:9", // Default aspect ratio
   template: "standard", // Default template
+  referenceImages: [],
   isSubmitting: false,
   errors: {},
   errorDetails: null,
@@ -145,6 +151,33 @@ export const uploadStore = create<UploadState>((set, get) => ({
     set({ template })
   },
 
+  setReferenceImages: (images: ReferenceImageUpload[]) => {
+    // Clean up old preview URLs
+    const oldImages = get().referenceImages
+    oldImages.forEach((img) => {
+      if (img.previewUrl) {
+        URL.revokeObjectURL(img.previewUrl)
+      }
+    })
+    set({ referenceImages: images })
+  },
+
+  addReferenceImage: (image: ReferenceImageUpload) => {
+    const current = get().referenceImages
+    if (current.length < 2) {
+      set({ referenceImages: [...current, image] })
+    }
+  },
+
+  removeReferenceImage: (id: string) => {
+    const current = get().referenceImages
+    const image = current.find((img) => img.id === id)
+    if (image && image.previewUrl) {
+      URL.revokeObjectURL(image.previewUrl)
+    }
+    set({ referenceImages: current.filter((img) => img.id !== id) })
+  },
+
   validate: () => {
     const { audioFile, userPrompt } = get()
     const errors: { audio?: string; prompt?: string } = {}
@@ -173,7 +206,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
   },
 
   submit: async () => {
-    const { audioFile, userPrompt, videoModel, validate } = get()
+    const { audioFile, userPrompt, videoModel, validate, referenceImages } = get()
 
     if (!validate()) {
       throw new Error("Validation failed")
@@ -181,6 +214,18 @@ export const uploadStore = create<UploadState>((set, get) => ({
 
     if (!audioFile) {
       throw new Error("Audio file is required")
+    }
+
+    // Validate reference images have titles
+    const invalidImages = referenceImages.filter((img) => !img.title || !img.title.trim())
+    if (invalidImages.length > 0) {
+      set({
+        errors: {
+          ...get().errors,
+          prompt: "All reference images must have a title",
+        },
+      })
+      throw new Error("All reference images must have a title")
     }
 
     set({ isSubmitting: true, errors: {} })
@@ -193,7 +238,23 @@ export const uploadStore = create<UploadState>((set, get) => ({
         : get().stopAtStage || "composer"
       
       const { aspectRatio, template } = get()
-      const response = await uploadAudio(audioFile, userPrompt, stopAtStage, videoModel, aspectRatio, template)
+      
+      // Prepare reference images for upload
+      const refImagesForUpload = referenceImages.map((img) => ({
+        file: img.file,
+        type: img.type,
+        title: img.title.trim(),
+      }))
+      
+      const response = await uploadAudio(
+        audioFile,
+        userPrompt,
+        stopAtStage,
+        videoModel,
+        aspectRatio,
+        template,
+        refImagesForUpload.length > 0 ? refImagesForUpload : undefined
+      )
       // Don't reset isSubmitting here - keep it true so popup stays visible during navigation
       // The job page will reset it once we're on /jobs/[jobId]
       return response.job_id
@@ -229,6 +290,14 @@ export const uploadStore = create<UploadState>((set, get) => ({
   },
 
   reset: () => {
+    // Clean up preview URLs
+    const currentImages = get().referenceImages
+    currentImages.forEach((img) => {
+      if (img.previewUrl) {
+        URL.revokeObjectURL(img.previewUrl)
+      }
+    })
+    
     set({
       audioFile: null,
       userPrompt: "",
@@ -236,6 +305,7 @@ export const uploadStore = create<UploadState>((set, get) => ({
       videoModel: "veo_31", // Reset to default model
       aspectRatio: "16:9", // Reset to default aspect ratio
       template: "standard", // Reset to default template
+      referenceImages: [],
       errors: {},
       errorDetails: null,
       isSubmitting: false,

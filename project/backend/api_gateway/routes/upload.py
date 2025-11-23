@@ -8,12 +8,13 @@ import uuid
 import re
 import asyncio
 from datetime import datetime
+from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from mutagen import File as MutagenFile
 from shared.storage import StorageClient
 from shared.database import DatabaseClient
-from shared.validation import validate_audio_file, validate_prompt
+from shared.validation import validate_audio_file, validate_prompt, validate_reference_image
 from shared.errors import ValidationError, BudgetExceededError, RetryableError
 from shared.logging import get_logger
 from shared.config import settings
@@ -37,6 +38,12 @@ async def upload_audio(
     video_model: str = Form("kling_v21"),
     aspect_ratio: str = Form("16:9"),
     template: str = Form("standard"),
+    character_images: Optional[List[UploadFile]] = File(None),
+    scene_images: Optional[List[UploadFile]] = File(None),
+    object_images: Optional[List[UploadFile]] = File(None),
+    character_image_titles: Optional[List[str]] = Form(None),
+    scene_image_titles: Optional[List[str]] = Form(None),
+    object_image_titles: Optional[List[str]] = Form(None),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -191,14 +198,13 @@ async def upload_audio(
         if template not in valid_templates:
             raise ValidationError(f"Invalid template: {template}. Must be one of: {', '.join(valid_templates)}")
         
-        # Create job record in database
-        # Note: Using 'id' as job_id (primary key) since schema uses 'id' as PK
-        # Note: Schema has 'total_cost' not 'estimated_cost', so we don't store estimated_cost
+        # Create job record in database FIRST (required for foreign key constraint on user_reference_images)
+        # Note: audio_url will be set after audio upload completes
         job_data = {
             "id": job_id,  # Use generated UUID as primary key
             "user_id": user_id,
             "status": "queued",
-            "audio_url": audio_url,
+            "audio_url": audio_url,  # Set from audio upload above
             "user_prompt": user_prompt,
             "progress": 0,
             "current_stage": "audio_parser",  # Set initial stage so frontend knows what's next
@@ -210,6 +216,136 @@ async def upload_audio(
         }
         
         await db_client.table("jobs").insert(job_data).execute()
+        
+        # Process reference images (if provided) - NOW that job exists
+        uploaded_reference_images = []
+        if character_images or scene_images or object_images:
+            # Collect all images with their types and titles
+            all_images = []
+            if character_images:
+                for i, img in enumerate(character_images):
+                    if img:
+                        title = character_image_titles[i] if character_image_titles and i < len(character_image_titles) else ""
+                        if not title:
+                            raise ValidationError(f"Character image {i+1} requires a title")
+                        all_images.append(("character", img, title))
+            
+            if scene_images:
+                for i, img in enumerate(scene_images):
+                    if img:
+                        title = scene_image_titles[i] if scene_image_titles and i < len(scene_image_titles) else ""
+                        if not title:
+                            raise ValidationError(f"Scene image {i+1} requires a title")
+                        all_images.append(("scene", img, title))
+            
+            if object_images:
+                for i, img in enumerate(object_images):
+                    if img:
+                        title = object_image_titles[i] if object_image_titles and i < len(object_image_titles) else ""
+                        if not title:
+                            raise ValidationError(f"Object image {i+1} requires a title")
+                        all_images.append(("object", img, title))
+            
+            # Validate total count (max 2)
+            if len(all_images) > 2:
+                raise ValidationError(f"Maximum 2 reference images allowed. Received {len(all_images)}")
+            
+            # Validate and upload each image
+            for image_type, image_file, user_title in all_images:
+                # Validate image
+                validate_reference_image(image_file, max_size_mb=20)
+                
+                # Sanitize title for storage path
+                sanitized_title = re.sub(r'[^\w\-]', '_', user_title.strip())
+                sanitized_title = re.sub(r'_+', '_', sanitized_title).strip('_')[:50]  # Limit length
+                if not sanitized_title:
+                    sanitized_title = "untitled"
+                
+                # Generate unique filename
+                image_uuid = str(uuid.uuid4())
+                original_filename = image_file.filename or f"{image_type}.png"
+                ext = original_filename.rsplit('.', 1)[-1].lower() if '.' in original_filename else 'png'
+                if ext not in ['png', 'jpg', 'jpeg']:
+                    ext = 'png'
+                
+                # Storage path: {job_id}/user_uploaded/{image_type}_{sanitized_title}_{uuid}.{ext}
+                storage_path = f"{job_id}/user_uploaded/{image_type}_{sanitized_title}_{image_uuid}.{ext}"
+                
+                # Read image data
+                image_file.file.seek(0)
+                image_data = await image_file.read()
+                image_file.file.seek(0)
+                
+                # Determine content type
+                content_type = "image/png" if ext == "png" else "image/jpeg"
+                
+                # Upload to reference-images bucket
+                try:
+                    image_url = await asyncio.wait_for(
+                        storage_client.upload_file(
+                            bucket="reference-images",
+                            path=storage_path,
+                            file_data=image_data,
+                            content_type=content_type
+                        ),
+                        timeout=60.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Reference image upload timed out",
+                        extra={"job_id": job_id, "storage_path": storage_path}
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                        detail="Reference image upload timed out. Please try again."
+                    )
+                except RetryableError as e:
+                    logger.error(
+                        "Reference image upload failed after retries",
+                        exc_info=e,
+                        extra={"job_id": job_id, "storage_path": storage_path}
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Storage service temporarily unavailable. Please try again."
+                    )
+                
+                # Store in database
+                ref_image_data = {
+                    "job_id": job_id,
+                    "image_type": image_type,
+                    "user_title": user_title,
+                    "original_filename": original_filename,
+                    "storage_path": storage_path,
+                    "image_url": image_url,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+                
+                try:
+                    await db_client.table("user_reference_images").insert(ref_image_data).execute()
+                    uploaded_reference_images.append({
+                        "type": image_type,
+                        "title": user_title,
+                        "url": image_url
+                    })
+                    logger.info(
+                        "User reference image uploaded and stored",
+                        extra={
+                            "job_id": job_id,
+                            "image_type": image_type,
+                            "user_title": user_title,
+                            "storage_path": storage_path
+                        }
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to store user reference image in database",
+                        exc_info=e,
+                        extra={"job_id": job_id, "image_type": image_type}
+                    )
+                    # Continue processing - don't fail entire job if DB insert fails
+                    # The image is already uploaded to storage
         
         # Publish initial stage update so frontend knows which stage is pending
         from api_gateway.services.event_publisher import publish_event
@@ -231,12 +367,18 @@ async def upload_audio(
             }
         )
         
-        return {
+        response_data = {
             "job_id": job_id,
             "status": "queued",
             "estimated_cost": round(estimated_cost, 2),
             "created_at": job_data["created_at"]
         }
+        
+        # Include uploaded reference images in response
+        if uploaded_reference_images:
+            response_data["reference_images"] = uploaded_reference_images
+        
+        return response_data
         
     except (ValidationError, BudgetExceededError) as e:
         raise
