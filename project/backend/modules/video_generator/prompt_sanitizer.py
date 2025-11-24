@@ -19,6 +19,11 @@ SENSITIVE_WORD_REPLACEMENTS: Dict[str, str] = {
     "intimate moment": "close moment",
     "intimate": "close",
     
+    # "infectious" can trigger health/disease filters
+    "infectious energy": "electric energy",
+    "infectious enthusiasm": "electric enthusiasm",
+    "infectious": "electric",
+    
     # Other potentially sensitive terms (add as needed)
     "sensual": "warm",
     "provocative": "striking",

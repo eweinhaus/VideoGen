@@ -100,12 +100,17 @@ pip install -r requirements.txt
 
 ### Run API Gateway
 ```bash
-# Development
-uvicorn api_gateway.main:app --reload --port 8000
+# Development (with increased timeout for large jobs)
+uvicorn api_gateway.main:app --reload --port 8000 --timeout-keep-alive 300
 
-# Production
-uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000
+# Production (with increased timeout for large jobs)
+uvicorn api_gateway.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300
+
+# For jobs with many clips (40+), you may need even longer timeouts:
+uvicorn api_gateway.main:app --reload --port 8000 --timeout-keep-alive 600
 ```
+
+**Note**: The `--timeout-keep-alive` flag sets the timeout for keep-alive connections. For jobs with many clips (40+), increase this to 300-600 seconds to prevent request timeouts.
 
 ### Run Worker Process
 ```bash

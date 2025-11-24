@@ -27,6 +27,9 @@ scipy>=1.11.0  # Required by librosa for signal processing
 scikit-learn>=1.3.0  # Required for structure analysis clustering
 mutagen>=1.47.0  # Quick audio metadata extraction (for duration without full decode)
 
+# Image Processing (User-uploaded reference images)
+Pillow>=10.0.0  # Image processing (resize, format conversion)
+
 # OpenAI API (Module 3: Lyrics, Module 4: Scene Planning, Module 6: Prompt Generation)
 openai>=1.3.0
 

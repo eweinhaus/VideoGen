@@ -330,9 +330,9 @@ async def process(
                     }
                 )
             else:
-                # Attempts 3-4: Kling Turbo without reference images
+                # Attempts 3-4: Kling Turbo with main character reference as start frame
                 current_model = "kling_v25_turbo"
-                use_ref_images = False
+                use_ref_images = False  # Don't use multiple reference images, but use start frame
                 
                 # Ensure prompt is sanitized
                 if not retry_state.prompt_sanitized:

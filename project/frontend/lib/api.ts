@@ -245,7 +245,8 @@ export async function uploadAudio(
   stopAtStage: string | null = null,
   videoModel: string = "kling_v21",
   aspectRatio: string = "16:9",
-  template: string = "standard"
+  template: string = "standard",
+  referenceImages?: Array<{ file: File; type: "character" | "scene" | "object"; title: string }>
 ): Promise<UploadResponse> {
   const formData = new FormData()
   formData.append("audio_file", audioFile)
@@ -256,6 +257,49 @@ export async function uploadAudio(
   formData.append("video_model", videoModel)
   formData.append("aspect_ratio", aspectRatio)
   formData.append("template", template)
+
+  // Add reference images if provided
+  if (referenceImages && referenceImages.length > 0) {
+    const characterImages: File[] = []
+    const sceneImages: File[] = []
+    const objectImages: File[] = []
+    const characterTitles: string[] = []
+    const sceneTitles: string[] = []
+    const objectTitles: string[] = []
+
+    for (const refImg of referenceImages) {
+      if (refImg.type === "character") {
+        characterImages.push(refImg.file)
+        characterTitles.push(refImg.title)
+      } else if (refImg.type === "scene") {
+        sceneImages.push(refImg.file)
+        sceneTitles.push(refImg.title)
+      } else if (refImg.type === "object") {
+        objectImages.push(refImg.file)
+        objectTitles.push(refImg.title)
+      }
+    }
+
+    // Append files and titles
+    characterImages.forEach((file) => {
+      formData.append("character_images", file)
+    })
+    sceneImages.forEach((file) => {
+      formData.append("scene_images", file)
+    })
+    objectImages.forEach((file) => {
+      formData.append("object_images", file)
+    })
+    characterTitles.forEach((title) => {
+      formData.append("character_image_titles", title)
+    })
+    sceneTitles.forEach((title) => {
+      formData.append("scene_image_titles", title)
+    })
+    objectTitles.forEach((title) => {
+      formData.append("object_image_titles", title)
+    })
+  }
 
   // Use longer timeout for upload (180 seconds = 3 minutes)
   // Backend has 150s timeout for storage upload, plus buffer for validation, DB ops, etc.
@@ -277,11 +321,12 @@ export async function getJob(jobId: string, timeoutMs: number = 300000): Promise
 }
 
 export async function getJobClips(jobId: string): Promise<import("@/types/api").ClipListResponse> {
-  // Use 10 second timeout for clips requests
+  // Use longer timeout for clips requests (120 seconds = 2 minutes)
+  // Jobs with many clips (40+) can take 60-90 seconds to process
   return request<import("@/types/api").ClipListResponse>(
     `/api/v1/jobs/${jobId}/clips`,
     { method: "GET" },
-    10000 // 10 second timeout
+    120000 // 120 second timeout (2 minutes) for large jobs
   )
 }
 
@@ -455,7 +500,9 @@ export async function getClipComparison(
   const queryString = params.toString()
   const url = `/api/v1/jobs/${jobId}/clips/${clipIndex}/versions/compare${queryString ? `?${queryString}` : ""}`
   
-  return request<ClipComparisonResponse>(url, { method: "GET" }, 10000)
+  // Use longer timeout for clip comparison (60 seconds)
+  // This endpoint processes clip versions and can take time for jobs with many clips
+  return request<ClipComparisonResponse>(url, { method: "GET" }, 60000)
 }
 
 export interface JobAnalyticsResponse {

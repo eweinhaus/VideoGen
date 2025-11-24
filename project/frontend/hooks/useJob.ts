@@ -19,9 +19,9 @@ export function useJob(jobId?: string) {
         setHasAttemptedFetch(true)
         console.log("✅ useJob: Auth ready, fetching job", { jobId, hasToken: !!token, hasCached: !!cachedJob })
         
-        // Use shorter timeout for initial fetch (15 seconds)
+        // Use longer timeout for initial fetch (30 seconds) to handle slow backend metadata reconstruction
         // Allow partial data so page can render with cached data
-        fetchJob(jobId, { timeout: 15000, allowPartial: true }).catch((err) => {
+        fetchJob(jobId, { timeout: 30000, allowPartial: true }).catch((err) => {
           console.error("❌ useJob: Failed to fetch job", err)
           // Don't throw - allow page to render with cached data if available
         })

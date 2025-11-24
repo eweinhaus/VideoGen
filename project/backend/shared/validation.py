@@ -5,7 +5,8 @@ Shared validation utilities for common input validation tasks.
 """
 
 import mimetypes
-from typing import Optional, BinaryIO
+from typing import Optional, BinaryIO, List
+from fastapi import UploadFile
 
 from shared.errors import ValidationError
 
@@ -151,4 +152,80 @@ def validate_file_size(
         raise ValidationError(
             f"File size ({file_size_mb:.2f} MB) exceeds maximum "
             f"of {max_size_mb:.2f} MB"
+        )
+
+
+def validate_reference_image(
+    file: UploadFile,
+    max_size_mb: int = 20,
+    allowed_formats: Optional[List[str]] = None
+) -> None:
+    """
+    Validate reference image file.
+    
+    Args:
+        file: UploadFile object to validate
+        max_size_mb: Maximum file size in MB (default: 20)
+        allowed_formats: List of allowed MIME types (default: PNG, JPEG)
+        
+    Raises:
+        ValidationError: If file is invalid
+    """
+    if allowed_formats is None:
+        allowed_formats = ["image/png", "image/jpeg", "image/jpg"]
+    
+    if file is None:
+        raise ValidationError("Image file is required")
+    
+    # Check file size
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset to beginning
+    
+    if file_size == 0:
+        raise ValidationError("Image file is empty")
+    
+    max_size_bytes = max_size_mb * 1024 * 1024
+    if file_size > max_size_bytes:
+        raise ValidationError(
+            f"Image file size ({file_size / (1024 * 1024):.2f} MB) exceeds maximum "
+            f"of {max_size_mb} MB"
+        )
+    
+    # Check MIME type
+    if file.content_type:
+        if file.content_type not in allowed_formats:
+            raise ValidationError(
+                f"Invalid image format. Supported formats: PNG, JPEG. "
+                f"Received: {file.content_type}"
+            )
+    
+    # Check file extension
+    if file.filename:
+        ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+        valid_extensions = ['png', 'jpg', 'jpeg']
+        if ext not in valid_extensions:
+            raise ValidationError(
+                f"Invalid file extension. Supported: {', '.join(valid_extensions)}. "
+                f"Received: {ext}"
+            )
+    
+    # Check image signature (first bytes)
+    file.file.seek(0)
+    header = file.file.read(12)
+    file.file.seek(0)
+    
+    # PNG signature: 89 50 4E 47 0D 0A 1A 0A
+    # JPEG signature: FF D8 FF
+    valid_signatures = [
+        b"\x89PNG\r\n\x1a\n",  # PNG
+        b"\xff\xd8\xff",  # JPEG
+    ]
+    
+    is_valid_image = any(header.startswith(sig) for sig in valid_signatures)
+    
+    if not is_valid_image:
+        raise ValidationError(
+            "Invalid image file format. File does not match PNG or JPEG signature. "
+            "Supported formats: PNG, JPEG"
         )

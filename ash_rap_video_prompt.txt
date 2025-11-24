@@ -1,0 +1,23 @@
+Create a high-energy rap music video featuring Ash, alternating between epic Super Bowl performance scenes and luxurious mega yacht lifestyle moments throughout 45 seconds.
+
+**Main Character - Ash:**
+Ash is a confident rapper with straight floppy hair, 5'6" tall, BMI 29 (stocky build). CRITICAL: Ash's mouth remains completely closed in every scene - no lip movement, no mouth opening, maintaining a confident stoic expression throughout. His appearance must be 100% consistent across all scenes.
+
+**Scene 1: Super Bowl Stadium Performance**
+Ash performs on a massive Super Bowl stage surrounded by thousands of fans. Show him standing confidently, arms raised, moving to the beat, or walking with swagger. Dramatic lighting with bright stage lights and colored spotlights. Capture wide shots of the packed stadium, massive crowd, and Ash commanding the stage. Explosive, celebratory energy.
+
+**Scene 2: Mega Yacht Lifestyle**
+Ash relaxes on a luxurious mega yacht with a stylish social gathering. Opulent white deck, modern design, Mediterranean or tropical setting with crystal-clear blue water. Show Ash lounging on plush seating, standing near the yacht's edge, or casually socializing with guests. Bright, sunny natural lighting creating a glamorous, aspirational vibe.
+
+**Scene 3: Super Bowl Stage Dancing**
+Return to Super Bowl stage focusing on Ash dancing energetically - bouncing to the beat, moving across stage with confidence, performing choreographed movements. Crowd visible in background reacting with excitement. Dynamic camera angles - low angles for power, tracking shots following movement. Fast cuts matching rap song intensity.
+
+**Scene 4: Extreme Close-Up Shots**
+Very close-up shots of Ash's face looking directly at viewer with intense confidence. Intimate, powerful moments with eyes connecting to camera. Straight floppy hair frames his face, confident expression, unwavering gaze. Dramatic lighting - side-lit for depth or front-lit for clarity. Intercut throughout video.
+
+**Visual Style:**
+Vibrant, bold color palette - rich blues for yacht, electric colors for stadium, dramatic lighting for close-ups. Cinematic camera work with smooth tracking shots and dynamic angles. Fast-paced editing with hard cuts on beats matching rap energy. Polished, professional aesthetic. Ensure Ash's appearance is completely consistent - same hair, same build, same expression, mouth always closed.
+
+**CRITICAL DIRECTIVE - LYRICS HANDLING:**
+DO NOT include any lyrics, lyrics references, or lyrics context in any clip prompts. Focus exclusively on visual descriptions, camera work, lighting, and character appearance. The audio will handle the lyrics separately - the video generation prompts must contain ONLY visual elements with no text references to song lyrics whatsoever. This is essential to avoid content moderation issues.
+
