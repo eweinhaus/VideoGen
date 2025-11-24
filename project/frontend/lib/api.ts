@@ -321,11 +321,12 @@ export async function getJob(jobId: string, timeoutMs: number = 300000): Promise
 }
 
 export async function getJobClips(jobId: string): Promise<import("@/types/api").ClipListResponse> {
-  // Use 10 second timeout for clips requests
+  // Use longer timeout for clips requests (120 seconds = 2 minutes)
+  // Jobs with many clips (40+) can take 60-90 seconds to process
   return request<import("@/types/api").ClipListResponse>(
     `/api/v1/jobs/${jobId}/clips`,
     { method: "GET" },
-    10000 // 10 second timeout
+    120000 // 120 second timeout (2 minutes) for large jobs
   )
 }
 
@@ -499,7 +500,9 @@ export async function getClipComparison(
   const queryString = params.toString()
   const url = `/api/v1/jobs/${jobId}/clips/${clipIndex}/versions/compare${queryString ? `?${queryString}` : ""}`
   
-  return request<ClipComparisonResponse>(url, { method: "GET" }, 10000)
+  // Use longer timeout for clip comparison (60 seconds)
+  // This endpoint processes clip versions and can take time for jobs with many clips
+  return request<ClipComparisonResponse>(url, { method: "GET" }, 60000)
 }
 
 export interface JobAnalyticsResponse {

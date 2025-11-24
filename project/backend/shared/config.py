@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     # Options: "kling_v21" (default), "kling_v25_turbo", "hailuo_23", "wan_25_i2v", "veo_31"
     video_model: str = "kling_v21"
     
+    # Server timeout configuration
+    # SERVER_TIMEOUT: Request timeout in seconds for long-running endpoints (default: 300s = 5 minutes)
+    # Increase this for jobs with many clips (e.g., 46 clips may need 300s+)
+    # Note: Also configure Uvicorn with --timeout-keep-alive when starting the server
+    server_timeout: int = 300  # 5 minutes default
+    
     @field_validator("supabase_url")
     @classmethod
     def validate_supabase_url(cls, v: str) -> str:

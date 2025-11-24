@@ -162,47 +162,17 @@ async def _retry_content_moderation_for_regeneration(
             }
         )
     
-    # Attempts 3-4: Kling Turbo with main character reference as start frame
+    # Attempts 3-4: Kling Turbo without reference images
     for attempt_num in [3, 4]:
-        # Get main character reference image (variation 0 - first in list) for start frame
-        kling_start_frame_url = None
-        if original_clip_prompt.character_reference_urls and len(original_clip_prompt.character_reference_urls) > 0:
-            # Get the first character reference (main character, variation 0)
-            main_char_ref_url = original_clip_prompt.character_reference_urls[0]
-            
-            # Download the image for use as start frame
-            try:
-                kling_start_frame_url = await download_and_upload_image(main_char_ref_url, job_id)
-                logger.info(
-                    f"Using main character reference image as start frame for Kling Turbo (clip {original_clip_prompt.clip_index})",
-                    extra={
-                        "job_id": str(job_id),
-                        "clip_index": original_clip_prompt.clip_index,
-                        "character_ref_url": main_char_ref_url,
-                        "start_frame_url": kling_start_frame_url
-                    }
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to download character reference for Kling Turbo start frame: {str(e)}",
-                    extra={
-                        "job_id": str(job_id),
-                        "clip_index": original_clip_prompt.clip_index,
-                        "character_ref_url": main_char_ref_url
-                    }
-                )
-                # Continue without start frame if download fails
-                kling_start_frame_url = None
-        
         logger.info(
             f"Content moderation retry attempt {attempt_num} for clip {original_clip_prompt.clip_index}: "
-            f"Kling Turbo with sanitized prompt and main character start frame",
+            f"Kling Turbo with sanitized prompt (no reference images)",
             extra={
                 "job_id": str(job_id),
                 "clip_index": original_clip_prompt.clip_index,
                 "attempt": attempt_num,
                 "model": "kling_v25_turbo",
-                "using_start_frame": kling_start_frame_url is not None,
+                "using_ref_images": False,
                 "prompt_sanitized": prompt_sanitized
             }
         )
@@ -219,11 +189,11 @@ async def _retry_content_moderation_for_regeneration(
             })
         
         try:
-            # Use Kling Turbo with main character reference as start frame
+            # Use Kling Turbo without reference images (text-only)
             clip = await generate_video_clip(
                 clip_prompt=sanitized_clip_prompt,
-                image_url=kling_start_frame_url,  # Main character reference as start frame
-                reference_image_urls=None,  # Don't use multiple reference images
+                image_url=None,  # No reference images for Kling Turbo fallback
+                reference_image_urls=None,
                 settings=settings_dict,
                 job_id=job_id,
                 environment=environment,
