@@ -59,14 +59,19 @@ class TestSyncAudio:
         assert "copy" in call_args
         assert "-c:a" in call_args
         assert "aac" in call_args
-        assert "-shortest" in call_args
+        # Check for explicit stream mapping (replaces -shortest)
+        assert "-map" in call_args
+        assert "0:v" in call_args  # Video from first input
+        assert "1:a" in call_args  # Audio from second input
+        assert "-t" in call_args   # Explicit duration
         
         # Verify sync drift calculation
         assert sync_drift == 0.0  # Perfect sync
         
         # Verify duration functions were called
         mock_get_video_duration.assert_called_once()
-        mock_get_audio_duration.assert_called_once()
+        # get_audio_duration is called twice: once to set -t duration, once for drift calculation
+        assert mock_get_audio_duration.call_count == 2
     
     @pytest.mark.asyncio
     @patch('modules.composer.audio_syncer.run_ffmpeg_command', new_callable=AsyncMock)
@@ -100,9 +105,12 @@ class TestSyncAudio:
         # Verify sync drift is calculated correctly (use approximate comparison for floating point)
         assert abs(sync_drift - 0.1) < 0.001
         
-        # Verify -shortest flag is used (handles mismatch)
+        # Verify explicit stream mapping is used (replaces -shortest)
         call_args = mock_run_ffmpeg.call_args[0][0]
-        assert "-shortest" in call_args
+        assert "-map" in call_args
+        assert "0:v" in call_args  # Video from first input
+        assert "1:a" in call_args  # Audio from second input
+        assert "-t" in call_args   # Explicit duration
     
     @pytest.mark.asyncio
     @patch('modules.composer.audio_syncer.run_ffmpeg_command', new_callable=AsyncMock)
@@ -147,7 +155,7 @@ class TestSyncAudio:
     @patch('modules.composer.audio_syncer.get_video_duration', new_callable=AsyncMock)
     @patch('modules.composer.audio_syncer.get_audio_duration', new_callable=AsyncMock)
     async def test_sync_audio_shortest_flag_handles_mismatch(self, mock_get_audio_duration, mock_get_video_duration, mock_run_ffmpeg):
-        """Test that -shortest flag handles duration mismatches correctly."""
+        """Test that explicit duration (-t) and stream mapping handles duration mismatches correctly."""
         job_id = uuid4()
         temp_dir = Path("/tmp/test_audio_sync_shortest")
         temp_dir.mkdir(exist_ok=True)
@@ -171,9 +179,12 @@ class TestSyncAudio:
         
         output_path, sync_drift = await sync_audio(video_path, audio_bytes, temp_dir, job_id)
         
-        # Verify -shortest flag is used
+        # Verify explicit stream mapping and duration is used (replaces -shortest)
         call_args = mock_run_ffmpeg.call_args[0][0]
-        assert "-shortest" in call_args
+        assert "-map" in call_args
+        assert "0:v" in call_args  # Video from first input
+        assert "1:a" in call_args  # Audio from second input
+        assert "-t" in call_args   # Explicit duration set to audio length
         
         # Sync drift should be 5.0s
         assert sync_drift == 5.0

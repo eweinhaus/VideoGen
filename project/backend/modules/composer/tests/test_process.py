@@ -174,13 +174,13 @@ class TestProcessInputValidation:
         # Reload module first, then patch publish_progress from the module object
         process_module_reloaded = sys.modules.get('modules.composer.process')
         with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock) as mock_publish, \
-             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
-             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock) as mock_download_audio, \
-             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
-             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
-             patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
-             patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
-             patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch.object(process_module_reloaded, 'download_all_clips', new_callable=AsyncMock) as mock_download, \
+             patch.object(process_module_reloaded, 'download_audio', new_callable=AsyncMock) as mock_download_audio, \
+             patch('modules.composer.process.normalize_clip_with_concurrency_limit', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.process.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
+             patch('modules.composer.process.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.process.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.process.encode_final_video', new_callable=AsyncMock) as mock_encode, \
              patch('shared.storage.StorageClient') as mock_storage, \
              patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
             
@@ -231,7 +231,7 @@ class TestProcessInputValidation:
     @pytest.mark.asyncio
     @patch('modules.composer.utils.check_ffmpeg_available', return_value=True)
     async def test_sequential_clip_indices_validation(self, mock_check_ffmpeg):
-        """Test validation fails when clip indices are not sequential."""
+        """Test non-sequential indices are reindexed and processing succeeds."""
         import importlib
         import sys
         if 'modules.composer.process' in sys.modules:
@@ -242,13 +242,50 @@ class TestProcessInputValidation:
         clips = sample_clips(job_id, num_clips=3)
         clips.clips[1].clip_index = 5  # Non-sequential index
         
-        with pytest.raises(CompositionError, match="Clip indices must be sequential"):
-            await process(
+        # Mock dependencies to avoid actual processing
+        process_module_reloaded = sys.modules.get('modules.composer.process')
+        with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
+             patch.object(process_module_reloaded, 'download_all_clips', new_callable=AsyncMock, return_value=[b"c0", b"c1", b"c2"]) as mock_download, \
+             patch.object(process_module_reloaded, 'download_audio', new_callable=AsyncMock, return_value=b"audio") as mock_download_audio, \
+             patch('modules.composer.process.normalize_clip_with_concurrency_limit', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.process.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
+             patch('modules.composer.process.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.process.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.process.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch('shared.storage.StorageClient') as mock_storage, \
+             patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
+            
+            from pathlib import Path
+            mock_path = MagicMock(spec=Path)
+            mock_path.exists.return_value = True
+            mock_path.stat.return_value = MagicMock(st_size=1024 * 1024 * 10)
+            mock_path.read_bytes.return_value = b"video_bytes"
+            
+            mock_normalize.return_value = mock_path
+            mock_cascading.return_value = ([mock_path, mock_path, mock_path], {
+                "clips_trimmed": 0,
+                "total_shortfall": 0.0,
+                "compensation_applied": []
+            })
+            mock_transitions.return_value = mock_path
+            mock_sync.return_value = (mock_path, 0.0)
+            mock_encode.return_value = mock_path
+            mock_get_duration.return_value = 15.0
+            
+            mock_storage_instance = MagicMock()
+            mock_storage_instance.upload_file = AsyncMock(return_value="https://example.com/video.mp4")
+            mock_storage.return_value = mock_storage_instance
+            
+            # Should succeed and clips should be reindexed internally
+            result = await process(
                 job_id=str(job_id),
                 clips=clips,
                 audio_url="https://project.supabase.co/storage/v1/object/public/audio-uploads/audio.mp3",
                 transitions=[]
             )
+            
+            assert isinstance(result, VideoOutput)
+            assert mock_download.called
     
     @pytest.mark.asyncio
     @patch('modules.composer.utils.check_ffmpeg_available', return_value=False)
@@ -290,13 +327,13 @@ class TestCascadingCompensationIntegration:
         
         process_module_reloaded = sys.modules.get('modules.composer.process')
         with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
-             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
-             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock), \
-             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
-             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
-             patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
-             patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
-             patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch.object(process_module_reloaded, 'download_all_clips', new_callable=AsyncMock) as mock_download, \
+             patch.object(process_module_reloaded, 'download_audio', new_callable=AsyncMock), \
+             patch('modules.composer.process.normalize_clip_with_concurrency_limit', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.process.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
+             patch('modules.composer.process.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.process.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.process.encode_final_video', new_callable=AsyncMock) as mock_encode, \
              patch('shared.storage.StorageClient') as mock_storage, \
              patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
             
@@ -350,14 +387,14 @@ class TestCascadingCompensationIntegration:
         
         process_module_reloaded = sys.modules.get('modules.composer.process')
         with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
-             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock) as mock_download, \
-             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock), \
-             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
-             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
-             patch('modules.composer.duration_handler.extend_last_clip', new_callable=AsyncMock) as mock_extend, \
-             patch('modules.composer.transition_applier.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
-             patch('modules.composer.audio_syncer.sync_audio', new_callable=AsyncMock) as mock_sync, \
-             patch('modules.composer.encoder.encode_final_video', new_callable=AsyncMock) as mock_encode, \
+             patch.object(process_module_reloaded, 'download_all_clips', new_callable=AsyncMock) as mock_download, \
+             patch.object(process_module_reloaded, 'download_audio', new_callable=AsyncMock), \
+             patch('modules.composer.process.normalize_clip_with_concurrency_limit', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.process.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading, \
+             patch('modules.composer.process.duration_handler.extend_last_clip', new_callable=AsyncMock) as mock_extend, \
+             patch('modules.composer.process.apply_transitions', new_callable=AsyncMock) as mock_transitions, \
+             patch('modules.composer.process.sync_audio', new_callable=AsyncMock) as mock_sync, \
+             patch('modules.composer.process.encode_final_video', new_callable=AsyncMock) as mock_encode, \
              patch('shared.storage.StorageClient') as mock_storage, \
              patch('modules.composer.utils.get_video_duration', new_callable=AsyncMock) as mock_get_duration:
             
@@ -410,10 +447,10 @@ class TestCascadingCompensationIntegration:
         
         process_module_reloaded = sys.modules.get('modules.composer.process')
         with patch.object(process_module_reloaded, 'publish_progress', new_callable=AsyncMock), \
-             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock), \
-             patch('modules.composer.downloader.download_audio', new_callable=AsyncMock), \
-             patch('modules.composer.normalizer.normalize_clip', new_callable=AsyncMock) as mock_normalize, \
-             patch('modules.composer.duration_handler.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading:
+             patch.object(process_module_reloaded, 'download_all_clips', new_callable=AsyncMock), \
+             patch.object(process_module_reloaded, 'download_audio', new_callable=AsyncMock), \
+             patch('modules.composer.process.normalize_clip_with_concurrency_limit', new_callable=AsyncMock) as mock_normalize, \
+             patch('modules.composer.process.handle_cascading_durations', new_callable=AsyncMock) as mock_cascading:
             
             from pathlib import Path
             mock_path = MagicMock(spec=Path)

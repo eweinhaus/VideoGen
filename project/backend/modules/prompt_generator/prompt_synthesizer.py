@@ -4,6 +4,7 @@ Prompt synthesis helpers for Module 6.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Literal, Dict, Any
 
@@ -807,9 +808,24 @@ def build_lyrics_block(context: ClipContext) -> str:
     if not context.lyrics_context:
         return ""
 
+    # Apply word replacements before formatting
+    lyrics_text = context.lyrics_context.strip()
+    # Replace "ass" with "ash" (case-insensitive, whole word only)
+    lyrics_text = re.sub(r'\bass\b', 'ash', lyrics_text, flags=re.IGNORECASE)
+    # Replace "pussy" with "pushy" (case-insensitive, whole word only)
+    lyrics_text = re.sub(r'\bpussy\b', 'pushy', lyrics_text, flags=re.IGNORECASE)
+    # Replace "kiss" with "kish" (case-insensitive, whole word only)
+    lyrics_text = re.sub(r'\bkiss\b', 'kish', lyrics_text, flags=re.IGNORECASE)
+    # Remove n-word (hard r version, case-insensitive, whole word only)
+    lyrics_text = re.sub(r'\bn[1i]gg[ae]r\b', '', lyrics_text, flags=re.IGNORECASE)
+    # Remove n-word (soft a version, case-insensitive, whole word only)
+    lyrics_text = re.sub(r'\bn[1i]gg[ae]\b', '', lyrics_text, flags=re.IGNORECASE)
+    # Clean up any extra spaces that may result from word removal
+    lyrics_text = re.sub(r'\s+', ' ', lyrics_text).strip()
+
     # Lyrics are already filtered to clip's exact time range by scene planner
     # Format as a clear reference block
-    lyrics_block = f"LYRICS REFERENCE: \"{context.lyrics_context.strip()}\""
+    lyrics_block = f"LYRICS REFERENCE: \"{lyrics_text}\""
 
     return lyrics_block
 

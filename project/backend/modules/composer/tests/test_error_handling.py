@@ -223,12 +223,22 @@ class TestEdgeCaseHandling:
         job_id = uuid4()
         clips = sample_clips(job_id, num_clips=3)
         
+        # Patch to avoid real downloads and force parse error on audio URL
         with \
-             patch('modules.video_generator.image_handler.parse_supabase_url') as mock_parse:
-            # Simulate invalid URL parsing
-            mock_parse.side_effect = ValueError("Invalid URL format")
+             patch('modules.composer.downloader.download_all_clips', new_callable=AsyncMock, return_value=[b"clip0", b"clip1", b"clip2"]) as mock_download, \
+             patch('modules.composer.downloader.parse_supabase_url') as mock_parse:
             
-            with pytest.raises(CompositionError):
+            # Make parse_supabase_url raise for audio URL only
+            def parse_side_effect(url: str):
+                if url == "invalid-url":
+                    raise ValueError("Invalid URL format")
+                # Return dummy bucket/path for clip URLs
+                return ("video-clips", "clip0.mp4")
+            
+            mock_parse.side_effect = parse_side_effect
+            
+            # Expect RetryableError from download_audio wrapping the parse error
+            with pytest.raises(RetryableError):
                 await process(
                     job_id=str(job_id),
                     clips=clips,

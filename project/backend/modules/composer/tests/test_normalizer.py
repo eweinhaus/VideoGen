@@ -33,7 +33,7 @@ class TestNormalizeClip:
             output_path = temp_dir / f"clip_{clip_index}_normalized.mp4"
             output_path.write_bytes(b"normalized_video")
             
-            result = await normalize_clip(clip_bytes, clip_index, temp_dir, job_id)
+            result = await normalize_clip(clip_bytes, clip_index, temp_dir, job_id, 1920, 1080)
             
             assert result == output_path
             assert result.exists()
@@ -67,7 +67,7 @@ class TestNormalizeClip:
             mock_run_ffmpeg.return_value = None
             
             with pytest.raises(CompositionError, match="Normalized clip not created"):
-                await normalize_clip(clip_bytes, clip_index, temp_dir, job_id)
+                await normalize_clip(clip_bytes, clip_index, temp_dir, job_id, 1920, 1080)
         finally:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -89,7 +89,7 @@ class TestNormalizeClip:
             mock_run_ffmpeg.side_effect = RetryableError("FFmpeg failed")
             
             with pytest.raises(CompositionError):
-                await normalize_clip(clip_bytes, clip_index, temp_dir, job_id)
+                await normalize_clip(clip_bytes, clip_index, temp_dir, job_id, 1920, 1080)
         finally:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)

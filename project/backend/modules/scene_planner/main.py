@@ -5,6 +5,7 @@ Main entry point called by API Gateway orchestrator.
 """
 
 from uuid import UUID
+from typing import Optional
 from shared.models.audio import AudioAnalysis
 from shared.models.scene import ScenePlan
 from shared.errors import ValidationError, GenerationError
@@ -19,7 +20,8 @@ logger = get_logger("scene_planner")
 async def process_scene_planning(
     job_id: UUID,
     user_prompt: str,
-    audio_data: AudioAnalysis
+    audio_data: AudioAnalysis,
+    character_image_url: Optional[str] = None
 ) -> ScenePlan:
     """
     Main entry point for scene planning processing.
@@ -31,6 +33,7 @@ async def process_scene_planning(
         job_id: Job ID
         user_prompt: User's creative prompt (50-3000 characters)
         audio_data: AudioAnalysis from Module 3 (Audio Parser)
+        character_image_url: Optional URL to user-uploaded character image
         
     Returns:
         ScenePlan Pydantic model
@@ -72,9 +75,14 @@ async def process_scene_planning(
                 "user_prompt_length": len(user_prompt),
                 "clip_count": len(audio_data.clip_boundaries),
                 "bpm": audio_data.bpm,
-                "mood": audio_data.mood.primary
+                "mood": audio_data.mood.primary,
+                "has_character_image": bool(character_image_url)
             }
         )
+        
+        # Note: character_image_url is accepted for compatibility, but the scene planner
+        # retrieves user-uploaded character images from the database via the reference generator.
+        # This parameter is kept for backward compatibility and future use.
         
         # Call planner
         scene_plan = await plan_scenes(

@@ -1,7 +1,7 @@
 """
 Lipsync Processor Module
 
-Applies lip synchronization to video clips using Replicate's pixverse/lipsync model.
+Applies lip synchronization to video clips using Replicate's sync/lipsync-2 model.
 """
 from modules.lipsync_processor.process import process_lipsync_clips, process_single_clip_lipsync
 

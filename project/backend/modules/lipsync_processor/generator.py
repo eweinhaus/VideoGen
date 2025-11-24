@@ -1,5 +1,5 @@
 """
-Replicate API integration for PixVerse LipSync model.
+Replicate API integration for Sync Labs LipSync 2.0 model.
 
 Handles lipsync video generation via Replicate API with polling,
 error handling, and cost tracking.
@@ -20,14 +20,19 @@ from shared.errors import RetryableError, GenerationError
 from shared.logging import get_logger
 from shared.config import settings
 from modules.lipsync_processor.config import (
-    PIXVERSE_LIPSYNC_MODEL,
-    PIXVERSE_LIPSYNC_VERSION,
+    SYNC_LIPSYNC_MODEL,
+    SYNC_LIPSYNC_VERSION,
+    PIXVERSE_LIPSYNC_MODEL,  # Legacy support
+    PIXVERSE_LIPSYNC_VERSION,  # Legacy support
     LIPSYNC_TIMEOUT_SECONDS,
     LIPSYNC_ESTIMATED_COST,
     LIPSYNC_POLL_INTERVAL,
     LIPSYNC_FAST_POLL_INTERVAL,
     LIPSYNC_FAST_POLL_THRESHOLD,
-    LIPSYNC_ESTIMATED_TIME_PER_CLIP
+    LIPSYNC_ESTIMATED_TIME_PER_CLIP,
+    LIPSYNC_TEMPERATURE,
+    LIPSYNC_SYNC_MODE,
+    LIPSYNC_ACTIVE_SPEAKER_DETECTION
 )
 
 logger = get_logger("lipsync_processor.generator")
@@ -111,10 +116,13 @@ async def generate_lipsync_clip(
     job_id: UUID,
     environment: str = "production",
     progress_callback: Optional[callable] = None,
-    character_ids: Optional[List[str]] = None
+    character_ids: Optional[List[str]] = None,
+    temperature: Optional[float] = None,
+    sync_mode: Optional[str] = None,
+    active_speaker_detection: Optional[bool] = None
 ) -> Clip:
     """
-    Generate lipsynced video clip via Replicate PixVerse LipSync model.
+    Generate lipsynced video clip via Replicate Sync Labs LipSync 2.0 model.
     
     Args:
         video_url: URL to the video clip (must be ≤ 30s, ≤ 20MB)
@@ -125,6 +133,12 @@ async def generate_lipsync_clip(
         progress_callback: Optional callback for progress updates
         character_ids: Optional list of character IDs to target for lipsync
                        (if None, syncs all visible characters)
+        temperature: Optional temperature control (0-1, default 0.95)
+                     Controls expressiveness of lipsync. Higher = more expressive.
+        sync_mode: Optional sync mode (default "silence")
+                   Options: "silence", "cut_off", "loop", "bounce", "remap"
+        active_speaker_detection: Optional active speaker detection (default True)
+                                 Automatically detects who's speaking in multi-person videos
         
     Returns:
         Clip model with lipsynced video URL
@@ -152,9 +166,52 @@ async def generate_lipsync_clip(
             "audio": audio_url
         }
         
+        # Add sync_mode (Sync Labs LipSync 2.0 feature)
+        # Controls how the model handles synchronization
+        final_sync_mode = sync_mode if sync_mode is not None else LIPSYNC_SYNC_MODE
+        if final_sync_mode:
+            input_data["sync_mode"] = str(final_sync_mode)
+            logger.info(
+                f"Using sync_mode: {final_sync_mode}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "sync_mode": final_sync_mode
+                }
+            )
+        
+        # Add temperature control (Sync Labs LipSync 2.0 feature)
+        # Temperature controls expressiveness: 0 = subtle, 1 = expressive
+        final_temperature = temperature if temperature is not None else LIPSYNC_TEMPERATURE
+        if final_temperature is not None:
+            input_data["temperature"] = float(final_temperature)
+            logger.info(
+                f"Using temperature: {final_temperature}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "temperature": final_temperature
+                }
+            )
+        
+        # Add active speaker detection (Sync Labs LipSync 2.0 feature)
+        # Automatically detects who's speaking in multi-person videos
+        final_active_speaker = active_speaker_detection if active_speaker_detection is not None else LIPSYNC_ACTIVE_SPEAKER_DETECTION
+        if final_active_speaker is not None:
+            # Note: Check if the model accepts this parameter name
+            # Some models might use different parameter names
+            input_data["active_speaker_detection"] = final_active_speaker
+            logger.info(
+                f"Using active speaker detection: {final_active_speaker}",
+                extra={
+                    "job_id": str(job_id),
+                    "clip_index": clip_index,
+                    "active_speaker_detection": final_active_speaker
+                }
+            )
+        
         # Add character selection if provided (if model supports it)
-        # Note: PixVerse lipsync may not support character selection yet,
-        # but we include it for future compatibility
+        # Note: Sync Labs LipSync 2.0 may support character selection
         if character_ids:
             logger.info(
                 f"Character selection provided: {character_ids}",
@@ -174,19 +231,22 @@ async def generate_lipsync_clip(
             extra={
                 "job_id": str(job_id),
                 "clip_index": clip_index,
-                "model": PIXVERSE_LIPSYNC_MODEL,
-                "version": PIXVERSE_LIPSYNC_VERSION
+                "model": SYNC_LIPSYNC_MODEL,
+                "version": SYNC_LIPSYNC_VERSION,
+                "sync_mode": input_data.get("sync_mode"),
+                "temperature": input_data.get("temperature"),
+                "active_speaker_detection": input_data.get("active_speaker_detection")
             }
         )
         
-        if PIXVERSE_LIPSYNC_VERSION == "latest":
+        if SYNC_LIPSYNC_VERSION == "latest":
             prediction = client.predictions.create(
-                model=PIXVERSE_LIPSYNC_MODEL,
+                model=SYNC_LIPSYNC_MODEL,
                 input=input_data
             )
         else:
             prediction = client.predictions.create(
-                version=PIXVERSE_LIPSYNC_VERSION,
+                version=SYNC_LIPSYNC_VERSION,
                 input=input_data
             )
         
@@ -364,7 +424,7 @@ async def generate_lipsync_clip(
             await cost_tracker.track_cost(
                 job_id=job_id,
                 stage_name="lipsync_processor",
-                api_name="pixverse_lipsync",
+                api_name="sync_lipsync_2",
                 cost=actual_cost
             )
             

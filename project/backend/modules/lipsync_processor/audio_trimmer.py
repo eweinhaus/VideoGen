@@ -43,7 +43,7 @@ async def trim_audio_to_clip(
     """
     duration = end_time - start_time
     
-    # Validate duration (pixverse/lipsync max is 30s)
+    # Validate duration (sync/lipsync-2 max is 30s)
     if duration > LIPSYNC_MAX_DURATION:
         raise ValueError(
             f"Clip duration {duration:.2f}s exceeds {LIPSYNC_MAX_DURATION}s limit for lipsync"

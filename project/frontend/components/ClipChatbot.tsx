@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { FloatingChat } from "@/components/ui/floating-chat"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { LoadingSpinner } from "@/components/LoadingSpinner"
 import { ClipComparison } from "@/components/ClipComparison"
 import { APIError } from "@/types/api"
@@ -106,6 +107,8 @@ export function ClipChatbot({
   const [clips, setClips] = useState<ClipData[]>([])
   const [selectedClipIndices, setSelectedClipIndices] = useState<number[]>([])
   const [loadingClips, setLoadingClips] = useState(true)
+  const [showMultiClipConfirm, setShowMultiClipConfirm] = useState(false)
+  const [pendingSubmission, setPendingSubmission] = useState<{ message: string; clipIndices: number[] } | null>(null)
   
   // Track the last synced clip index to prevent infinite loops
   const lastSyncedClipRef = useRef<number | undefined>(undefined)
@@ -714,15 +717,7 @@ export function ClipChatbot({
     ])
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (!input.trim() || isProcessing || selectedClipIndices.length === 0 || !videoLoaded) {
-      return
-    }
-
-    const userMessage = input.trim()
-    const clipIndices = selectedClipIndices
+  const performSubmission = async (userMessage: string, clipIndices: number[]) => {
     setInput("")
     setError(null)
     setLastError(null)
@@ -852,6 +847,41 @@ export function ClipChatbot({
       setIsRetryable(isRetryable)
       addSystemMessage(errorMessage, "error")
     }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!input.trim() || isProcessing || selectedClipIndices.length === 0 || !videoLoaded) {
+      return
+    }
+
+    const userMessage = input.trim()
+    const clipIndices = selectedClipIndices
+
+    // Check if more than one clip is selected
+    if (clipIndices.length > 1) {
+      // Show confirmation dialog
+      setPendingSubmission({ message: userMessage, clipIndices })
+      setShowMultiClipConfirm(true)
+      return
+    }
+
+    // Single clip or no confirmation needed - proceed directly
+    await performSubmission(userMessage, clipIndices)
+  }
+
+  const handleConfirmMultiClip = async () => {
+    if (pendingSubmission) {
+      setShowMultiClipConfirm(false)
+      await performSubmission(pendingSubmission.message, pendingSubmission.clipIndices)
+      setPendingSubmission(null)
+    }
+  }
+
+  const handleCancelMultiClip = () => {
+    setShowMultiClipConfirm(false)
+    setPendingSubmission(null)
   }
 
   const handleCancel = () => {
@@ -1520,6 +1550,37 @@ export function ClipChatbot({
         </div>
       </div>
     </FloatingChat>
+
+    {/* Multi-clip confirmation dialog */}
+    {showMultiClipConfirm && pendingSubmission && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <Card className="w-full max-w-md mx-4">
+          <CardHeader>
+            <CardTitle>Edit Multiple Clips?</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Are you sure you want to edit {pendingSubmission.clipIndices.length} clips? This will regenerate all selected clips with your instruction.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={handleCancelMultiClip}
+                disabled={isProcessing}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmMultiClip}
+                disabled={isProcessing}
+              >
+                Yes
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )}
     </>
   )
 }

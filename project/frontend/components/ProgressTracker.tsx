@@ -1228,7 +1228,9 @@ export function ProgressTracker({
       console.log("🔄 SSE failed, starting polling fallback for job:", jobId)
       
       const pollInterval = setInterval(() => {
-        fetchJob(jobId, { timeout: 10000, allowPartial: true }).catch((err) => {
+        // Use 30 second timeout to allow backend time for metadata reconstruction
+        // Backend may need to reconstruct metadata from storage (up to 6s) plus DB queries
+        fetchJob(jobId, { timeout: 30000, allowPartial: true }).catch((err) => {
           console.error("❌ Polling fetch failed:", err)
         })
       }, 5000) // Poll every 5 seconds

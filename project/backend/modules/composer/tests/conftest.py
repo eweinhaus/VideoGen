@@ -2,6 +2,8 @@
 Pytest fixtures for composer tests.
 """
 import pytest
+import subprocess
+from pathlib import Path
 from uuid import uuid4
 from decimal import Decimal
 
@@ -67,4 +69,43 @@ def sample_transitions():
             rationale="Simple cut"
         )
     ]
+
+
+def create_test_video(output_path: Path, duration: float = 1.0, width: int = 640, height: int = 480):
+    """
+    Create a minimal valid video file for testing.
+    
+    Args:
+        output_path: Path to output video file
+        duration: Duration in seconds (default: 1.0)
+        width: Video width (default: 640)
+        height: Video height (default: 480)
+    """
+    # Create a minimal valid video using FFmpeg
+    # This generates a solid color video with no audio
+    cmd = [
+        'ffmpeg',
+        '-f', 'lavfi',
+        '-i', f'color=c=black:s={width}x{height}:d={duration}',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p',
+        '-y',  # Overwrite if exists
+        str(output_path)
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        if result.returncode != 0:
+            # If FFmpeg fails, just create an empty file as fallback
+            output_path.touch()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # FFmpeg not available or timeout - create empty file
+        output_path.touch()
+
+
+@pytest.fixture
+def create_test_video_file():
+    """Fixture that returns the create_test_video function."""
+    return create_test_video
 
