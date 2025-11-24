@@ -45,6 +45,20 @@ export function ClipComparison({
   clipEndTime,
   activeVersionNumber,
 }: ClipComparisonProps) {
+  // CRITICAL: Log props on mount to see what we're receiving
+  useEffect(() => {
+    console.log("🎬 ClipComparison received props:", {
+      originalClipVersion: originalClip.version_number,
+      originalClipUrl: originalClip.video_url,
+      regeneratedClipVersion: regeneratedClip?.version_number,
+      regeneratedClipUrl: regeneratedClip?.video_url,
+      activeVersionNumber,
+      versionsMatch: originalClip.version_number === regeneratedClip?.version_number,
+      urlsMatch: originalClip.video_url === regeneratedClip?.video_url,
+      BUG_DETECTED_IN_PROPS: originalClip.version_number === regeneratedClip?.version_number || originalClip.video_url === regeneratedClip?.video_url
+    })
+  }, []) // Only log on mount
+  
   const [isLoading, setIsLoading] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isSynced, setIsSynced] = useState(syncPlayback)
@@ -62,9 +76,26 @@ export function ClipComparison({
       regeneratedClipVersion: regeneratedClip?.version_number,
       originalClipVersion: originalClip.version_number,
       initializedActiveVersion: activeVersion,
-      buttonShouldSay: activeVersion === regeneratedClip?.version_number ? "Revert to Prior Version" : "Change clip to latest version"
+      buttonShouldSay: activeVersion === regeneratedClip?.version_number ? "Revert to Prior Version" : "Change clip to latest version",
+      originalVideoUrl: originalClip.video_url?.substring(0, 100),
+      regeneratedVideoUrl: regeneratedClip?.video_url?.substring(0, 100),
+      urlsMatch: originalClip.video_url === regeneratedClip?.video_url,
+      versionsMatch: originalClip.version_number === regeneratedClip?.version_number,
+      BUG_DETECTED: originalClip.version_number === regeneratedClip?.version_number || originalClip.video_url === regeneratedClip?.video_url
     })
-  }, [activeVersionNumber, regeneratedClip?.version_number, originalClip.version_number, activeVersion])
+    
+    // CRITICAL BUG DETECTION: If both clips have the same version number or URL, this is a bug
+    if (regeneratedClip && (originalClip.version_number === regeneratedClip.version_number || originalClip.video_url === regeneratedClip.video_url)) {
+      console.error("🚨 BUG DETECTED: Both original and regenerated clips are the same!", {
+        originalVersion: originalClip.version_number,
+        regeneratedVersion: regeneratedClip.version_number,
+        originalUrl: originalClip.video_url?.substring(0, 100),
+        regeneratedUrl: regeneratedClip.video_url?.substring(0, 100),
+        versionsMatch: originalClip.version_number === regeneratedClip.version_number,
+        urlsMatch: originalClip.video_url === regeneratedClip.video_url
+      })
+    }
+  }, [activeVersionNumber, regeneratedClip?.version_number, originalClip.version_number, activeVersion, originalClip.video_url, regeneratedClip?.video_url])
   
   // Update activeVersion when activeVersionNumber prop changes
   useEffect(() => {
@@ -566,6 +597,34 @@ export function ClipComparison({
   const leftVideoRef = isSwapped && regeneratedClip ? regeneratedVideoRef : originalVideoRef
   const rightVideoRef = isSwapped && regeneratedClip ? originalVideoRef : regeneratedVideoRef
   
+  // CRITICAL DEBUG: Log which clips are being displayed
+  useEffect(() => {
+    console.log("🎬 ClipComparison Display Logic:", {
+      isSwapped,
+      leftClipVersion: leftClip.version_number,
+      leftClipUrl: leftClip.video_url,
+      rightClipVersion: rightClip?.version_number,
+      rightClipUrl: rightClip?.video_url,
+      originalClipVersion: originalClip.version_number,
+      originalClipUrl: originalClip.video_url,
+      regeneratedClipVersion: regeneratedClip?.version_number,
+      regeneratedClipUrl: regeneratedClip?.video_url,
+      BUG_DETECTED: leftClip.video_url === rightClip?.video_url || leftClip.version_number === rightClip?.version_number
+    })
+    
+    if (rightClip && (leftClip.video_url === rightClip.video_url || leftClip.version_number === rightClip.version_number)) {
+      console.error("🚨 BUG DETECTED: Left and right clips are the same!", {
+        leftClipVersion: leftClip.version_number,
+        rightClipVersion: rightClip.version_number,
+        leftClipUrl: leftClip.video_url,
+        rightClipUrl: rightClip.video_url,
+        isSwapped,
+        originalClipVersion: originalClip.version_number,
+        regeneratedClipVersion: regeneratedClip?.version_number
+      })
+    }
+  }, [isSwapped, leftClip, rightClip, originalClip, regeneratedClip])
+  
   // Check if revert button should be shown
   const showRevertButton = regeneratedClip && onRevert && clipIndex !== undefined
   
@@ -752,10 +811,22 @@ export function ClipComparison({
                 )}
                 {leftClip.video_url ? (
                   <video
+                    key={`left-v${leftClip.version_number}-${leftClip.video_url.substring(0, 50)}`}
                     ref={leftVideoRef}
                     src={leftClip.video_url}
                     className="w-full h-full"
                     controls
+                    onLoadStart={() => {
+                      console.log(`🎥 Left video loading: v${leftClip.version_number}`, leftClip.video_url?.substring(0, 100))
+                    }}
+                    onLoadedData={() => {
+                      const video = leftVideoRef.current
+                      console.log(`✅ Left video loaded: v${leftClip.version_number}`, {
+                        videoSrc: video?.src?.substring(0, 100),
+                        expectedSrc: leftClip.video_url?.substring(0, 100),
+                        matches: video?.src === leftClip.video_url
+                      })
+                    }}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-white">
@@ -802,10 +873,22 @@ export function ClipComparison({
                     )}
                     {rightClip.video_url ? (
                       <video
+                        key={`right-v${rightClip.version_number}-${rightClip.video_url.substring(0, 50)}`}
                         ref={rightVideoRef}
                         src={rightClip.video_url}
                         className="w-full h-full"
                         controls
+                        onLoadStart={() => {
+                          console.log(`🎥 Right video loading: v${rightClip.version_number}`, rightClip.video_url?.substring(0, 100))
+                        }}
+                        onLoadedData={() => {
+                          const video = rightVideoRef.current
+                          console.log(`✅ Right video loaded: v${rightClip.version_number}`, {
+                            videoSrc: video?.src?.substring(0, 100),
+                            expectedSrc: rightClip.video_url?.substring(0, 100),
+                            matches: video?.src === rightClip.video_url
+                          })
+                        }}
                       />
                     ) : (
                       <div className="flex items-center justify-center h-full text-white">
