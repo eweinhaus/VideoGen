@@ -2240,43 +2240,90 @@ async def regenerate_clip_with_recomposition(
     # (job_stages may already have a regenerated clip from a previous regeneration)
     original_clip = clips.clips[clip_position]
     
-    # Extract version number from the new clip URL to ensure consistency
-    version_from_url = None
-    if new_clip.video_url:
-        version_match = re.search(r'clip_\d+_v(\d+)\.mp4', new_clip.video_url)
-        if version_match:
-            version_from_url = int(version_match.group(1))
-            logger.info(
-                f"Extracted version number {version_from_url} from new clip URL for recomposition",
-                extra={
-                    "job_id": str(job_id),
-                    "clip_index": clip_index,
-                    "video_url": new_clip.video_url,
-                    "extracted_version": version_from_url
-                }
-            )
-    
+    # CRITICAL FIX: Check if the most recent version has the same video file path
+    # This prevents creating duplicate versions (e.g., v12 and v13 with the same file)
+    # during recomposition when a version was already saved after initial regeneration
+    # Note: We compare by file path (without token) since signed URLs have different tokens
     db = DatabaseClient()
-    version_number = await save_clip_version_to_database(
-            job_id=job_id,
-            clip_index=clip_index,
-        old_clip=original_clip,
-        new_clip=new_clip,
-        regeneration_result=regeneration_result,
-        user_instruction=user_instruction,
-        db=db,
-        raise_on_error=True,  # For recomposition path, we want to fail if version save fails
-        version_number=version_from_url  # Use version number from file path
-    )
+    version_number = None
+    version_already_exists = False
     
-    logger.info(
-        f"Saved regeneration to clip_versions as version {version_number} (with recomposition)",
-                extra={
-                    "job_id": str(job_id),
-                    "clip_index": clip_index,
-            "version_number": version_number
-        }
-            )
+    if new_clip.video_url:
+        # Extract base file path from URL (remove query parameters/tokens)
+        # URL format: https://.../video-clips/.../clip_3.mp4?token=...
+        new_clip_base_path = new_clip.video_url.split('?')[0] if '?' in new_clip.video_url else new_clip.video_url
+        
+        # Get the most recent version for this clip to check if it has the same file path
+        latest_version_result = await db.table("clip_versions").select("version_number, video_url").eq(
+            "job_id", str(job_id)
+        ).eq("clip_index", clip_index).order("version_number", desc=True).limit(1).execute()
+        
+        if latest_version_result.data and len(latest_version_result.data) > 0:
+            latest_version = latest_version_result.data[0]
+            latest_url = latest_version.get("video_url")
+            if latest_url:
+                latest_base_path = latest_url.split('?')[0] if '?' in latest_url else latest_url
+                if latest_base_path == new_clip_base_path:
+                    version_number = latest_version.get("version_number")
+                    version_already_exists = True
+                    logger.info(
+                        f"Most recent version (v{version_number}) already has this file path, skipping duplicate save during recomposition",
+                        extra={
+                            "job_id": str(job_id),
+                            "clip_index": clip_index,
+                            "existing_version_number": version_number,
+                            "file_path": new_clip_base_path,
+                            "action": "Skipping duplicate version save - version already saved after initial regeneration"
+                        }
+                    )
+    
+    # Only save if version doesn't already exist
+    if not version_already_exists:
+        # Extract version number from the new clip URL to ensure consistency
+        version_from_url = None
+        if new_clip.video_url:
+            version_match = re.search(r'clip_\d+_v(\d+)\.mp4', new_clip.video_url)
+            if version_match:
+                version_from_url = int(version_match.group(1))
+                logger.info(
+                    f"Extracted version number {version_from_url} from new clip URL for recomposition",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                        "video_url": new_clip.video_url,
+                        "extracted_version": version_from_url
+                    }
+                )
+        
+        version_number = await save_clip_version_to_database(
+                job_id=job_id,
+                clip_index=clip_index,
+            old_clip=original_clip,
+            new_clip=new_clip,
+            regeneration_result=regeneration_result,
+            user_instruction=user_instruction,
+            db=db,
+            raise_on_error=True,  # For recomposition path, we want to fail if version save fails
+            version_number=version_from_url  # Use version number from file path
+        )
+        
+        logger.info(
+            f"Saved regeneration to clip_versions as version {version_number} (with recomposition)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                "version_number": version_number
+            }
+                )
+    else:
+        logger.info(
+            f"Using existing version {version_number} (already saved, skipping duplicate during recomposition)",
+                    extra={
+                        "job_id": str(job_id),
+                        "clip_index": clip_index,
+                "version_number": version_number
+            }
+                )
     
     # Create a new list to avoid mutating the original (Pydantic models may be immutable)
     updated_clips = clips.clips.copy()

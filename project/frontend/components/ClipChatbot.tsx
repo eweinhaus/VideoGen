@@ -869,12 +869,32 @@ export function ClipChatbot({
     
     try {
       setLoadingComparison(true)
+      // Force fresh API call by adding cache-busting timestamp
+      // This ensures we get the latest data from the backend
       const data = await getClipComparison(jobId, clipIndex)
       console.log("🎯 ClipChatbot received comparison data:", {
         active_version_number: data.active_version_number,
         originalVersion: data.original.version_number,
-        regeneratedVersion: data.regenerated?.version_number
+        originalVideoUrl: data.original.video_url,
+        regeneratedVersion: data.regenerated?.version_number,
+        regeneratedVideoUrl: data.regenerated?.video_url,
+        urlsMatch: data.original.video_url === data.regenerated?.video_url,
+        urlsDifferent: data.original.video_url !== data.regenerated?.video_url,
+        versionsMatch: data.original.version_number === data.regenerated?.version_number,
+        BUG_DETECTED: data.original.version_number === data.regenerated?.version_number || data.original.video_url === data.regenerated?.video_url
       })
+      
+      // CRITICAL: Check if both clips are the same (BUG DETECTION)
+      if (data.regenerated && (data.original.version_number === data.regenerated.version_number || data.original.video_url === data.regenerated.video_url)) {
+        console.error("🚨 BUG DETECTED in ClipChatbot: Both original and regenerated clips are the same!", {
+          originalVersion: data.original.version_number,
+          regeneratedVersion: data.regenerated.version_number,
+          originalUrl: data.original.video_url,
+          regeneratedUrl: data.regenerated.video_url,
+          versionsMatch: data.original.version_number === data.regenerated.version_number,
+          urlsMatch: data.original.video_url === data.regenerated.video_url
+        })
+      }
       setComparisonData({
         original: data.original,
         regenerated: data.regenerated,
